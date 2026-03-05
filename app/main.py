@@ -1,16 +1,27 @@
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.core.config import get_settings
+from app.core.logging import configure_logging
+from app.core.middleware.request_id import RequestIDMiddleware
 
-app = FastAPI()
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
-@app.on_event("startup")
-def load_config() -> None:
-    # Ensure env-based settings are loaded and validated at app startup.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     app.state.settings = get_settings()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(RequestIDMiddleware)
 
 
 @app.get("/health")
 def health():
+    logger.info("health_check")
     return {"status": "ok"}

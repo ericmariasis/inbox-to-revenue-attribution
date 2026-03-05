@@ -17,6 +17,12 @@ dependencies = [
     "alembic",
     "python-jose",
     "passlib",
+    "psycopg[binary]"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest"
 ]
 
 [tool.setuptools]

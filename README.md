@@ -11,3 +11,9 @@ Architecture and design docs are in /docs
 Run locally:
 
 uvicorn app.main:app --reload
+
+## CI
+
+Automated tests run in GitHub Actions:
+
+- Workflow: [tests.yml](./.github/workflows/tests.yml)

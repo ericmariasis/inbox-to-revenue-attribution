@@ -19,19 +19,17 @@ def migrated_test_db():
 
 @pytest.fixture(autouse=True)
 def isolate_test_data():
-    """Keep tests independent by truncating story-2 tables before each test."""
+    """Keep tests independent by truncating any migrated app tables before each test."""
     db_url = os.environ["TEST_DATABASE_URL"]
     engine = create_engine(db_url)
 
     with engine.begin() as conn:
         existing = set(inspect(conn).get_table_names(schema="public"))
-        required = {"creators", "auth_users", "magic_link_tokens"}
-        if required.issubset(existing):
+        ordered_tables = ["booking_links", "magic_link_tokens", "auth_users", "creators"]
+        tables_to_truncate = [table_name for table_name in ordered_tables if table_name in existing]
+        if tables_to_truncate:
             conn.execute(
-                text(
-                    "TRUNCATE TABLE magic_link_tokens, auth_users, creators "
-                    "RESTART IDENTITY CASCADE"
-                )
+                text(f"TRUNCATE TABLE {', '.join(tables_to_truncate)} RESTART IDENTITY CASCADE")
             )
 
 

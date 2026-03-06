@@ -14,6 +14,7 @@ from app.db.session import get_db
 from app.models.booking_link import BookingLink
 from app.models.content import Content
 from app.services.click_events import DEFAULT_CLICK_EVENT_PUBLISHER, ClickEventPublisher, build_click_event
+from app.services.rate_limit import RedirectSoftRateLimiter
 
 router = APIRouter(tags=["redirects"])
 logger = logging.getLogger(__name__)
@@ -84,6 +85,10 @@ def _click_event_publisher(request: Request) -> ClickEventPublisher:
     return getattr(request.app.state, "click_event_publisher", DEFAULT_CLICK_EVENT_PUBLISHER)
 
 
+def _redirect_rate_limiter(request: Request) -> RedirectSoftRateLimiter:
+    return getattr(request.app.state, "redirect_rate_limiter", RedirectSoftRateLimiter())
+
+
 def _request_client_ip(request: Request) -> str | None:
     if request.client is None:
         return None
@@ -99,6 +104,7 @@ def redirect_by_tid(
 ) -> RedirectResponse:
     redirect_row = db.execute(_redirect_destination_query(tid=tid)).one_or_none()
     if redirect_row is None:
+        logger.info("redirect_lookup_not_found tid=%s", tid)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="link not found",
@@ -109,7 +115,6 @@ def redirect_by_tid(
     session_id = _redirect_session_id(
         existing_session_id=request.cookies.get(REDIRECT_SESSION_COOKIE_NAME)
     )
-    logger.info("redirect_resolved")
 
     response = RedirectResponse(
         url=_destination_with_canonical_tid(
@@ -128,6 +133,18 @@ def redirect_by_tid(
         tid=canonical_tid,
         session_id=session_id,
         ip_address=_request_client_ip(request),
+    )
+    rate_limit_state = _redirect_rate_limiter(request).record_attempt(
+        hashed_ip=click_event.hashed_ip,
+        tid=canonical_tid,
+    )
+    logger.info(
+        "redirect_resolved tid=%s click_event_id=%s soft_limited=%s attempt_count=%s limit=%s",
+        canonical_tid,
+        click_event.event_id,
+        rate_limit_state.soft_limited,
+        rate_limit_state.attempt_count,
+        rate_limit_state.limit,
     )
     try:
         _click_event_publisher(request).publish(click_event)

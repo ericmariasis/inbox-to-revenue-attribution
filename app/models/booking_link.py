@@ -33,3 +33,8 @@ class BookingLink(Base):
     )
 
     creator = relationship("Creator", back_populates="booking_links")
+    content_items = relationship(
+        "Content",
+        back_populates="booking_link",
+        cascade="all, delete-orphan",
+    )

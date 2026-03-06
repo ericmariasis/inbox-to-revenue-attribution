@@ -32,3 +32,8 @@ class Creator(Base):
         back_populates="creator",
         cascade="all, delete-orphan",
     )
+    content_items = relationship(
+        "Content",
+        back_populates="creator",
+        cascade="all, delete-orphan",
+    )

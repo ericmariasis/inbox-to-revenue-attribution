@@ -96,7 +96,7 @@ def _insert_content(
     return content_id
 
 
-def test_redirect_lookup_returns_public_302_to_persisted_booking_link():
+def test_redirect_lookup_appends_canonical_tid_without_dropping_existing_path():
     creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
     booking_link_url = "https://calendly.com/example/redirect-strategy-call"
     booking_link_id = _insert_booking_link(
@@ -118,7 +118,61 @@ def test_redirect_lookup_returns_public_302_to_persisted_booking_link():
 
     assert response.status_code == 302
     assert response.headers.get("X-Request-Id")
-    assert response.headers["location"] == booking_link_url
+    assert response.headers["location"] == f"{booking_link_url}?tid={tid}"
+
+
+def test_redirect_lookup_preserves_existing_query_params_when_appending_canonical_tid():
+    creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
+    tid = "redirectlookupqueryparamstid"
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Redirect Strategy Call With Query Params",
+        calendly_url="https://calendly.com/example/redirect-strategy-call?month=2026-03&utm_source=linkedin",
+    )
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/redirect-query-breakdown",
+        tid=tid,
+        created_at=datetime(2026, 3, 6, 15, 5, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/r/{tid}", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers.get("X-Request-Id")
+    assert (
+        response.headers["location"]
+        == "https://calendly.com/example/redirect-strategy-call?month=2026-03&utm_source=linkedin&tid=redirectlookupqueryparamstid"
+    )
+
+
+def test_redirect_lookup_rewrites_existing_tid_query_param_to_canonical_tid():
+    creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
+    tid = "redirectlookupcanonicaltid"
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Redirect Strategy Call With Existing Tid",
+        calendly_url="https://calendly.com/example/redirect-strategy-call?month=2026-03&tid=stale-tid",
+    )
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/redirect-canonical-breakdown",
+        tid=tid,
+        created_at=datetime(2026, 3, 6, 15, 10, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/r/{tid}", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers.get("X-Request-Id")
+    assert (
+        response.headers["location"]
+        == "https://calendly.com/example/redirect-strategy-call?month=2026-03&tid=redirectlookupcanonicaltid"
+    )
 
 
 def test_redirect_lookup_returns_safe_404_for_unknown_tid():

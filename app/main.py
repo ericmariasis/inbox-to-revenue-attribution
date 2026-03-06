@@ -10,6 +10,7 @@ from app.api.redirects import router as redirects_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.middleware.request_id import RequestIDMiddleware
+from app.services.click_events import DEFAULT_CLICK_EVENT_PUBLISHER
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.settings = get_settings()
+    if not hasattr(app.state, "click_event_publisher"):
+        app.state.click_event_publisher = DEFAULT_CLICK_EVENT_PUBLISHER
     yield
 
 

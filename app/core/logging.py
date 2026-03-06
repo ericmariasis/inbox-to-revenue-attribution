@@ -37,3 +37,10 @@ def configure_logging() -> None:
     handler.setFormatter(JsonFormatter())
     handler.addFilter(RequestContextFilter())
     root.addHandler(handler)
+
+    # Uvicorn access logs include the full request target, which would leak
+    # magic-link tokens passed via query string. Keep app logs only.
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.handlers.clear()
+    access_logger.propagate = False
+    access_logger.disabled = True

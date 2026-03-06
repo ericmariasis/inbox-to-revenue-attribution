@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://localhost/attribution"
     jwt_secret: str = "replace_me"
     jwt_algorithm: str = "HS256"
+    jwt_access_token_ttl_hours: int = 24
     magic_link_token_ttl_minutes: int = 15
 
 

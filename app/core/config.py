@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_ttl_hours: int = 24
     magic_link_token_ttl_minutes: int = 15
+    tracked_link_base_url: str = "https://trk.example.com"
 
 
 @lru_cache

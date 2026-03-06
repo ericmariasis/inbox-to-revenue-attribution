@@ -5,6 +5,8 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
+from app.services.email_stub import clear_magic_link_outbox
+
 
 @pytest.fixture(scope="session", autouse=True)
 def migrated_test_db():
@@ -31,3 +33,8 @@ def isolate_test_data():
                     "RESTART IDENTITY CASCADE"
                 )
             )
+
+
+@pytest.fixture(autouse=True)
+def clear_email_stub_outbox():
+    clear_magic_link_outbox()

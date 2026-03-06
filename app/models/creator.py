@@ -27,3 +27,8 @@ class Creator(Base):
     )
 
     auth_user = relationship("AuthUser", back_populates="creator", uselist=False, cascade="all, delete-orphan")
+    booking_links = relationship(
+        "BookingLink",
+        back_populates="creator",
+        cascade="all, delete-orphan",
+    )

@@ -4,7 +4,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.core.request_context import request_id_ctx
+from app.core.request_context import creator_id_ctx, request_id_ctx
+from app.services.auth_jwt import decode_access_token_or_none
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -13,12 +14,32 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         request_id = incoming.strip() if incoming and incoming.strip() else str(uuid.uuid4())
 
         request.state.request_id = request_id
-        token = request_id_ctx.set(request_id)
+        request_token = request_id_ctx.set(request_id)
+        creator_id = _creator_id_from_auth_header(request)
+        creator_token = creator_id_ctx.set(creator_id)
 
         try:
             response = await call_next(request)
         finally:
-            request_id_ctx.reset(token)
+            creator_id_ctx.reset(creator_token)
+            request_id_ctx.reset(request_token)
 
         response.headers["X-Request-Id"] = request_id
         return response
+
+
+def _creator_id_from_auth_header(request: Request) -> str | None:
+    auth_header = request.headers.get("Authorization")
+    if not auth_header:
+        return None
+
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+
+    payload = decode_access_token_or_none(token)
+    if payload is None:
+        return None
+
+    creator_id = payload.get("creator_id")
+    return str(creator_id) if creator_id else None

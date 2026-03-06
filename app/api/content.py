@@ -29,6 +29,14 @@ def _creator_owned_booking_link_query(
     )
 
 
+def _creator_scoped_content_query(*, creator_id: UUID) -> Select[tuple[Content]]:
+    return (
+        select(Content)
+        .where(Content.creator_id == creator_id)
+        .order_by(Content.created_at.asc(), Content.id.asc())
+    )
+
+
 def _tracked_url_for_tid(tid: str) -> str:
     base_url = get_settings().tracked_link_base_url.rstrip("/")
     return f"{base_url}/r/{tid}"
@@ -75,3 +83,17 @@ def create_content(
     logger.info("content_created")
 
     return _build_content_response(content)
+
+
+@router.get("", response_model=list[ContentResponse])
+def list_content(
+    current_user: AuthUser = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+) -> list[ContentResponse]:
+    content_rows = db.execute(
+        _creator_scoped_content_query(creator_id=current_user.creator_id)
+    ).scalars()
+
+    logger.info("content_listed")
+
+    return [_build_content_response(content) for content in content_rows]

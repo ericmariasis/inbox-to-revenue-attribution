@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.booking_link import BookingLink
 from app.models.content import Content
+from app.services.click_events import DEFAULT_CLICK_EVENT_PUBLISHER, ClickEventPublisher, build_click_event
 
 router = APIRouter(tags=["redirects"])
 logger = logging.getLogger(__name__)
@@ -79,6 +80,17 @@ def _set_redirect_session_cookie(
     )
 
 
+def _click_event_publisher(request: Request) -> ClickEventPublisher:
+    return getattr(request.app.state, "click_event_publisher", DEFAULT_CLICK_EVENT_PUBLISHER)
+
+
+def _request_client_ip(request: Request) -> str | None:
+    if request.client is None:
+        return None
+
+    return request.client.host
+
+
 @router.get("/r/{tid}", status_code=status.HTTP_302_FOUND)
 def redirect_by_tid(
     tid: str,
@@ -111,4 +123,20 @@ def redirect_by_tid(
         session_id=session_id,
         app_env=settings.app_env,
     )
+
+    click_event = build_click_event(
+        tid=canonical_tid,
+        session_id=session_id,
+        ip_address=_request_client_ip(request),
+    )
+    try:
+        _click_event_publisher(request).publish(click_event)
+    except Exception as exc:
+        logger.warning(
+            "click_event_publish_failed tid=%s event_id=%s error=%s",
+            canonical_tid,
+            click_event.event_id,
+            type(exc).__name__,
+        )
+
     return response

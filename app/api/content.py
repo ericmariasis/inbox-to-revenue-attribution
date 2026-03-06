@@ -37,6 +37,13 @@ def _creator_scoped_content_query(*, creator_id: UUID) -> Select[tuple[Content]]
     )
 
 
+def _creator_owned_content_by_tid_query(*, tid: str, creator_id: UUID) -> Select[tuple[Content]]:
+    return select(Content).where(
+        Content.tid == tid,
+        Content.creator_id == creator_id,
+    )
+
+
 def _tracked_url_for_tid(tid: str) -> str:
     base_url = get_settings().tracked_link_base_url.rstrip("/")
     return f"{base_url}/r/{tid}"
@@ -97,3 +104,26 @@ def list_content(
     logger.info("content_listed")
 
     return [_build_content_response(content) for content in content_rows]
+
+
+@router.get("/{tid}", response_model=ContentResponse)
+def get_content_detail(
+    tid: str,
+    current_user: AuthUser = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+) -> ContentResponse:
+    content = db.execute(
+        _creator_owned_content_by_tid_query(
+            tid=tid,
+            creator_id=current_user.creator_id,
+        )
+    ).scalar_one_or_none()
+    if content is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="content not found",
+        )
+
+    logger.info("content_detail_fetched")
+
+    return _build_content_response(content)

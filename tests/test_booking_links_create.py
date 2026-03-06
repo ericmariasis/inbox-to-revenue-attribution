@@ -2,6 +2,7 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 from jose import jwt
 from sqlalchemy import create_engine, text
@@ -127,6 +128,30 @@ def test_create_booking_link_returns_201_and_persists_for_authenticated_creator(
     }
 
 
+def test_create_booking_link_accepts_www_calendly_host():
+    inserted = _insert_creator_user(email=f"booking_link_{uuid.uuid4().hex}@example.com")
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/booking-links",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "Website Consult",
+                "calendly_url": "https://www.calendly.com/example/website-consult",
+            },
+        )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["calendly_url"] == "https://www.calendly.com/example/website-consult"
+
+
 def test_create_booking_link_ignores_client_creator_id_input():
     inserted = _insert_creator_user(email=f"owner_{uuid.uuid4().hex}@example.com")
     token = _access_token(
@@ -152,3 +177,35 @@ def test_create_booking_link_ignores_client_creator_id_input():
     persisted = _booking_link_row(response.json()["id"])
     assert persisted["creator_id"] == inserted["creator_id"]
     assert persisted["creator_id"] != spoofed_creator_id
+
+
+@pytest.mark.parametrize(
+    "invalid_url",
+    [
+        "not-a-url",
+        "http://calendly.com/example/free-consult",
+        "https://example.com/free-consult",
+        "https://calendly.com",
+        "https://www.calendly.com/",
+    ],
+)
+def test_create_booking_link_rejects_invalid_calendly_urls(invalid_url: str):
+    inserted = _insert_creator_user(email=f"invalid_booking_link_{uuid.uuid4().hex}@example.com")
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/booking-links",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "Invalid Booking Link",
+                "calendly_url": invalid_url,
+            },
+        )
+
+    assert response.status_code == 422

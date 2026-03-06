@@ -17,7 +17,8 @@ dependencies = [
     "alembic",
     "python-jose",
     "passlib",
-    "psycopg[binary]"
+    "psycopg[binary]",
+    "email-validator",
 ]
 
 [project.optional-dependencies]

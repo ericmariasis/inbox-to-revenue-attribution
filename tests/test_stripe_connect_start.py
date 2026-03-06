@@ -90,6 +90,9 @@ class _StubStripeProvider:
             f"?response_type=code&client_id=ca_test_story26&state={state}&creator_id={creator_id}"
         )
 
+    def exchange_connect_callback(self, *, code: str, state: str) -> str:
+        raise AssertionError(f"unexpected callback exchange code={code} state={state}")
+
 
 def test_stripe_connect_start_returns_provider_url_and_app_issued_state():
     inserted = _insert_creator_user(email=f"stripe_{uuid.uuid4().hex}@example.com")

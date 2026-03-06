@@ -4,8 +4,14 @@ from urllib.parse import urlencode
 from app.core.config import Settings, get_settings
 
 
+class StripeProviderError(ValueError):
+    pass
+
+
 class StripeProvider(Protocol):
     def build_connect_onboarding_url(self, *, creator_id: str, state: str) -> str: ...
+
+    def exchange_connect_callback(self, *, code: str, state: str) -> str: ...
 
 
 class StripeOAuthProvider:
@@ -32,6 +38,10 @@ class StripeOAuthProvider:
             }
         )
         return f"{self._authorize_url}?{query}"
+
+    def exchange_connect_callback(self, *, code: str, state: str) -> str:
+        del code, state
+        raise StripeProviderError("default stripe callback exchange is not implemented")
 
 
 def build_default_stripe_provider(*, settings: Settings | None = None) -> StripeProvider:

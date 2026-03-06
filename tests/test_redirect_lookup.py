@@ -1,6 +1,9 @@
 import os
+import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from http.cookies import SimpleCookie
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
@@ -96,6 +99,15 @@ def _insert_content(
     return content_id
 
 
+def _redirect_cookie(response):
+    cookie_header = response.headers.get("set-cookie")
+    assert cookie_header
+
+    parsed_cookie = SimpleCookie()
+    parsed_cookie.load(cookie_header)
+    return parsed_cookie["ccp_sid"]
+
+
 def test_redirect_lookup_appends_canonical_tid_without_dropping_existing_path():
     creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
     booking_link_url = "https://calendly.com/example/redirect-strategy-call"
@@ -119,6 +131,98 @@ def test_redirect_lookup_appends_canonical_tid_without_dropping_existing_path():
     assert response.status_code == 302
     assert response.headers.get("X-Request-Id")
     assert response.headers["location"] == f"{booking_link_url}?tid={tid}"
+
+
+def test_redirect_lookup_sets_ccp_sid_cookie_with_14_day_ttl():
+    creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
+    booking_link_url = "https://calendly.com/example/redirect-cookie-strategy-call"
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Redirect Cookie Strategy Call",
+        calendly_url=booking_link_url,
+    )
+    tid = "redirectlookupcookieset"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/redirect-cookie-breakdown",
+        tid=tid,
+        created_at=datetime(2026, 3, 6, 15, 1, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/r/{tid}", follow_redirects=False)
+
+    cookie = _redirect_cookie(response)
+    expires_at = parsedate_to_datetime(cookie["expires"])
+    remaining = expires_at - datetime.now(timezone.utc)
+
+    assert response.status_code == 302
+    assert response.headers.get("X-Request-Id")
+    assert response.headers["location"] == f"{booking_link_url}?tid={tid}"
+    assert cookie.value
+    assert cookie["max-age"] == str(14 * 24 * 60 * 60)
+    assert cookie["path"] == "/r"
+    assert cookie["httponly"]
+    assert cookie["samesite"].lower() == "lax"
+    assert not cookie["secure"]
+    assert timedelta(days=13, hours=23, minutes=59) <= remaining <= timedelta(days=14, minutes=1)
+
+
+def test_redirect_lookup_reuses_existing_ccp_sid_cookie_value():
+    creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Redirect Cookie Reuse Call",
+        calendly_url="https://calendly.com/example/redirect-cookie-reuse-call",
+    )
+    tid = "redirectlookupcookiereuse"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/redirect-cookie-reuse-breakdown",
+        tid=tid,
+        created_at=datetime(2026, 3, 6, 15, 2, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        first_response = client.get(f"/r/{tid}", follow_redirects=False)
+        first_session_id = first_response.cookies.get("ccp_sid")
+
+        second_response = client.get(f"/r/{tid}", follow_redirects=False)
+        second_session_id = second_response.cookies.get("ccp_sid")
+
+    assert first_response.status_code == 302
+    assert second_response.status_code == 302
+    assert first_session_id
+    assert second_session_id == first_session_id
+
+
+def test_redirect_lookup_sets_opaque_ccp_sid_cookie_not_derived_from_tid():
+    creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Redirect Cookie Opaque Call",
+        calendly_url="https://calendly.com/example/redirect-cookie-opaque-call",
+    )
+    tid = "redirectlookupcookieopaque"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/redirect-cookie-opaque-breakdown",
+        tid=tid,
+        created_at=datetime(2026, 3, 6, 15, 3, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/r/{tid}", follow_redirects=False)
+
+    cookie = _redirect_cookie(response)
+
+    assert response.status_code == 302
+    assert cookie.value != tid
+    assert tid not in cookie.value
+    assert re.fullmatch(r"[0-9a-f]{32}", cookie.value)
 
 
 def test_redirect_lookup_preserves_existing_query_params_when_appending_canonical_tid():

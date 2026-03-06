@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.middleware.request_id import RequestIDMiddleware
 from app.services.click_events import DEFAULT_CLICK_EVENT_PUBLISHER
+from app.services.rate_limit import RedirectSoftRateLimiter
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -21,6 +22,8 @@ async def lifespan(app: FastAPI):
     app.state.settings = get_settings()
     if not hasattr(app.state, "click_event_publisher"):
         app.state.click_event_publisher = DEFAULT_CLICK_EVENT_PUBLISHER
+    if not hasattr(app.state, "redirect_rate_limiter"):
+        app.state.redirect_rate_limiter = RedirectSoftRateLimiter()
     yield
 
 

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 from app.main import app
+from app.services.rate_limit import RedirectSoftRateLimiter
 
 
 def _engine():
@@ -319,6 +320,108 @@ def test_redirect_lookup_emits_distinct_click_event_ids_for_repeated_redirects()
     assert capture_publisher.events[0].session_id == first_response.cookies.get("ccp_sid")
     assert capture_publisher.events[1].session_id == second_response.cookies.get("ccp_sid")
     assert capture_publisher.events[1].session_id == capture_publisher.events[0].session_id
+
+
+def test_redirect_lookup_soft_rate_limit_tracks_repeated_bucket_without_blocking_redirect():
+    creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
+    booking_link_url = "https://calendly.com/example/redirect-soft-limit-call"
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Redirect Soft Limit Call",
+        calendly_url=booking_link_url,
+    )
+    tid = "redirectlookupsoftlimit"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/redirect-soft-limit-breakdown",
+        tid=tid,
+        created_at=datetime(2026, 3, 6, 15, 7, tzinfo=timezone.utc),
+    )
+    capture_publisher = _CaptureClickEventPublisher()
+    rate_limiter = RedirectSoftRateLimiter(max_attempts=2)
+    client_ip = "203.0.113.13"
+
+    with patch("app.api.redirects.logger.info") as info_log:
+        with _override_app_state("click_event_publisher", capture_publisher):
+            with _override_app_state("redirect_rate_limiter", rate_limiter):
+                with TestClient(app, client=(client_ip, 50004)) as client:
+                    responses = [
+                        client.get(f"/r/{tid}", follow_redirects=False)
+                        for _ in range(3)
+                    ]
+
+    assert all(response.status_code == 302 for response in responses)
+    assert all(response.headers["location"] == f"{booking_link_url}?tid={tid}" for response in responses)
+    assert len(capture_publisher.events) == 3
+
+    state = rate_limiter.snapshot_bucket(
+        hashed_ip=hashlib.sha256(client_ip.encode("utf-8")).hexdigest(),
+        tid=tid,
+    )
+    assert state.attempt_count == 3
+    assert state.soft_limited is True
+    assert state.limit == 2
+
+    assert info_log.call_count == 3
+    last_call = info_log.call_args_list[-1]
+    assert (
+        last_call.args[0]
+        == "redirect_resolved tid=%s click_event_id=%s soft_limited=%s attempt_count=%s limit=%s"
+    )
+    assert last_call.args[1] == tid
+    assert re.fullmatch(r"[0-9a-f]{32}", last_call.args[2])
+    assert last_call.args[3] is True
+    assert last_call.args[4] == 3
+    assert last_call.args[5] == 2
+    assert client_ip not in "\n".join(str(call) for call in info_log.call_args_list)
+
+
+def test_redirect_lookup_soft_rate_limit_state_is_tracked_separately_per_tid():
+    creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Redirect Soft Limit Per Tid Call",
+        calendly_url="https://calendly.com/example/redirect-soft-limit-per-tid-call",
+    )
+    first_tid = "redirectlookupsoftlimitfirst"
+    second_tid = "redirectlookupsoftlimitsecond"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/redirect-soft-limit-first",
+        tid=first_tid,
+        created_at=datetime(2026, 3, 6, 15, 8, tzinfo=timezone.utc),
+    )
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/redirect-soft-limit-second",
+        tid=second_tid,
+        created_at=datetime(2026, 3, 6, 15, 9, tzinfo=timezone.utc),
+    )
+    rate_limiter = RedirectSoftRateLimiter(max_attempts=2)
+    client_ip = "203.0.113.14"
+
+    with _override_app_state("redirect_rate_limiter", rate_limiter):
+        with TestClient(app, client=(client_ip, 50005)) as client:
+            responses = [
+                client.get(f"/r/{first_tid}", follow_redirects=False),
+                client.get(f"/r/{first_tid}", follow_redirects=False),
+                client.get(f"/r/{first_tid}", follow_redirects=False),
+                client.get(f"/r/{second_tid}", follow_redirects=False),
+            ]
+
+    assert all(response.status_code == 302 for response in responses)
+
+    hashed_ip = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()
+    first_state = rate_limiter.snapshot_bucket(hashed_ip=hashed_ip, tid=first_tid)
+    second_state = rate_limiter.snapshot_bucket(hashed_ip=hashed_ip, tid=second_tid)
+
+    assert first_state.attempt_count == 3
+    assert first_state.soft_limited is True
+    assert second_state.attempt_count == 1
+    assert second_state.soft_limited is False
 
 
 def test_redirect_lookup_preserves_existing_query_params_when_appending_canonical_tid():

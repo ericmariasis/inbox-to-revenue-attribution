@@ -6,6 +6,7 @@ from starlette.responses import Response
 
 from app.core.request_context import creator_id_ctx, request_id_ctx
 from app.services.auth_jwt import decode_access_token_or_none
+from app.services.browser_session import get_browser_session_token
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -29,12 +30,8 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 
 def _creator_id_from_auth_header(request: Request) -> str | None:
-    auth_header = request.headers.get("Authorization")
-    if not auth_header:
-        return None
-
-    scheme, _, token = auth_header.partition(" ")
-    if scheme.lower() != "bearer" or not token:
+    token = _access_token_from_request(request)
+    if token is None:
         return None
 
     payload = decode_access_token_or_none(token)
@@ -43,3 +40,13 @@ def _creator_id_from_auth_header(request: Request) -> str | None:
 
     creator_id = payload.get("creator_id")
     return str(creator_id) if creator_id else None
+
+
+def _access_token_from_request(request: Request) -> str | None:
+    auth_header = request.headers.get("Authorization")
+    if auth_header:
+        scheme, _, token = auth_header.partition(" ")
+        if scheme.lower() == "bearer" and token:
+            return token
+
+    return get_browser_session_token(request)

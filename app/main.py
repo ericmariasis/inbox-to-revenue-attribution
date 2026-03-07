@@ -8,6 +8,7 @@ from app.api.booking_links import router as booking_links_router
 from app.api.content import router as content_router
 from app.api.redirects import router as redirects_router
 from app.api.stripe import router as stripe_router
+from app.api.ui import router as ui_router
 from app.api.webhooks import router as webhooks_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(RequestIDMiddleware)
+app.include_router(ui_router)
 app.include_router(auth_router)
 app.include_router(me_router)
 app.include_router(booking_links_router)

@@ -4,8 +4,16 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.parse import urlsplit
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.db.session import SessionLocal
+from app.models.booking import Booking
+from app.models.content import Content
 
 
 logger = logging.getLogger(__name__)
@@ -41,7 +49,104 @@ class CalendlyWebhookRouter(Protocol):
     def handle_event(self, *, event: CalendlyWebhookEvent) -> None: ...
 
 
-class LoggingCalendlyWebhookRouter:
+class BookingCreatedCalendlyWebhookHandler:
+    def __init__(self, *, session_factory: Callable[[], Session]):
+        self._session_factory = session_factory
+
+    def handle_event(self, *, event: CalendlyWebhookEvent) -> bool:
+        if event.event_type != "booking.created":
+            return False
+
+        if not event.tid:
+            return False
+
+        event_payload = event.payload.get("payload")
+        if not isinstance(event_payload, dict):
+            return False
+
+        email = _extract_booking_email(event_payload)
+        booked_at = _extract_booked_at(event_payload)
+        if email is None or booked_at is None:
+            logger.warning(
+                "calendly_webhook_booking_created_unhandled calendly_booking_uuid=%s tid=%s missing_email=%s missing_booked_at=%s",
+                event.calendly_booking_uuid,
+                event.tid,
+                email is None,
+                booked_at is None,
+            )
+            return False
+
+        with self._session_factory() as session:
+            content = session.scalar(select(Content).where(Content.tid == event.tid))
+            if content is None:
+                return False
+            creator_id = content.creator_id
+            booking_link_id = content.booking_link_id
+            resolved_tid = content.tid
+
+            existing_booking = session.scalar(
+                select(Booking).where(
+                    Booking.calendly_booking_uuid == event.calendly_booking_uuid
+                )
+            )
+            if existing_booking is not None:
+                logger.info(
+                    "calendly_webhook_booking_created_duplicate calendly_booking_uuid=%s tid=%s",
+                    event.calendly_booking_uuid,
+                    event.tid,
+                )
+                return True
+
+            session.add(
+                Booking(
+                    creator_id=creator_id,
+                    booking_link_id=booking_link_id,
+                    tid=resolved_tid,
+                    calendly_booking_uuid=event.calendly_booking_uuid,
+                    email=email,
+                    booked_at=booked_at,
+                    status="created",
+                )
+            )
+
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing_booking = session.scalar(
+                    select(Booking).where(
+                        Booking.calendly_booking_uuid == event.calendly_booking_uuid
+                    )
+                )
+                if existing_booking is None:
+                    raise
+                logger.info(
+                    "calendly_webhook_booking_created_duplicate calendly_booking_uuid=%s tid=%s",
+                    event.calendly_booking_uuid,
+                    event.tid,
+                )
+                return True
+
+        logger.info(
+            "calendly_webhook_booking_created_persisted calendly_booking_uuid=%s tid=%s creator_id=%s booking_link_id=%s",
+            event.calendly_booking_uuid,
+            event.tid,
+            creator_id,
+            booking_link_id,
+        )
+        return True
+
+
+class DefaultCalendlyWebhookRouter:
+    def __init__(
+        self,
+        *,
+        booking_created_handler: BookingCreatedCalendlyWebhookHandler | None = None,
+    ):
+        self._booking_created_handler = booking_created_handler or BookingCreatedCalendlyWebhookHandler(
+            session_factory=SessionLocal
+        )
+
     def handle_event(self, *, event: CalendlyWebhookEvent) -> None:
         logger.info(
             "calendly_webhook_event_verified provider_event_type=%s calendly_event_id=%s calendly_event_id_path=%s calendly_booking_uuid=%s calendly_booking_uuid_path=%s event_type=%s tid=%s tid_path=%s",
@@ -54,6 +159,8 @@ class LoggingCalendlyWebhookRouter:
             event.tid,
             event.tid_path,
         )
+        if self._booking_created_handler.handle_event(event=event):
+            return
         logger.info(
             "calendly_webhook_event_noop provider_event_type=%s calendly_event_id=%s calendly_event_id_path=%s calendly_booking_uuid=%s calendly_booking_uuid_path=%s event_type=%s tid=%s tid_path=%s",
             event.provider_event_type,
@@ -67,7 +174,7 @@ class LoggingCalendlyWebhookRouter:
         )
 
 
-DEFAULT_CALENDLY_WEBHOOK_ROUTER = LoggingCalendlyWebhookRouter()
+DEFAULT_CALENDLY_WEBHOOK_ROUTER = DefaultCalendlyWebhookRouter()
 
 
 def verify_and_parse_calendly_webhook(
@@ -203,6 +310,60 @@ def _extract_tid(event_payload: dict[str, Any]) -> tuple[str | None, str | None]
             return value, f"payload.{key}"
 
     return None, None
+
+
+def _extract_booking_email(event_payload: dict[str, Any]) -> str | None:
+    email = event_payload.get("email")
+    if isinstance(email, str) and email:
+        return email
+
+    invitee = event_payload.get("invitee")
+    if isinstance(invitee, dict):
+        nested_email = invitee.get("email")
+        if isinstance(nested_email, str) and nested_email:
+            return nested_email
+
+    return None
+
+
+def _extract_booked_at(event_payload: dict[str, Any]) -> datetime | None:
+    for candidate in (
+        event_payload.get("created_at"),
+        event_payload.get("start_time"),
+    ):
+        parsed = _parse_datetime(candidate)
+        if parsed is not None:
+            return parsed
+
+    scheduled_event = event_payload.get("scheduled_event")
+    if isinstance(scheduled_event, dict):
+        parsed = _parse_datetime(scheduled_event.get("start_time"))
+        if parsed is not None:
+            return parsed
+
+    event_value = event_payload.get("event")
+    if isinstance(event_value, dict):
+        parsed = _parse_datetime(event_value.get("start_time"))
+        if parsed is not None:
+            return parsed
+
+    return None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+
+    normalized = value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+
+    return parsed
 
 
 def _resource_identifier(*candidates: tuple[str, Any]) -> tuple[str | None, str | None]:

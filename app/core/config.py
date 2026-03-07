@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     stripe_connect_redirect_uri: str = "http://localhost:8000/stripe/connect/callback"
     stripe_webhook_secret: str = "whsec_test_example"
     stripe_webhook_tolerance_seconds: int = 300
+    calendly_webhook_signing_key: str = "whsec_calendly_test_example"
+    calendly_webhook_tolerance_seconds: int = 300
     tracked_link_base_url: str = "https://trk.example.com"
 
 

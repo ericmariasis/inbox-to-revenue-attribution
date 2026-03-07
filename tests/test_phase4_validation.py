@@ -95,7 +95,7 @@ def test_phase4_redirect_flow_end_to_end():
 
     expected_location = (
         "https://calendly.com/example/phase4-validation-call"
-        f"?utm_source=linkedin&month=2026-03&tid={content['tid']}"
+        f"?utm_source=linkedin&month=2026-03&utm_content={content['tid']}"
     )
     expected_hashed_ip = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()
     first_session_id = first_redirect_response.cookies.get("ccp_sid")

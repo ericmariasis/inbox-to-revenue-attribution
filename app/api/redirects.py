@@ -24,6 +24,8 @@ REDIRECT_SESSION_COOKIE_PATH = "/r"
 REDIRECT_SESSION_COOKIE_TTL = timedelta(days=14)
 REDIRECT_SESSION_COOKIE_TTL_SECONDS = int(REDIRECT_SESSION_COOKIE_TTL.total_seconds())
 _REDIRECT_SESSION_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_CALENDLY_TRACKING_QUERY_PARAM = "utm_content"
+_LEGACY_TID_QUERY_PARAM = "tid"
 
 
 def _redirect_destination_query(*, tid: str) -> Select[tuple[str, str]]:
@@ -37,9 +39,11 @@ def _redirect_destination_query(*, tid: str) -> Select[tuple[str, str]]:
 def _destination_with_canonical_tid(*, destination_url: str, canonical_tid: str) -> str:
     parsed = urlsplit(destination_url)
     query_params = [
-        (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != "tid"
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key not in {_CALENDLY_TRACKING_QUERY_PARAM, _LEGACY_TID_QUERY_PARAM}
     ]
-    query_params.append(("tid", canonical_tid))
+    query_params.append((_CALENDLY_TRACKING_QUERY_PARAM, canonical_tid))
 
     return urlunsplit(
         (

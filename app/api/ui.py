@@ -1,8 +1,8 @@
 import html
 from datetime import timezone
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -11,6 +11,11 @@ from app.api.booking_links import (
     create_booking_link_response_for_creator,
     list_booking_link_responses_for_creator,
 )
+from app.api.content import (
+    create_content_response_for_creator,
+    get_content_response_for_creator_by_tid,
+    list_content_responses_for_creator,
+)
 from app.api.deps import get_optional_browser_auth_user
 from app.api.stripe import build_stripe_connect_start_response
 from app.core.config import get_settings
@@ -18,6 +23,7 @@ from app.db.session import get_db
 from app.models.auth_user import AuthUser
 from app.schemas.booking_link import BookingLinkCreateRequest, BookingLinkResponse
 from app.schemas.auth import MagicLinkStartRequest
+from app.schemas.content import ContentCreateRequest, ContentResponse
 from app.services.auth_magic_link import start_magic_link
 from app.services.browser_session import (
     clear_browser_session_cookie,
@@ -46,6 +52,10 @@ BOOKING_LINK_FORM_FIELDS = (
     "calendly_url",
     "billing_amount_cents",
     "billing_currency",
+)
+CONTENT_FORM_FIELDS = (
+    "source_url",
+    "booking_link_id",
 )
 
 
@@ -186,6 +196,120 @@ async def creator_booking_links_create(
     return _redirect("/app/booking-links?status=created")
 
 
+@router.get("/app/content")
+def creator_content_page(
+    request: Request,
+    status_value: str | None = Query(default=None, alias="status"),
+    created_tid: str | None = Query(default=None, alias="tid"),
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    booking_links = list_booking_link_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    content_items = list_content_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    created_content = None
+    if status_value == "created" and created_tid:
+        created_content = get_content_response_for_creator_by_tid(
+            tid=created_tid,
+            creator_id=current_user.creator_id,
+            db=db,
+        )
+
+    return _html_response(
+        _render_content_page(
+            current_user=current_user,
+            booking_links=booking_links,
+            content_items=content_items,
+            form_values=_empty_content_form_values(),
+            field_errors={},
+            status_value=status_value,
+            created_content=created_content,
+        )
+    )
+
+
+@router.post("/app/content")
+async def creator_content_create(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    booking_links = list_booking_link_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    content_items = list_content_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    form_values = _content_form_values(await _parse_form_values(request))
+
+    if not booking_links:
+        return _html_response(
+            _render_content_page(
+                current_user=current_user,
+                booking_links=booking_links,
+                content_items=content_items,
+                form_values=form_values,
+                field_errors={},
+                status_value=None,
+                created_content=None,
+            )
+        )
+
+    payload, field_errors = _content_payload_from_form(form_values)
+    if field_errors:
+        return _html_response(
+            _render_content_page(
+                current_user=current_user,
+                booking_links=booking_links,
+                content_items=content_items,
+                form_values=form_values,
+                field_errors=field_errors,
+                status_value=None,
+                created_content=None,
+            )
+        )
+
+    try:
+        created_content = create_content_response_for_creator(
+            creator_id=current_user.creator_id,
+            payload=payload,
+            db=db,
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND and exc.detail == "booking link not found":
+            return _html_response(
+                _render_content_page(
+                    current_user=current_user,
+                    booking_links=booking_links,
+                    content_items=content_items,
+                    form_values=form_values,
+                    field_errors={
+                        "booking_link_id": "Choose one of your saved booking links.",
+                    },
+                    status_value=None,
+                    created_content=None,
+                )
+            )
+        raise
+
+    return _redirect(f"/app/content?status=created&tid={created_content.tid}")
+
+
 @router.post("/sign-out")
 def sign_out() -> RedirectResponse:
     return _redirect("/sign-in", clear_session=True)
@@ -265,6 +389,57 @@ def _booking_link_field_errors(exc: ValidationError) -> dict[str, str]:
         field_name = str(location[-1]) if location else ""
         if field_name in BOOKING_LINK_FORM_FIELDS and field_name not in errors:
             errors[field_name] = error["msg"].removeprefix("Value error, ")
+    return errors
+
+
+def _empty_content_form_values() -> dict[str, str]:
+    return {field_name: "" for field_name in CONTENT_FORM_FIELDS}
+
+
+def _content_form_values(raw_values: dict[str, str]) -> dict[str, str]:
+    form_values = _empty_content_form_values()
+    form_values.update(
+        {
+            "source_url": raw_values.get("source_url", "").strip(),
+            "booking_link_id": raw_values.get("booking_link_id", "").strip(),
+        }
+    )
+    return form_values
+
+
+def _content_payload_from_form(
+    form_values: dict[str, str],
+) -> tuple[ContentCreateRequest | None, dict[str, str]]:
+    field_errors: dict[str, str] = {}
+
+    if not form_values["source_url"]:
+        field_errors["source_url"] = "Enter a full public URL starting with http or https."
+    if not form_values["booking_link_id"]:
+        field_errors["booking_link_id"] = "Choose one of your saved booking links."
+
+    if field_errors:
+        return None, field_errors
+
+    try:
+        payload = ContentCreateRequest(
+            source_url=form_values["source_url"],
+            booking_link_id=form_values["booking_link_id"],
+        )
+    except ValidationError as exc:
+        return None, _content_field_errors(exc)
+
+    return payload, {}
+
+
+def _content_field_errors(exc: ValidationError) -> dict[str, str]:
+    errors: dict[str, str] = {}
+    for error in exc.errors():
+        location = error.get("loc") or ()
+        field_name = str(location[-1]) if location else ""
+        if field_name == "source_url" and field_name not in errors:
+            errors[field_name] = "Enter a full public URL starting with http or https."
+        elif field_name == "booking_link_id" and field_name not in errors:
+            errors[field_name] = "Choose one of your saved booking links."
     return errors
 
 
@@ -377,9 +552,9 @@ def _render_app_shell(current_user: AuthUser) -> str:
           <li class="checklist-item next">
             <div>
               <strong>Create a tracked link</strong>
-              <p>Attach a post URL to a booking link so future bookings carry the right content identifier.</p>
+              <p>Attach a post URL to one of your saved booking links so future bookings carry the right content identifier. <a href="/app/content" class="inline-link">Open content manager</a>.</p>
             </div>
-            <span class="list-state">After booking links</span>
+            <span class="list-state">Available now</span>
           </li>
         </ul>
       </article>
@@ -398,6 +573,7 @@ def _render_shell_nav(*, current_path: str) -> str:
     links = [
         ("/app", "Setup Home"),
         ("/app/booking-links", "Booking Links"),
+        ("/app/content", "Content"),
     ]
     items = []
     for href, label in links:
@@ -581,6 +757,279 @@ def _render_booking_link_notice(
     return ""
 
 
+def _render_content_page(
+    *,
+    current_user: AuthUser,
+    booking_links: list[BookingLinkResponse],
+    content_items: list[ContentResponse],
+    form_values: dict[str, str],
+    field_errors: dict[str, str],
+    status_value: str | None,
+    created_content: ContentResponse | None,
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    notice = _render_content_notice(
+        status_value=status_value,
+        field_errors=field_errors,
+        created_content=created_content,
+    )
+    list_heading = "Your tracked content" if content_items else "No tracked content yet"
+    booking_link_names = {
+        booking_link.id: booking_link.name
+        for booking_link in booking_links
+    }
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Content</h1>
+        <p class="lede">Turn a public source URL into a tracked link that routes through the attribution redirect before it reaches your Calendly booking flow.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/content")}
+    {notice}
+    <section class="grid">
+      {_render_content_form_panel(
+          creator_name=creator_name,
+          creator_email=creator_email,
+          booking_links=booking_links,
+          form_values=form_values,
+          field_errors=field_errors,
+      )}
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">How tracking works</p>
+          <h2>Copy the generated redirect URL into your post</h2>
+        </div>
+        <p>The tracked link uses the stored content `tid`, so later redirect and Calendly booking flows can attribute the booking back to the right source URL.</p>
+        <p>Pick a saved booking link, paste in the public URL for the content you are publishing, then copy the generated tracked link into the content or CTA you share externally.</p>
+        <a href="/app/booking-links" class="inline-link">Review booking links</a>
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Creator-owned content</p>
+          <h2>{list_heading}</h2>
+        </div>
+        <p>{len(content_items)} saved</p>
+      </div>
+      {_render_content_list(content_items=content_items, booking_link_names=booking_link_names)}
+    </section>
+    """
+    return _page_layout(title="Content", body=body)
+
+
+def _render_content_form_panel(
+    *,
+    creator_name: str,
+    creator_email: str,
+    booking_links: list[BookingLinkResponse],
+    form_values: dict[str, str],
+    field_errors: dict[str, str],
+) -> str:
+    if not booking_links:
+        return """
+        <article class="card stack">
+          <div>
+            <p class="eyebrow">Booking-link prerequisite</p>
+            <h2>Create a booking link first</h2>
+            <p>You need at least one saved booking link before this page can generate tracked content.</p>
+          </div>
+          <p>The tracked redirect has to attach every content item to one of your creator-owned booking links, so start there before creating tracked URLs.</p>
+          <a href="/app/booking-links" class="inline-link">Open booking-link manager</a>
+        </article>
+        """
+
+    return f"""
+    <article class="card stack">
+      <div>
+        <p class="eyebrow">Create tracked content</p>
+        <h2>Add a source URL</h2>
+        <p>Signed in as <strong>{creator_email}</strong> for <strong>{creator_name}</strong>.</p>
+      </div>
+      <form action="/app/content" method="post">
+        <label for="source_url">Public source URL</label>
+        <input
+          id="source_url"
+          name="source_url"
+          type="url"
+          value="{html.escape(form_values["source_url"])}"
+          placeholder="https://example.com/posts/launch-breakdown"
+          required
+          aria-invalid="{str("source_url" in field_errors).lower()}"
+        />
+        <p class="form-help">Use the public URL people will actually visit before choosing your booking CTA.</p>
+        {_render_content_field_error(field_errors.get("source_url"))}
+
+        <label for="booking_link_id">Booking link</label>
+        <select
+          id="booking_link_id"
+          name="booking_link_id"
+          required
+          aria-invalid="{str("booking_link_id" in field_errors).lower()}"
+        >
+          <option value="">Choose one of your saved booking links</option>
+          {_render_content_booking_link_options(
+              booking_links=booking_links,
+              selected_booking_link_id=form_values["booking_link_id"],
+          )}
+        </select>
+        <p class="form-help">This keeps the tracked content aligned with the creator-owned Calendly link that downstream booking capture expects.</p>
+        {_render_content_field_error(field_errors.get("booking_link_id"))}
+
+        <button type="submit">Generate tracked link</button>
+      </form>
+    </article>
+    """
+
+
+def _render_content_booking_link_options(
+    *,
+    booking_links: list[BookingLinkResponse],
+    selected_booking_link_id: str,
+) -> str:
+    options = []
+    for booking_link in booking_links:
+        selected_attr = " selected" if booking_link.id == selected_booking_link_id else ""
+        options.append(
+            f'<option value="{html.escape(booking_link.id)}"{selected_attr}>'
+            f"{html.escape(booking_link.name)}"
+            f"</option>"
+        )
+    return "".join(options)
+
+
+def _render_content_list(
+    *,
+    content_items: list[ContentResponse],
+    booking_link_names: dict[str, str],
+) -> str:
+    if not content_items:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">Empty state</p>
+          <h2>Create the first tracked link</h2>
+          <p>Add a public source URL above, choose a saved booking link, and this page will generate the redirect URL you can copy into external content.</p>
+        </section>
+        """
+
+    items = "".join(
+        _render_content_card(
+            content=content_item,
+            booking_link_name=booking_link_names.get(
+                content_item.booking_link_id,
+                "Unknown booking link",
+            ),
+        )
+        for content_item in content_items
+    )
+    return f'<div class="content-list">{items}</div>'
+
+
+def _render_content_card(
+    *,
+    content: ContentResponse,
+    booking_link_name: str,
+) -> str:
+    return f"""
+    <article class="content-card stack">
+      <div class="content-card-header">
+        <div>
+          <p class="eyebrow">Tracked content</p>
+          <h2>{html.escape(_content_card_title(content.source_url))}</h2>
+        </div>
+        <p class="pill-note">Booking link: {html.escape(booking_link_name)}</p>
+      </div>
+      <p><strong>Source URL</strong>: <a href="{html.escape(content.source_url)}" class="inline-link">{html.escape(content.source_url)}</a></p>
+      <p><strong>Tracking ID</strong>: <code>{html.escape(content.tid)}</code></p>
+      {_render_copy_field(
+          input_id=f"tracked-url-{content.id}",
+          label="Tracked link",
+          value=content.tracked_url,
+      )}
+    </article>
+    """
+
+
+def _render_content_notice(
+    *,
+    status_value: str | None,
+    field_errors: dict[str, str],
+    created_content: ContentResponse | None,
+) -> str:
+    if field_errors:
+        return """
+        <section class="notice error">
+          <p class="eyebrow">Fix the highlighted fields</p>
+          <p>Use a public URL and one of your saved booking links, then submit again.</p>
+        </section>
+        """
+
+    if status_value == "created" and created_content is not None:
+        return f"""
+        <section class="notice success stack">
+          <div>
+            <p class="eyebrow">Tracked link ready</p>
+            <p>Copy this redirect URL into the external content or CTA that should route through attribution.</p>
+          </div>
+          {_render_copy_field(
+              input_id="created-tracked-url",
+              label="New tracked link",
+              value=created_content.tracked_url,
+          )}
+          <p><strong>Source URL</strong>: <a href="{html.escape(created_content.source_url)}" class="inline-link">{html.escape(created_content.source_url)}</a></p>
+        </section>
+        """
+
+    return ""
+
+
+def _render_content_field_error(message: str | None) -> str:
+    if not message:
+        return ""
+    return f'<p class="field-error">{html.escape(message)}</p>'
+
+
+def _render_copy_field(
+    *,
+    input_id: str,
+    label: str,
+    value: str,
+) -> str:
+    escaped_input_id = html.escape(input_id, quote=True)
+    escaped_label = html.escape(label)
+    escaped_value = html.escape(value, quote=True)
+    return f"""
+    <div class="copy-field">
+      <label for="{escaped_input_id}">{escaped_label}</label>
+      <div class="copy-row">
+        <input
+          id="{escaped_input_id}"
+          type="text"
+          value="{escaped_value}"
+          readonly
+          onclick="this.select()"
+        />
+        <button type="button" class="secondary copy-button" data-copy-source="{escaped_input_id}">Copy link</button>
+      </div>
+    </div>
+    """
+
+
+def _content_card_title(source_url: str) -> str:
+    parsed = urlparse(source_url)
+    display_value = f"{parsed.netloc}{parsed.path}"
+    if parsed.query:
+        display_value = f"{display_value}?{parsed.query}"
+    return display_value or source_url
+
+
 def _billing_defaults_copy(
     booking_link: BookingLinkResponse,
     *,
@@ -724,6 +1173,11 @@ def _page_layout(*, title: str, body: str) -> str:
 
       strong {{
         color: var(--ink);
+      }}
+
+      code {{
+        font-family: "SFMono-Regular", "Consolas", monospace;
+        font-size: 0.94em;
       }}
 
       .hero,
@@ -913,7 +1367,8 @@ def _page_layout(*, title: str, body: str) -> str:
         font-weight: 700;
       }}
 
-      input {{
+      input,
+      select {{
         width: 100%;
         padding: 14px 16px;
         border-radius: 14px;
@@ -923,9 +1378,14 @@ def _page_layout(*, title: str, body: str) -> str:
         font: inherit;
       }}
 
-      input[aria-invalid="true"] {{
+      input[aria-invalid="true"],
+      select[aria-invalid="true"] {{
         border-color: rgba(151, 47, 23, 0.42);
         background: #fff3ef;
+      }}
+
+      input[readonly] {{
+        background: #fffdf7;
       }}
 
       .form-help {{
@@ -970,7 +1430,8 @@ def _page_layout(*, title: str, body: str) -> str:
       }}
 
       .empty-state,
-      .booking-link-card {{
+      .booking-link-card,
+      .content-card {{
         border-radius: 20px;
         border: 1px solid var(--line);
         background: var(--panel-strong);
@@ -981,16 +1442,19 @@ def _page_layout(*, title: str, body: str) -> str:
         border-style: dashed;
       }}
 
-      .booking-link-list {{
+      .booking-link-list,
+      .content-list {{
         display: grid;
         gap: 12px;
       }}
 
-      .booking-link-card {{
+      .booking-link-card,
+      .content-card {{
         padding: 20px;
       }}
 
-      .booking-link-header {{
+      .booking-link-header,
+      .content-card-header {{
         display: flex;
         justify-content: space-between;
         align-items: flex-start;
@@ -1004,6 +1468,26 @@ def _page_layout(*, title: str, body: str) -> str:
         background: rgba(163, 74, 40, 0.1);
         font-size: 0.88rem;
         font-weight: 700;
+      }}
+
+      .copy-field {{
+        display: grid;
+        gap: 10px;
+      }}
+
+      .copy-row {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }}
+
+      .copy-row input {{
+        flex: 1 1 320px;
+      }}
+
+      .copy-button {{
+        white-space: nowrap;
       }}
 
       @media (max-width: 720px) {{
@@ -1024,7 +1508,8 @@ def _page_layout(*, title: str, body: str) -> str:
         .status-row,
         .checklist-item,
         .section-heading,
-        .booking-link-header {{
+        .booking-link-header,
+        .content-card-header {{
           flex-direction: column;
           align-items: flex-start;
         }}
@@ -1035,6 +1520,39 @@ def _page_layout(*, title: str, body: str) -> str:
     <main>
       {body}
     </main>
+    <script>
+      document.addEventListener("click", async (event) => {{
+        if (!(event.target instanceof Element)) {{
+          return;
+        }}
+
+        const button = event.target.closest("[data-copy-source]");
+        if (!button) {{
+          return;
+        }}
+
+        const input = document.getElementById(button.getAttribute("data-copy-source"));
+        if (!input) {{
+          return;
+        }}
+
+        input.focus();
+        input.select();
+
+        try {{
+          if (navigator.clipboard && navigator.clipboard.writeText) {{
+            await navigator.clipboard.writeText(input.value);
+            const originalLabel = button.dataset.originalLabel || button.textContent || "Copy link";
+            button.dataset.originalLabel = originalLabel;
+            button.textContent = "Copied";
+            window.setTimeout(() => {{
+              button.textContent = originalLabel;
+            }}, 1500);
+          }}
+        }} catch {{
+        }}
+      }});
+    </script>
   </body>
 </html>
 """

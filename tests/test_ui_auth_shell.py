@@ -109,6 +109,40 @@ def _insert_booking_link(
     return booking_link_id
 
 
+def _insert_content(
+    *,
+    creator_id: str,
+    booking_link_id: str,
+    source_url: str,
+    tid: str,
+    content_id: str | None = None,
+    created_at: datetime | None = None,
+) -> str:
+    content_id = content_id or str(uuid.uuid4())
+    created_at = created_at or datetime.now(timezone.utc)
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO content "
+                "(id, creator_id, booking_link_id, source_url, tid, created_at, updated_at) "
+                "VALUES "
+                "(:id, :creator_id, :booking_link_id, :source_url, :tid, :created_at, :updated_at)"
+            ),
+            {
+                "id": content_id,
+                "creator_id": creator_id,
+                "booking_link_id": booking_link_id,
+                "source_url": source_url,
+                "tid": tid,
+                "created_at": created_at,
+                "updated_at": created_at,
+            },
+        )
+
+    return content_id
+
+
 @contextmanager
 def _override_app_state(name, value):
     had_attr = hasattr(app.state, name)
@@ -182,6 +216,18 @@ def test_booking_links_page_redirects_unauthenticated_browser_requests():
     with TestClient(app) as client:
         response = client.get(
             "/app/booking-links",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+
+
+def test_content_page_redirects_unauthenticated_browser_requests():
+    with TestClient(app) as client:
+        response = client.get(
+            "/app/content",
             headers=HTML_ACCEPT_HEADERS,
             follow_redirects=False,
         )
@@ -268,6 +314,7 @@ def test_setup_home_pending_stripe_state_shows_connect_cta_and_checklist():
     assert "Add a booking link" in response.text
     assert 'href="/app/booking-links"' in response.text
     assert "Create a tracked link" in response.text
+    assert 'href="/app/content"' in response.text
     assert "later invoice automation can create invoices on your account" in response.text
 
 
@@ -411,6 +458,131 @@ def test_booking_links_page_lists_only_current_creators_links():
     assert "No billing defaults yet" in response.text
     assert "Creator B Intro" not in response.text
     assert "https://calendly.com/example/creator-b-intro" not in response.text
+
+
+def test_content_page_without_booking_links_explains_prerequisite():
+    inserted = _insert_creator_user(
+        email=f"ui_content_empty_{uuid.uuid4().hex}@example.com",
+        name="No Booking Link Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/content", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Content" in response.text
+    assert "Create a booking link first" in response.text
+    assert 'href="/app/booking-links"' in response.text
+    assert 'action="/app/content"' not in response.text
+    assert "0 saved" in response.text
+
+
+def test_content_page_create_success_shows_tracked_link_and_saved_item():
+    inserted = _insert_creator_user(
+        email=f"ui_content_create_{uuid.uuid4().hex}@example.com",
+        name="Tracked Content Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Strategy Call",
+        calendly_url="https://calendly.com/example/strategy-call",
+    )
+    tracked_base_url = get_settings().tracked_link_base_url.rstrip("/")
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        create_response = client.post(
+            "/app/content",
+            data={
+                "source_url": "https://example.com/posts/story40-launch-plan",
+                "booking_link_id": booking_link_id,
+            },
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        page_response = client.get(
+            create_response.headers["location"],
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    created_tid = parse_qs(urlparse(create_response.headers["location"]).query)["tid"][0]
+
+    assert create_response.status_code == 303
+    assert create_response.headers["location"] == f"/app/content?status=created&tid={created_tid}"
+
+    assert page_response.status_code == 200
+    assert "Tracked link ready" in page_response.text
+    assert f"{tracked_base_url}/r/{created_tid}" in page_response.text
+    assert "story40-launch-plan" in page_response.text
+    assert "Strategy Call" in page_response.text
+    assert 'data-copy-source="created-tracked-url"' in page_response.text
+    assert "1 saved" in page_response.text
+
+
+def test_content_page_lists_only_current_creators_content():
+    creator_a = _insert_creator_user(
+        email=f"ui_content_creator_a_{uuid.uuid4().hex}@example.com",
+        name="Content Creator A",
+    )
+    creator_b = _insert_creator_user(
+        email=f"ui_content_creator_b_{uuid.uuid4().hex}@example.com",
+        name="Content Creator B",
+    )
+    access_token = _access_token(
+        user_id=creator_a["user_id"],
+        creator_id=creator_a["creator_id"],
+        email=creator_a["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    creator_a_booking_link_id = _insert_booking_link(
+        creator_id=creator_a["creator_id"],
+        name="Creator A Strategy",
+        calendly_url="https://calendly.com/example/creator-a-strategy",
+    )
+    creator_b_booking_link_id = _insert_booking_link(
+        creator_id=creator_b["creator_id"],
+        name="Creator B Strategy",
+        calendly_url="https://calendly.com/example/creator-b-strategy",
+    )
+    tracked_base_url = get_settings().tracked_link_base_url.rstrip("/")
+
+    _insert_content(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=creator_a_booking_link_id,
+        source_url="https://example.com/posts/creator-a-content",
+        tid="uiacontenttid",
+    )
+    _insert_content(
+        creator_id=creator_b["creator_id"],
+        booking_link_id=creator_b_booking_link_id,
+        source_url="https://example.com/posts/creator-b-content",
+        tid="uibcontenttid",
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/content", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "creator-a-content" in response.text
+    assert f"{tracked_base_url}/r/uiacontenttid" in response.text
+    assert "Creator A Strategy" in response.text
+    assert "creator-b-content" not in response.text
+    assert f"{tracked_base_url}/r/uibcontenttid" not in response.text
+    assert "Creator B Strategy" not in response.text
 
 
 def test_setup_home_disconnected_stripe_state_shows_reconnect_cta():

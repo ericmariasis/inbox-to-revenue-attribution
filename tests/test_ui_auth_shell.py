@@ -79,6 +79,36 @@ def _access_token(*, user_id: str, creator_id: str, email: str, expires_delta: t
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
+def _insert_booking_link(
+    *,
+    creator_id: str,
+    name: str,
+    calendly_url: str,
+    billing_amount_cents: int | None = None,
+    billing_currency: str | None = None,
+) -> str:
+    booking_link_id = str(uuid.uuid4())
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO booking_links "
+                "(id, creator_id, name, calendly_url, billing_amount_cents, billing_currency) "
+                "VALUES (:id, :creator_id, :name, :calendly_url, :billing_amount_cents, :billing_currency)"
+            ),
+            {
+                "id": booking_link_id,
+                "creator_id": creator_id,
+                "name": name,
+                "calendly_url": calendly_url,
+                "billing_amount_cents": billing_amount_cents,
+                "billing_currency": billing_currency,
+            },
+        )
+
+    return booking_link_id
+
+
 @contextmanager
 def _override_app_state(name, value):
     had_attr = hasattr(app.state, name)
@@ -143,6 +173,18 @@ def test_sign_in_start_redirects_to_confirmation_without_echoing_email():
 def test_app_shell_redirects_unauthenticated_browser_requests():
     with TestClient(app) as client:
         response = client.get("/app", headers=HTML_ACCEPT_HEADERS, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+
+
+def test_booking_links_page_redirects_unauthenticated_browser_requests():
+    with TestClient(app) as client:
+        response = client.get(
+            "/app/booking-links",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
 
     assert response.status_code == 303
     assert response.headers["location"] == "/sign-in"
@@ -224,8 +266,151 @@ def test_setup_home_pending_stripe_state_shows_connect_cta_and_checklist():
     assert "Start Stripe setup" in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
     assert "Add a booking link" in response.text
+    assert 'href="/app/booking-links"' in response.text
     assert "Create a tracked link" in response.text
     assert "later invoice automation can create invoices on your account" in response.text
+
+
+def test_booking_links_page_empty_state_renders_form_and_next_step_copy():
+    inserted = _insert_creator_user(
+        email=f"ui_booking_links_empty_{uuid.uuid4().hex}@example.com",
+        name="Empty State Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/booking-links", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Booking Links" in response.text
+    assert "Create the first booking link" in response.text
+    assert 'action="/app/booking-links"' in response.text
+    assert "Billing amount in cents" in response.text
+    assert "0 saved" in response.text
+
+
+def test_booking_links_page_create_success_shows_saved_link_and_billing_defaults():
+    inserted = _insert_creator_user(
+        email=f"ui_booking_links_create_{uuid.uuid4().hex}@example.com",
+        name="Booking Link Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        create_response = client.post(
+            "/app/booking-links",
+            data={
+                "name": "Paid Deep Dive",
+                "calendly_url": "https://calendly.com/example/paid-deep-dive",
+                "billing_amount_cents": "15000",
+                "billing_currency": " usd ",
+            },
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        page_response = client.get(
+            create_response.headers["location"],
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert create_response.status_code == 303
+    assert create_response.headers["location"] == "/app/booking-links?status=created"
+
+    assert page_response.status_code == 200
+    assert "Booking link saved" in page_response.text
+    assert "Paid Deep Dive" in page_response.text
+    assert "https://calendly.com/example/paid-deep-dive" in page_response.text
+    assert "Ready for invoice defaults: USD 150.00" in page_response.text
+    assert "1 saved" in page_response.text
+
+
+def test_booking_links_page_validation_feedback_preserves_input_and_page_state():
+    inserted = _insert_creator_user(
+        email=f"ui_booking_links_invalid_{uuid.uuid4().hex}@example.com",
+        name="Validation Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.post(
+            "/app/booking-links",
+            data={
+                "name": "Broken Link",
+                "calendly_url": "http://example.com/not-calendly",
+                "billing_amount_cents": "0",
+                "billing_currency": "USDX",
+            },
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert "Fix the highlighted fields" in response.text
+    assert "must use https" in response.text
+    assert "must be a positive integer amount in cents" in response.text
+    assert "must be a 3-letter currency code" in response.text
+    assert 'value="Broken Link"' in response.text
+    assert 'value="http://example.com/not-calendly"' in response.text
+    assert 'value="0"' in response.text
+    assert 'value="USDX"' in response.text
+
+
+def test_booking_links_page_lists_only_current_creators_links():
+    creator_a = _insert_creator_user(
+        email=f"ui_booking_links_creator_a_{uuid.uuid4().hex}@example.com",
+        name="Creator A",
+    )
+    creator_b = _insert_creator_user(
+        email=f"ui_booking_links_creator_b_{uuid.uuid4().hex}@example.com",
+        name="Creator B",
+    )
+    access_token = _access_token(
+        user_id=creator_a["user_id"],
+        creator_id=creator_a["creator_id"],
+        email=creator_a["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    _insert_booking_link(
+        creator_id=creator_a["creator_id"],
+        name="Creator A Strategy",
+        calendly_url="https://calendly.com/example/creator-a-strategy",
+    )
+    _insert_booking_link(
+        creator_id=creator_b["creator_id"],
+        name="Creator B Intro",
+        calendly_url="https://calendly.com/example/creator-b-intro",
+        billing_amount_cents=9000,
+        billing_currency="EUR",
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/booking-links", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Creator A Strategy" in response.text
+    assert "https://calendly.com/example/creator-a-strategy" in response.text
+    assert "No billing defaults yet" in response.text
+    assert "Creator B Intro" not in response.text
+    assert "https://calendly.com/example/creator-b-intro" not in response.text
 
 
 def test_setup_home_disconnected_stripe_state_shows_reconnect_cta():

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from time import time
 from typing import Any
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -17,6 +18,7 @@ from app.models.booking import Booking
 from app.models.booking_link import BookingLink
 from app.models.content import Content
 from app.models.creator import Creator
+from app.services.calendly_webhooks import DefaultCalendlyWebhookRouter
 
 
 def _calendly_signature_header(*, payload: bytes, signing_key: str, timestamp: int | None = None) -> str:
@@ -60,6 +62,23 @@ class _CaptureCalendlyWebhookRouter:
                 "event_type": event.event_type,
                 "tid": event.tid,
                 "tid_path": event.tid_path,
+            }
+        )
+
+
+class _CaptureUnpaidInvoiceVoider:
+    def __init__(self):
+        self.bookings: list[dict[str, Any]] = []
+
+    def void_unpaid_invoice(self, *, booking) -> None:
+        self.bookings.append(
+            {
+                "booking_id": booking.booking_id,
+                "creator_id": booking.creator_id,
+                "booking_link_id": booking.booking_link_id,
+                "tid": booking.tid,
+                "calendly_booking_uuid": booking.calendly_booking_uuid,
+                "canceled_at": booking.canceled_at,
             }
         )
 
@@ -132,6 +151,33 @@ def _invitee_created_payload(
             "tracking": {"utm_content": tid},
         },
     }
+    if extra_payload_fields:
+        payload["payload"].update(extra_payload_fields)
+
+    return json.dumps(payload).encode("utf-8")
+
+
+def _invitee_canceled_payload(
+    *,
+    event_id: str,
+    calendly_booking_uuid: str,
+    tid: str | None = None,
+    canceled_at: str = "2026-03-07T15:45:00Z",
+    extra_payload_fields: dict[str, Any] | None = None,
+) -> bytes:
+    payload = {
+        "event": "invitee.canceled",
+        "payload": {
+            "event": f"https://api.calendly.com/scheduled_events/{event_id}",
+            "uri": (
+                "https://api.calendly.com/scheduled_events/"
+                f"{event_id}/invitees/{calendly_booking_uuid}"
+            ),
+            "canceled_at": canceled_at,
+        },
+    }
+    if tid is not None:
+        payload["payload"]["tracking"] = {"utm_content": tid}
     if extra_payload_fields:
         payload["payload"].update(extra_payload_fields)
 
@@ -317,6 +363,223 @@ def test_calendly_webhook_resolves_creator_and_booking_link_from_stored_content_
     assert bookings[0].tid == stored["tid"]
     assert bookings[0].email == "story33-spoof@example.com"
     assert bookings[0].status == "created"
+
+
+def test_calendly_webhook_marks_booking_canceled_and_stays_safe_without_invoice_persistence():
+    stored = _create_creator_booking_link_and_content(tid="story34_cancel_tid")
+    created_payload = _invitee_created_payload(
+        event_id="EVT_story34_cancel",
+        calendly_booking_uuid="BOOK_story34_cancel",
+        tid=stored["tid"],
+        email="story34-cancel@example.com",
+        created_at="2026-03-07T14:30:00Z",
+    )
+    canceled_payload = _invitee_canceled_payload(
+        event_id="EVT_story34_cancel",
+        calendly_booking_uuid="BOOK_story34_cancel",
+        tid=stored["tid"],
+        canceled_at="2026-03-07T15:45:00Z",
+    )
+    created_signature_header = _calendly_signature_header(
+        payload=created_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    canceled_signature_header = _calendly_signature_header(
+        payload=canceled_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            created_response = client.post(
+                "/webhooks/calendly",
+                content=created_payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Calendly-Webhook-Signature": created_signature_header,
+                },
+            )
+            canceled_response = client.post(
+                "/webhooks/calendly",
+                content=canceled_payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Calendly-Webhook-Signature": canceled_signature_header,
+                },
+            )
+
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story34_cancel")
+
+    assert created_response.status_code == 200
+    assert canceled_response.status_code == 200
+    assert len(bookings) == 1
+    assert bookings[0].creator_id == stored["creator_id"]
+    assert bookings[0].booking_link_id == stored["booking_link_id"]
+    assert bookings[0].tid == stored["tid"]
+    assert bookings[0].email == "story34-cancel@example.com"
+    assert bookings[0].status == "canceled"
+    assert bookings[0].booked_at == datetime(2026, 3, 7, 14, 30, tzinfo=timezone.utc)
+    assert bookings[0].canceled_at == datetime(2026, 3, 7, 15, 45, tzinfo=timezone.utc)
+
+
+def test_calendly_webhook_duplicate_cancellation_is_idempotent_and_voids_invoice_once():
+    stored = _create_creator_booking_link_and_content(tid="story34_duplicate_cancel_tid")
+    created_payload = _invitee_created_payload(
+        event_id="EVT_story34_duplicate_cancel",
+        calendly_booking_uuid="BOOK_story34_duplicate_cancel",
+        tid=stored["tid"],
+        email="story34-duplicate-cancel@example.com",
+        created_at="2026-03-07T16:00:00Z",
+    )
+    canceled_payload = _invitee_canceled_payload(
+        event_id="EVT_story34_duplicate_cancel",
+        calendly_booking_uuid="BOOK_story34_duplicate_cancel",
+        tid=stored["tid"],
+        canceled_at="2026-03-07T16:30:00Z",
+    )
+    created_signature_header = _calendly_signature_header(
+        payload=created_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    canceled_signature_header = _calendly_signature_header(
+        payload=canceled_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    capture_voider = _CaptureUnpaidInvoiceVoider()
+    router = DefaultCalendlyWebhookRouter(unpaid_invoice_voider=capture_voider)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("calendly_webhook_router", router):
+                created_response = client.post(
+                    "/webhooks/calendly",
+                    content=created_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": created_signature_header,
+                    },
+                )
+                first_canceled_response = client.post(
+                    "/webhooks/calendly",
+                    content=canceled_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": canceled_signature_header,
+                    },
+                )
+                second_canceled_response = client.post(
+                    "/webhooks/calendly",
+                    content=canceled_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": canceled_signature_header,
+                    },
+                )
+
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story34_duplicate_cancel")
+
+    assert created_response.status_code == 200
+    assert first_canceled_response.status_code == 200
+    assert second_canceled_response.status_code == 200
+    assert len(bookings) == 1
+    assert bookings[0].status == "canceled"
+    assert bookings[0].canceled_at == datetime(2026, 3, 7, 16, 30, tzinfo=timezone.utc)
+    assert capture_voider.bookings == [
+        {
+            "booking_id": bookings[0].id,
+            "creator_id": stored["creator_id"],
+            "booking_link_id": stored["booking_link_id"],
+            "tid": stored["tid"],
+            "calendly_booking_uuid": "BOOK_story34_duplicate_cancel",
+            "canceled_at": datetime(2026, 3, 7, 16, 30, tzinfo=timezone.utc),
+        }
+    ]
+
+
+def test_calendly_webhook_verified_booking_created_without_tid_logs_and_persists_no_booking():
+    payload = json.dumps(
+        {
+            "event": "invitee.created",
+            "payload": {
+                "event": "https://api.calendly.com/scheduled_events/EVT_story34_missing_tid",
+                "uri": "https://api.calendly.com/scheduled_events/EVT_story34_missing_tid/invitees/BOOK_story34_missing_tid",
+                "email": "story34-missing-tid@example.com",
+                "created_at": "2026-03-07T17:00:00Z",
+            },
+        }
+    ).encode("utf-8")
+    signature_header = _calendly_signature_header(
+        payload=payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+
+    assert _booking_count() == 0
+
+    with patch("app.services.calendly_webhooks.logger.warning") as warning_log:
+        with TestClient(app) as client:
+            with _override_app_state("settings", _StubSettings()):
+                response = client.post(
+                    "/webhooks/calendly",
+                    content=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": signature_header,
+                    },
+                )
+
+    assert response.status_code == 200
+    assert response.headers.get("X-Request-Id")
+    assert response.json() == {"status": "ok"}
+    assert _booking_count() == 0
+    warning_log.assert_called_once()
+    assert (
+        warning_log.call_args.args[0]
+        == "calendly_webhook_booking_created_missing_tid calendly_booking_uuid=%s provider_event_type=%s calendly_event_id=%s"
+    )
+    assert warning_log.call_args.args[1] == "BOOK_story34_missing_tid"
+    assert warning_log.call_args.args[2] == "invitee.created"
+    assert warning_log.call_args.args[3] == "EVT_story34_missing_tid"
+
+
+def test_calendly_webhook_verified_booking_created_with_unknown_tid_logs_and_persists_no_booking():
+    payload = _invitee_created_payload(
+        event_id="EVT_story34_unknown_tid",
+        calendly_booking_uuid="BOOK_story34_unknown_tid",
+        tid="story34_unknown_tid",
+        email="story34-unknown-tid@example.com",
+        created_at="2026-03-07T17:15:00Z",
+    )
+    signature_header = _calendly_signature_header(
+        payload=payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+
+    assert _booking_count() == 0
+
+    with patch("app.services.calendly_webhooks.logger.warning") as warning_log:
+        with TestClient(app) as client:
+            with _override_app_state("settings", _StubSettings()):
+                response = client.post(
+                    "/webhooks/calendly",
+                    content=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": signature_header,
+                    },
+                )
+
+    assert response.status_code == 200
+    assert response.headers.get("X-Request-Id")
+    assert response.json() == {"status": "ok"}
+    assert _booking_count() == 0
+    warning_log.assert_called_once()
+    assert (
+        warning_log.call_args.args[0]
+        == "calendly_webhook_booking_created_unknown_tid calendly_booking_uuid=%s tid=%s calendly_event_id=%s"
+    )
+    assert warning_log.call_args.args[1] == "BOOK_story34_unknown_tid"
+    assert warning_log.call_args.args[2] == "story34_unknown_tid"
+    assert warning_log.call_args.args[3] == "EVT_story34_unknown_tid"
 
 
 def test_calendly_webhook_rejects_invalid_signature_without_routing_or_persisting_bookings():

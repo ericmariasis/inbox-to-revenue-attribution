@@ -97,6 +97,8 @@ def test_phase2_booking_links_flow_end_to_end():
     assert created_booking_link["id"]
     assert created_booking_link["name"] == "Creator A Intro"
     assert created_booking_link["calendly_url"] == "https://calendly.com/example/creator-a-intro"
+    assert created_booking_link["billing_amount_cents"] is None
+    assert created_booking_link["billing_currency"] is None
 
     assert creator_a_list_response.status_code == 200
     assert creator_a_list_response.headers.get("X-Request-Id")

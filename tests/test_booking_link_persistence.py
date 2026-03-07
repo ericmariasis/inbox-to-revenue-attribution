@@ -21,6 +21,8 @@ def test_creator_can_own_multiple_booking_links():
                     creator_id=creator.id,
                     name="Deep Dive Call",
                     calendly_url="https://calendly.com/example/deep-dive-call",
+                    billing_amount_cents=15000,
+                    billing_currency="USD",
                 ),
                 BookingLink(
                     creator_id=creator.id,
@@ -37,8 +39,16 @@ def test_creator_can_own_multiple_booking_links():
             .order_by(BookingLink.name)
         ).all()
 
-        assert [(row.name, row.calendly_url) for row in rows] == [
-            ("Deep Dive Call", "https://calendly.com/example/deep-dive-call"),
-            ("Free Consult", "https://calendly.com/example/free-consult"),
+        assert [
+            (
+                row.name,
+                row.calendly_url,
+                row.billing_amount_cents,
+                row.billing_currency,
+            )
+            for row in rows
+        ] == [
+            ("Deep Dive Call", "https://calendly.com/example/deep-dive-call", 15000, "USD"),
+            ("Free Consult", "https://calendly.com/example/free-consult", None, None),
         ]
         assert all(row.created_at is not None and row.updated_at is not None for row in rows)

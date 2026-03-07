@@ -1,7 +1,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,6 +20,8 @@ class BookingLink(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     calendly_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    billing_amount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    billing_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

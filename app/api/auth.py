@@ -1,13 +1,20 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_auth_user
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.auth_user import AuthUser
 from app.schemas.auth import AccessTokenResponse, GenericOkResponse, MeResponse, MagicLinkStartRequest
 from app.services.auth_magic_link import VERIFY_FAILURE_DETAIL, start_magic_link, verify_magic_link_token
+from app.services.browser_session import (
+    clear_browser_session_cookie,
+    request_prefers_html,
+    set_browser_session_cookie,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 me_router = APIRouter(tags=["auth"])
@@ -22,16 +29,37 @@ def magic_link_start(payload: MagicLinkStartRequest, db: Session = Depends(get_d
 
 @router.get("/magic-link/verify", response_model=AccessTokenResponse)
 def magic_link_verify(
+    request: Request,
     token: str = Query(..., min_length=1),
     db: Session = Depends(get_db),
-) -> AccessTokenResponse:
+) -> AccessTokenResponse | RedirectResponse:
+    settings = get_settings()
+
     try:
         access_token = verify_magic_link_token(db, token)
     except ValueError as exc:
+        if request_prefers_html(request):
+            response = RedirectResponse(
+                url="/sign-in?status=invalid-link",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+            clear_browser_session_cookie(response, settings=settings)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=VERIFY_FAILURE_DETAIL,
         ) from exc
+
+    if request_prefers_html(request):
+        response = RedirectResponse(
+            url="/app",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+        set_browser_session_cookie(response, access_token, settings=settings)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     return AccessTokenResponse(access_token=access_token)
 

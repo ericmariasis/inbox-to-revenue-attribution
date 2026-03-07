@@ -1,4 +1,5 @@
 import html
+from datetime import timezone
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -7,6 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_optional_browser_auth_user
+from app.api.stripe import build_stripe_connect_start_response
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.auth_user import AuthUser
@@ -95,6 +97,22 @@ def creator_app_shell(
     return _html_response(_render_app_shell(current_user))
 
 
+@router.post("/app/stripe/connect/start")
+def creator_stripe_connect_start(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    start_response = build_stripe_connect_start_response(
+        request=request,
+        current_user=current_user,
+    )
+    return _redirect(str(start_response.onboarding_url))
+
+
 @router.post("/sign-out")
 def sign_out() -> RedirectResponse:
     return _redirect("/sign-in", clear_session=True)
@@ -157,13 +175,34 @@ def _render_sign_in_page(status_value: str | None) -> str:
 def _render_app_shell(current_user: AuthUser) -> str:
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
-    stripe_status = html.escape(current_user.creator.stripe_connect_status)
+    stripe_status = _stripe_setup_home_state(current_user.creator.stripe_connect_status)
+
+    stripe_detail_lines = []
+    if current_user.creator.stripe_account_id:
+        stripe_detail_lines.append(
+            f"<p><strong>Connected account</strong>: "
+            f"{html.escape(current_user.creator.stripe_account_id)}</p>"
+        )
+    if current_user.creator.stripe_connected_at:
+        stripe_detail_lines.append(
+            f"<p><strong>Connected on</strong>: "
+            f"{_format_connected_at(current_user.creator.stripe_connected_at)}</p>"
+        )
+
+    stripe_action = ""
+    if stripe_status["button_label"]:
+        stripe_action = f"""
+        <form action="/app/stripe/connect/start" method="post">
+          <button type="submit">{html.escape(stripe_status["button_label"])}</button>
+        </form>
+        """
 
     body = f"""
     <header class="shell-header">
       <div>
-        <p class="eyebrow">Authenticated</p>
-        <h1>Creator Home</h1>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Setup Home</h1>
+        <p class="lede">See where setup stands and connect Stripe before the later billing phase starts creating invoices on your account.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -174,21 +213,100 @@ def _render_app_shell(current_user: AuthUser) -> str:
         <p class="eyebrow">Account</p>
         <h2>{creator_name}</h2>
         <p>Signed in as <strong>{creator_email}</strong></p>
-        <p>Stripe status: <strong>{stripe_status}</strong></p>
+        <p>This is the current creator workspace for the thin Phase 6.5 setup flow.</p>
       </article>
       <article class="card accent">
-        <p class="eyebrow">What ships next</p>
-        <h2>Workflow surfaces are queued</h2>
-        <p>Setup home, booking links, content, and booking visibility stay in the next Phase 6.5 stories.</p>
+        <p class="eyebrow">Stripe status</p>
+        <div class="status-row">
+          <h2>{html.escape(stripe_status["heading"])}</h2>
+          <span class="status-pill {html.escape(stripe_status["badge_class"])}">{html.escape(stripe_status["label"])}</span>
+        </div>
+        <p>{html.escape(stripe_status["description"])}</p>
+        {"".join(stripe_detail_lines)}
+        {stripe_action}
       </article>
     </section>
-    <section class="card">
-      <p class="eyebrow">Shell Status</p>
-      <h2>Browser bootstrap is live</h2>
-      <p>You are in a protected server-rendered app route, backed by the current magic-link auth flow and an HTTP-only browser session.</p>
+    <section class="grid">
+      <article class="card">
+        <p class="eyebrow">Setup checklist</p>
+        <h2>What still needs to happen</h2>
+        <ul class="checklist">
+          <li class="checklist-item {html.escape(stripe_status["item_class"])}">
+            <div>
+              <strong>Connect Stripe</strong>
+              <p>{html.escape(stripe_status["checklist_copy"])}</p>
+            </div>
+            <span class="list-state">{html.escape(stripe_status["checklist_label"])}</span>
+          </li>
+          <li class="checklist-item next">
+            <div>
+              <strong>Add a booking link</strong>
+              <p>Register the Calendly link and billing defaults that later invoice automation will trust.</p>
+            </div>
+            <span class="list-state">Next story</span>
+          </li>
+          <li class="checklist-item next">
+            <div>
+              <strong>Create a tracked link</strong>
+              <p>Attach a post URL to a booking link so future bookings carry the right content identifier.</p>
+            </div>
+            <span class="list-state">After booking links</span>
+          </li>
+        </ul>
+      </article>
+      <article class="card">
+        <p class="eyebrow">Why Stripe matters</p>
+        <h2>Connect payouts before billing automation lands</h2>
+        <p>Connect Stripe now so later invoice automation can create invoices on your account.</p>
+        <p>This setup page does not mean payment attribution is complete yet. It only exposes setup status while invoicing and reporting remain later stories.</p>
+      </article>
     </section>
     """
     return _page_layout(title="Creator Home", body=body)
+
+
+def _stripe_setup_home_state(raw_status: str) -> dict[str, str]:
+    normalized_status = raw_status.strip().lower()
+    if normalized_status == "connected":
+        return {
+            "label": "Connected",
+            "heading": "Stripe is connected",
+            "description": "This account is ready for the later billing phase to create invoices once the remaining setup steps ship.",
+            "button_label": "",
+            "badge_class": "connected",
+            "item_class": "done",
+            "checklist_label": "Done",
+            "checklist_copy": "Your Stripe account is connected. The next setup work is booking links and tracked content.",
+        }
+
+    if normalized_status == "disconnected":
+        return {
+            "label": "Disconnected",
+            "heading": "Stripe is disconnected",
+            "description": "This creator account is not currently connected to Stripe. Reconnect it before later invoice automation can run.",
+            "button_label": "Reconnect Stripe",
+            "badge_class": "disconnected",
+            "item_class": "todo",
+            "checklist_label": "Needs action",
+            "checklist_copy": "Reconnect Stripe before later invoice automation can create invoices for this creator.",
+        }
+
+    return {
+        "label": "Pending",
+        "heading": "Stripe setup is still pending",
+        "description": "Stripe is required before the later billing phase can create invoices on your account. Start or resume onboarding from this page.",
+        "button_label": "Start Stripe setup",
+        "badge_class": "pending",
+        "item_class": "todo",
+        "checklist_label": "Needs action",
+        "checklist_copy": "Finish Stripe onboarding so the later billing phase has an account it can invoice through.",
+    }
+
+
+def _format_connected_at(value) -> str:
+    return html.escape(
+        value.astimezone(timezone.utc).strftime("%B %d, %Y at %I:%M %p UTC")
+    )
 
 
 def _page_layout(*, title: str, body: str) -> str:
@@ -255,6 +373,10 @@ def _page_layout(*, title: str, body: str) -> str:
         line-height: 1.6;
       }}
 
+      strong {{
+        color: var(--ink);
+      }}
+
       .hero,
       .card {{
         border: 1px solid var(--line);
@@ -287,6 +409,14 @@ def _page_layout(*, title: str, body: str) -> str:
         margin-bottom: 16px;
       }}
 
+      .status-row {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 12px;
+      }}
+
       .eyebrow {{
         text-transform: uppercase;
         letter-spacing: 0.14em;
@@ -308,6 +438,74 @@ def _page_layout(*, title: str, body: str) -> str:
         border-radius: 18px;
         background: var(--accent-soft);
         border: 1px solid rgba(163, 74, 40, 0.16);
+      }}
+
+      .status-pill {{
+        display: inline-flex;
+        align-items: center;
+        padding: 8px 12px;
+        border-radius: 999px;
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+      }}
+
+      .status-pill.pending {{
+        background: #f3dfd4;
+        color: #8c3b1e;
+      }}
+
+      .status-pill.disconnected {{
+        background: #f6d7d0;
+        color: #972f17;
+      }}
+
+      .status-pill.connected {{
+        background: #d9ede8;
+        color: #1f5e58;
+      }}
+
+      .checklist {{
+        list-style: none;
+        padding: 0;
+        margin: 20px 0 0;
+        display: grid;
+        gap: 12px;
+      }}
+
+      .checklist-item {{
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: var(--panel-strong);
+      }}
+
+      .checklist-item strong {{
+        display: block;
+        margin-bottom: 6px;
+      }}
+
+      .checklist-item.done {{
+        background: #eef6f2;
+      }}
+
+      .checklist-item.todo {{
+        background: #fff2ea;
+      }}
+
+      .checklist-item.next {{
+        background: #faf4eb;
+      }}
+
+      .list-state {{
+        white-space: nowrap;
+        font-size: 0.84rem;
+        font-weight: 700;
+        color: var(--accent);
       }}
 
       form {{
@@ -368,6 +566,12 @@ def _page_layout(*, title: str, body: str) -> str:
 
         .shell-header {{
           flex-direction: column;
+        }}
+
+        .status-row,
+        .checklist-item {{
+          flex-direction: column;
+          align-items: flex-start;
         }}
       }}
     </style>

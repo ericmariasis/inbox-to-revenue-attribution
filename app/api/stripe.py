@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 from jose import JWTError
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,7 @@ from app.models.auth_user import AuthUser
 from app.models.creator import Creator
 from app.schemas.auth import GenericOkResponse
 from app.schemas.stripe import StripeConnectStartResponse
+from app.services.browser_session import request_prefers_html
 from app.services.stripe_connect import build_stripe_connect_state, decode_stripe_connect_state
 from app.services.stripe_provider import StripeProvider, StripeProviderError, build_default_stripe_provider
 
@@ -44,10 +46,10 @@ def _creator_from_connect_state(*, db: Session, state: str) -> Creator:
     return creator
 
 
-@router.post("/connect/start", response_model=StripeConnectStartResponse)
-def stripe_connect_start(
+def build_stripe_connect_start_response(
+    *,
     request: Request,
-    current_user: AuthUser = Depends(get_current_auth_user),
+    current_user: AuthUser,
 ) -> StripeConnectStartResponse:
     state = build_stripe_connect_state(creator_id=str(current_user.creator_id))
     onboarding_url = _stripe_provider(request).build_connect_onboarding_url(
@@ -61,13 +63,24 @@ def stripe_connect_start(
     )
 
 
+@router.post("/connect/start", response_model=StripeConnectStartResponse)
+def stripe_connect_start(
+    request: Request,
+    current_user: AuthUser = Depends(get_current_auth_user),
+) -> StripeConnectStartResponse:
+    return build_stripe_connect_start_response(
+        request=request,
+        current_user=current_user,
+    )
+
+
 @router.get("/connect/callback", response_model=GenericOkResponse)
 def stripe_connect_callback(
     request: Request,
     code: str = Query(..., min_length=1),
     state: str = Query(..., min_length=1),
     db: Session = Depends(get_db),
-) -> GenericOkResponse:
+) -> GenericOkResponse | RedirectResponse:
     creator = _creator_from_connect_state(db=db, state=state)
 
     try:
@@ -93,4 +106,10 @@ def stripe_connect_callback(
     db.add(creator)
     db.commit()
     logger.info("stripe_connect_callback_completed creator_id=%s", creator.id)
+
+    if request_prefers_html(request):
+        response = RedirectResponse(url="/app", status_code=status.HTTP_303_SEE_OTHER)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     return GenericOkResponse()

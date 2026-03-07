@@ -42,4 +42,10 @@ class Content(Base):
     )
 
     creator = relationship("Creator", back_populates="content_items")
+    bookings = relationship(
+        "Booking",
+        back_populates="content",
+        cascade="all, delete-orphan",
+        foreign_keys="Booking.tid",
+    )
     booking_link = relationship("BookingLink", back_populates="content_items")

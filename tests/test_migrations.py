@@ -12,6 +12,7 @@ def test_migrations_upgrade_and_downgrade():
     engine = create_engine(db_url)
     with engine.connect() as conn:
         inspector = inspect(conn)
+        assert "bookings" in inspector.get_table_names(schema="public")
         assert "content" in inspector.get_table_names(schema="public")
         assert "booking_links" in inspector.get_table_names(schema="public")
 
@@ -19,7 +20,8 @@ def test_migrations_upgrade_and_downgrade():
     with engine.connect() as conn:
         inspector = inspect(conn)
         table_names = inspector.get_table_names(schema="public")
-        assert "content" not in table_names
+        assert "bookings" not in table_names
+        assert "content" in table_names
         assert "booking_links" in table_names
 
     command.upgrade(cfg, "head")
@@ -101,5 +103,67 @@ def test_content_table_has_expected_columns_fk_indexes_and_unique_tid():
         assert any(
             constraint["name"] == "uq_content_tid"
             and constraint["column_names"] == ["tid"]
+            for constraint in unique_constraints
+        )
+
+
+def test_bookings_table_has_expected_columns_fk_indexes_and_unique_uuid():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {column["name"] for column in inspector.get_columns("bookings")}
+        assert columns == {
+            "id",
+            "creator_id",
+            "tid",
+            "booking_link_id",
+            "calendly_booking_uuid",
+            "email",
+            "status",
+            "booked_at",
+            "canceled_at",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("bookings")
+        assert any(
+            fk["referred_table"] == "creators"
+            and fk["constrained_columns"] == ["creator_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "content"
+            and fk["constrained_columns"] == ["tid"]
+            and fk["referred_columns"] == ["tid"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "booking_links"
+            and fk["constrained_columns"] == ["booking_link_id"]
+            for fk in foreign_keys
+        )
+
+        indexes = inspector.get_indexes("bookings")
+        assert any(
+            index["name"] == "ix_bookings_creator_id"
+            and index["column_names"] == ["creator_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_bookings_booking_link_id"
+            and index["column_names"] == ["booking_link_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_bookings_tid"
+            and index["column_names"] == ["tid"]
+            for index in indexes
+        )
+
+        unique_constraints = inspector.get_unique_constraints("bookings")
+        assert any(
+            constraint["name"] == "uq_bookings_calendly_booking_uuid"
+            and constraint["column_names"] == ["calendly_booking_uuid"]
             for constraint in unique_constraints
         )

@@ -59,16 +59,16 @@ def _build_content_response(content: Content) -> ContentResponse:
     )
 
 
-@router.post("", response_model=ContentResponse, status_code=status.HTTP_201_CREATED)
-def create_content(
+def create_content_response_for_creator(
+    *,
+    creator_id: UUID,
     payload: ContentCreateRequest,
-    current_user: AuthUser = Depends(get_current_auth_user),
-    db: Session = Depends(get_db),
+    db: Session,
 ) -> ContentResponse:
     booking_link = db.execute(
         _creator_owned_booking_link_query(
             booking_link_id=payload.booking_link_id,
-            creator_id=current_user.creator_id,
+            creator_id=creator_id,
         )
     ).scalar_one_or_none()
     if booking_link is None:
@@ -78,7 +78,7 @@ def create_content(
         )
 
     content = Content(
-        creator_id=current_user.creator_id,
+        creator_id=creator_id,
         booking_link_id=booking_link.id,
         source_url=str(payload.source_url),
         tid=uuid.uuid4().hex,
@@ -92,18 +92,62 @@ def create_content(
     return _build_content_response(content)
 
 
+def list_content_responses_for_creator(
+    *,
+    creator_id: UUID,
+    db: Session,
+) -> list[ContentResponse]:
+    content_rows = db.execute(
+        _creator_scoped_content_query(creator_id=creator_id)
+    ).scalars().all()
+
+    logger.info("content_listed")
+
+    return [_build_content_response(content) for content in content_rows]
+
+
+def get_content_response_for_creator_by_tid(
+    *,
+    tid: str,
+    creator_id: UUID,
+    db: Session,
+) -> ContentResponse | None:
+    content = db.execute(
+        _creator_owned_content_by_tid_query(
+            tid=tid,
+            creator_id=creator_id,
+        )
+    ).scalar_one_or_none()
+    if content is None:
+        return None
+
+    logger.info("content_detail_fetched")
+
+    return _build_content_response(content)
+
+
+@router.post("", response_model=ContentResponse, status_code=status.HTTP_201_CREATED)
+def create_content(
+    payload: ContentCreateRequest,
+    current_user: AuthUser = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+) -> ContentResponse:
+    return create_content_response_for_creator(
+        creator_id=current_user.creator_id,
+        payload=payload,
+        db=db,
+    )
+
+
 @router.get("", response_model=list[ContentResponse])
 def list_content(
     current_user: AuthUser = Depends(get_current_auth_user),
     db: Session = Depends(get_db),
 ) -> list[ContentResponse]:
-    content_rows = db.execute(
-        _creator_scoped_content_query(creator_id=current_user.creator_id)
-    ).scalars()
-
-    logger.info("content_listed")
-
-    return [_build_content_response(content) for content in content_rows]
+    return list_content_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
 
 
 @router.get("/{tid}", response_model=ContentResponse)
@@ -112,18 +156,15 @@ def get_content_detail(
     current_user: AuthUser = Depends(get_current_auth_user),
     db: Session = Depends(get_db),
 ) -> ContentResponse:
-    content = db.execute(
-        _creator_owned_content_by_tid_query(
-            tid=tid,
-            creator_id=current_user.creator_id,
-        )
-    ).scalar_one_or_none()
+    content = get_content_response_for_creator_by_tid(
+        tid=tid,
+        creator_id=current_user.creator_id,
+        db=db,
+    )
     if content is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="content not found",
         )
 
-    logger.info("content_detail_fetched")
-
-    return _build_content_response(content)
+    return content

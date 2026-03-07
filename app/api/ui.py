@@ -7,11 +7,16 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.api.booking_links import (
+    create_booking_link_response_for_creator,
+    list_booking_link_responses_for_creator,
+)
 from app.api.deps import get_optional_browser_auth_user
 from app.api.stripe import build_stripe_connect_start_response
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.auth_user import AuthUser
+from app.schemas.booking_link import BookingLinkCreateRequest, BookingLinkResponse
 from app.schemas.auth import MagicLinkStartRequest
 from app.services.auth_magic_link import start_magic_link
 from app.services.browser_session import (
@@ -35,6 +40,13 @@ STATUS_MESSAGES = {
         "Start again to request a new sign-in link.",
     ),
 }
+
+BOOKING_LINK_FORM_FIELDS = (
+    "name",
+    "calendly_url",
+    "billing_amount_cents",
+    "billing_currency",
+)
 
 
 @router.get("/")
@@ -113,6 +125,67 @@ def creator_stripe_connect_start(
     return _redirect(str(start_response.onboarding_url))
 
 
+@router.get("/app/booking-links")
+def creator_booking_links_page(
+    request: Request,
+    status_value: str | None = Query(default=None, alias="status"),
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    booking_links = list_booking_link_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    return _html_response(
+        _render_booking_links_page(
+            current_user=current_user,
+            booking_links=booking_links,
+            form_values=_empty_booking_link_form_values(),
+            field_errors={},
+            status_value=status_value,
+        )
+    )
+
+
+@router.post("/app/booking-links")
+async def creator_booking_links_create(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    form_values = _booking_link_form_values(await _parse_form_values(request))
+    payload, field_errors = _booking_link_payload_from_form(form_values)
+    if field_errors:
+        booking_links = list_booking_link_responses_for_creator(
+            creator_id=current_user.creator_id,
+            db=db,
+        )
+        return _html_response(
+            _render_booking_links_page(
+                current_user=current_user,
+                booking_links=booking_links,
+                form_values=form_values,
+                field_errors=field_errors,
+                status_value=None,
+            )
+        )
+
+    create_booking_link_response_for_creator(
+        creator_id=current_user.creator_id,
+        payload=payload,
+        db=db,
+    )
+    return _redirect("/app/booking-links?status=created")
+
+
 @router.post("/sign-out")
 def sign_out() -> RedirectResponse:
     return _redirect("/sign-in", clear_session=True)
@@ -138,6 +211,61 @@ def _html_response(content: str) -> HTMLResponse:
     response = HTMLResponse(content=content)
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+def _empty_booking_link_form_values() -> dict[str, str]:
+    return {field_name: "" for field_name in BOOKING_LINK_FORM_FIELDS}
+
+
+def _booking_link_form_values(raw_values: dict[str, str]) -> dict[str, str]:
+    form_values = _empty_booking_link_form_values()
+    form_values.update(
+        {
+            "name": raw_values.get("name", "").strip(),
+            "calendly_url": raw_values.get("calendly_url", "").strip(),
+            "billing_amount_cents": raw_values.get("billing_amount_cents", "").strip(),
+            "billing_currency": raw_values.get("billing_currency", "").strip(),
+        }
+    )
+    return form_values
+
+
+def _booking_link_payload_from_form(
+    form_values: dict[str, str],
+) -> tuple[BookingLinkCreateRequest | None, dict[str, str]]:
+    field_errors: dict[str, str] = {}
+    billing_amount_cents: int | None = None
+
+    if form_values["billing_amount_cents"]:
+        try:
+            billing_amount_cents = int(form_values["billing_amount_cents"])
+        except ValueError:
+            field_errors["billing_amount_cents"] = "Enter a whole number of cents."
+
+    if field_errors:
+        return None, field_errors
+
+    try:
+        payload = BookingLinkCreateRequest(
+            name=form_values["name"],
+            calendly_url=form_values["calendly_url"],
+            billing_amount_cents=billing_amount_cents,
+            billing_currency=form_values["billing_currency"] or None,
+        )
+    except ValidationError as exc:
+        return None, _booking_link_field_errors(exc)
+
+    return payload, {}
+
+
+def _booking_link_field_errors(exc: ValidationError) -> dict[str, str]:
+    errors: dict[str, str] = {}
+    for error in exc.errors():
+        location = error.get("loc") or ()
+        field_name = str(location[-1]) if location else ""
+        if field_name in BOOKING_LINK_FORM_FIELDS and field_name not in errors:
+            errors[field_name] = error["msg"].removeprefix("Value error, ")
+    return errors
 
 
 def _render_sign_in_page(status_value: str | None) -> str:
@@ -208,6 +336,7 @@ def _render_app_shell(current_user: AuthUser) -> str:
         <button type="submit" class="secondary">Sign out</button>
       </form>
     </header>
+    {_render_shell_nav(current_path="/app")}
     <section class="grid">
       <article class="card">
         <p class="eyebrow">Account</p>
@@ -241,7 +370,7 @@ def _render_app_shell(current_user: AuthUser) -> str:
           <li class="checklist-item next">
             <div>
               <strong>Add a booking link</strong>
-              <p>Register the Calendly link and billing defaults that later invoice automation will trust.</p>
+              <p>Register the Calendly link and billing defaults that later invoice automation will trust. <a href="/app/booking-links" class="inline-link">Open booking-link manager</a>.</p>
             </div>
             <span class="list-state">Next story</span>
           </li>
@@ -263,6 +392,220 @@ def _render_app_shell(current_user: AuthUser) -> str:
     </section>
     """
     return _page_layout(title="Creator Home", body=body)
+
+
+def _render_shell_nav(*, current_path: str) -> str:
+    links = [
+        ("/app", "Setup Home"),
+        ("/app/booking-links", "Booking Links"),
+    ]
+    items = []
+    for href, label in links:
+        class_name = "nav-link active" if href == current_path else "nav-link"
+        items.append(
+            f'<a href="{href}" class="{class_name}">{html.escape(label)}</a>'
+        )
+    return f'<nav class="shell-nav">{"".join(items)}</nav>'
+
+
+def _render_booking_links_page(
+    *,
+    current_user: AuthUser,
+    booking_links: list[BookingLinkResponse],
+    form_values: dict[str, str],
+    field_errors: dict[str, str],
+    status_value: str | None,
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    notice = _render_booking_link_notice(status_value=status_value, field_errors=field_errors)
+    list_heading = "Your booking links" if booking_links else "No booking links yet"
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Booking Links</h1>
+        <p class="lede">Add the Calendly URLs this creator actually uses and, when available, store billing defaults that later invoice automation can trust.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/booking-links")}
+    {notice}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Create link</p>
+          <h2>Add a booking link</h2>
+          <p>Signed in as <strong>{creator_email}</strong> for <strong>{creator_name}</strong>.</p>
+        </div>
+        <form action="/app/booking-links" method="post">
+          <label for="name">Name</label>
+          <input
+            id="name"
+            name="name"
+            type="text"
+            value="{html.escape(form_values["name"])}"
+            placeholder="Discovery Call"
+            required
+            aria-invalid="{str("name" in field_errors).lower()}"
+          />
+          {_render_booking_link_field_error(field_errors.get("name"))}
+
+          <label for="calendly_url">Calendly URL</label>
+          <input
+            id="calendly_url"
+            name="calendly_url"
+            type="url"
+            value="{html.escape(form_values["calendly_url"])}"
+            placeholder="https://calendly.com/example/discovery-call"
+            required
+            aria-invalid="{str("calendly_url" in field_errors).lower()}"
+          />
+          {_render_booking_link_field_error(field_errors.get("calendly_url"))}
+
+          <label for="billing_amount_cents">Billing amount in cents</label>
+          <input
+            id="billing_amount_cents"
+            name="billing_amount_cents"
+            type="number"
+            inputmode="numeric"
+            min="1"
+            step="1"
+            value="{html.escape(form_values["billing_amount_cents"])}"
+            placeholder="15000"
+            aria-invalid="{str("billing_amount_cents" in field_errors).lower()}"
+          />
+          <p class="form-help">Leave blank to skip defaults for now. Example: 15000 means a USD 150.00 invoice default.</p>
+          {_render_booking_link_field_error(field_errors.get("billing_amount_cents"))}
+
+          <label for="billing_currency">Billing currency</label>
+          <input
+            id="billing_currency"
+            name="billing_currency"
+            type="text"
+            value="{html.escape(form_values["billing_currency"])}"
+            placeholder="USD"
+            maxlength="3"
+            aria-invalid="{str("billing_currency" in field_errors).lower()}"
+          />
+          <p class="form-help">Use a three-letter code such as USD or EUR. Leave blank if you are not ready to set currency yet.</p>
+          {_render_booking_link_field_error(field_errors.get("billing_currency"))}
+
+          <button type="submit">Save booking link</button>
+        </form>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">Billing defaults</p>
+          <h2>Why they matter</h2>
+        </div>
+        <p>These defaults are optional in Story 39, but later invoice automation will use the stored amount and currency instead of trusting webhook payload values.</p>
+        <p>If you leave one or both billing fields blank, the UI will still save the booking link and show exactly what is missing.</p>
+        <a href="/app" class="inline-link">Back to setup home</a>
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Creator-owned links</p>
+          <h2>{list_heading}</h2>
+        </div>
+        <p>{len(booking_links)} saved</p>
+      </div>
+      {_render_booking_links_list(booking_links)}
+    </section>
+    """
+    return _page_layout(title="Booking Links", body=body)
+
+
+def _render_booking_links_list(booking_links: list[BookingLinkResponse]) -> str:
+    if not booking_links:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">Empty state</p>
+          <h2>Create the first booking link</h2>
+          <p>Add a Calendly URL now so the next creator workflow stories can attach tracked content and later invoice defaults to a real creator-owned link.</p>
+        </section>
+        """
+
+    items = "".join(_render_booking_link_card(booking_link) for booking_link in booking_links)
+    return f'<div class="booking-link-list">{items}</div>'
+
+
+def _render_booking_link_card(booking_link: BookingLinkResponse) -> str:
+    return f"""
+    <article class="booking-link-card">
+      <div class="booking-link-header">
+        <div>
+          <p class="eyebrow">Booking link</p>
+          <h2>{html.escape(booking_link.name)}</h2>
+        </div>
+        <p class="pill-note">{html.escape(_billing_defaults_copy(booking_link))}</p>
+      </div>
+      <p><strong>Calendly URL</strong>: <a href="{html.escape(booking_link.calendly_url)}" class="inline-link">{html.escape(booking_link.calendly_url)}</a></p>
+      <p><strong>Stored defaults</strong>: {html.escape(_billing_defaults_copy(booking_link, long_form=True))}</p>
+    </article>
+    """
+
+
+def _render_booking_link_field_error(message: str | None) -> str:
+    if not message:
+        return ""
+    return f'<p class="field-error">{html.escape(message)}</p>'
+
+
+def _render_booking_link_notice(
+    *,
+    status_value: str | None,
+    field_errors: dict[str, str],
+) -> str:
+    if field_errors:
+        return """
+        <section class="notice error">
+          <p class="eyebrow">Fix the highlighted fields</p>
+          <p>Update the invalid values and submit the form again.</p>
+        </section>
+        """
+
+    if status_value == "created":
+        return """
+        <section class="notice success">
+          <p class="eyebrow">Booking link saved</p>
+          <p>The creator-owned link is now available for later tracked-link and billing workflow steps.</p>
+        </section>
+        """
+
+    return ""
+
+
+def _billing_defaults_copy(
+    booking_link: BookingLinkResponse,
+    *,
+    long_form: bool = False,
+) -> str:
+    amount = booking_link.billing_amount_cents
+    currency = booking_link.billing_currency
+
+    if amount is not None and currency is not None:
+        prefix = "Ready for invoice defaults" if not long_form else "Amount and currency set"
+        return f"{prefix}: {currency} {_format_billing_amount(amount)}"
+
+    if amount is not None:
+        prefix = "Incomplete defaults" if not long_form else "Amount set"
+        return f"{prefix}: {_format_billing_amount(amount)} and currency still missing"
+
+    if currency is not None:
+        prefix = "Incomplete defaults" if not long_form else "Currency set"
+        return f"{prefix}: {currency} and amount still missing"
+
+    return "No billing defaults yet"
+
+
+def _format_billing_amount(amount_cents: int) -> str:
+    return f"{amount_cents / 100:,.2f}"
 
 
 def _stripe_setup_home_state(raw_status: str) -> dict[str, str]:
@@ -373,6 +716,12 @@ def _page_layout(*, title: str, body: str) -> str:
         line-height: 1.6;
       }}
 
+      a {{
+        color: var(--accent);
+        text-decoration-thickness: 1.5px;
+        text-underline-offset: 0.16em;
+      }}
+
       strong {{
         color: var(--ink);
       }}
@@ -409,6 +758,31 @@ def _page_layout(*, title: str, body: str) -> str:
         margin-bottom: 16px;
       }}
 
+      .shell-nav {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 0 0 16px;
+      }}
+
+      .nav-link {{
+        display: inline-flex;
+        align-items: center;
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 249, 239, 0.74);
+        color: var(--ink);
+        font-weight: 700;
+        text-decoration: none;
+      }}
+
+      .nav-link.active {{
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff8f3;
+      }}
+
       .status-row {{
         display: flex;
         justify-content: space-between;
@@ -438,6 +812,16 @@ def _page_layout(*, title: str, body: str) -> str:
         border-radius: 18px;
         background: var(--accent-soft);
         border: 1px solid rgba(163, 74, 40, 0.16);
+      }}
+
+      .notice.success {{
+        background: #dfeee7;
+        border-color: rgba(31, 94, 88, 0.18);
+      }}
+
+      .notice.error {{
+        background: #f7ddd6;
+        border-color: rgba(151, 47, 23, 0.18);
       }}
 
       .status-pill {{
@@ -508,6 +892,18 @@ def _page_layout(*, title: str, body: str) -> str:
         color: var(--accent);
       }}
 
+      .stack {{
+        display: grid;
+        gap: 16px;
+      }}
+
+      .section-heading {{
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 16px;
+      }}
+
       form {{
         display: grid;
         gap: 12px;
@@ -525,6 +921,22 @@ def _page_layout(*, title: str, body: str) -> str:
         background: var(--panel-strong);
         color: var(--ink);
         font: inherit;
+      }}
+
+      input[aria-invalid="true"] {{
+        border-color: rgba(151, 47, 23, 0.42);
+        background: #fff3ef;
+      }}
+
+      .form-help {{
+        margin-top: -4px;
+        font-size: 0.94rem;
+      }}
+
+      .field-error {{
+        margin-top: -6px;
+        color: #972f17;
+        font-weight: 700;
       }}
 
       button {{
@@ -553,6 +965,47 @@ def _page_layout(*, title: str, body: str) -> str:
         font-size: 0.94rem;
       }}
 
+      .inline-link {{
+        font-weight: 700;
+      }}
+
+      .empty-state,
+      .booking-link-card {{
+        border-radius: 20px;
+        border: 1px solid var(--line);
+        background: var(--panel-strong);
+      }}
+
+      .empty-state {{
+        padding: 24px;
+        border-style: dashed;
+      }}
+
+      .booking-link-list {{
+        display: grid;
+        gap: 12px;
+      }}
+
+      .booking-link-card {{
+        padding: 20px;
+      }}
+
+      .booking-link-header {{
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 12px;
+      }}
+
+      .pill-note {{
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(163, 74, 40, 0.1);
+        font-size: 0.88rem;
+        font-weight: 700;
+      }}
+
       @media (max-width: 720px) {{
         main {{
           width: min(100%, calc(100% - 24px));
@@ -569,7 +1022,9 @@ def _page_layout(*, title: str, body: str) -> str:
         }}
 
         .status-row,
-        .checklist-item {{
+        .checklist-item,
+        .section-heading,
+        .booking-link-header {{
           flex-direction: column;
           align-items: flex-start;
         }}

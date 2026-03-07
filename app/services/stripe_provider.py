@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlencode
 
@@ -8,10 +9,17 @@ class StripeProviderError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class StripeAccountReadiness:
+    charges_enabled: bool
+
+
 class StripeProvider(Protocol):
     def build_connect_onboarding_url(self, *, creator_id: str, state: str) -> str: ...
 
     def exchange_connect_callback(self, *, code: str, state: str) -> str: ...
+
+    def get_account_readiness(self, *, stripe_account_id: str) -> StripeAccountReadiness: ...
 
 
 class StripeOAuthProvider:
@@ -42,6 +50,10 @@ class StripeOAuthProvider:
     def exchange_connect_callback(self, *, code: str, state: str) -> str:
         del code, state
         raise StripeProviderError("default stripe callback exchange is not implemented")
+
+    def get_account_readiness(self, *, stripe_account_id: str) -> StripeAccountReadiness:
+        del stripe_account_id
+        raise StripeProviderError("default stripe account readiness lookup is not implemented")
 
 
 def build_default_stripe_provider(*, settings: Settings | None = None) -> StripeProvider:

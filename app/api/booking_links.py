@@ -28,6 +28,8 @@ def _build_booking_link_response(booking_link: BookingLink) -> BookingLinkRespon
         id=str(booking_link.id),
         name=booking_link.name,
         calendly_url=booking_link.calendly_url,
+        billing_amount_cents=booking_link.billing_amount_cents,
+        billing_currency=booking_link.billing_currency,
     )
 
 
@@ -55,6 +57,8 @@ def create_booking_link(
         creator_id=current_user.creator_id,
         name=payload.name,
         calendly_url=payload.calendly_url,
+        billing_amount_cents=payload.billing_amount_cents,
+        billing_currency=payload.billing_currency,
     )
     db.add(booking_link)
     db.commit()

@@ -60,11 +60,11 @@ def _access_token(*, user_id: str, creator_id: str, email: str, expires_delta: t
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def _booking_link_row(booking_link_id: str) -> dict[str, str]:
+def _booking_link_row(booking_link_id: str) -> dict[str, str | int | None]:
     with _engine().connect() as conn:
         row = conn.execute(
             text(
-                "SELECT id, creator_id, name, calendly_url "
+                "SELECT id, creator_id, name, calendly_url, billing_amount_cents, billing_currency "
                 "FROM booking_links "
                 "WHERE id = :id"
             ),
@@ -76,6 +76,8 @@ def _booking_link_row(booking_link_id: str) -> dict[str, str]:
         "creator_id": str(row["creator_id"]),
         "name": row["name"],
         "calendly_url": row["calendly_url"],
+        "billing_amount_cents": row["billing_amount_cents"],
+        "billing_currency": row["billing_currency"],
     }
 
 
@@ -117,6 +119,8 @@ def test_create_booking_link_returns_201_and_persists_for_authenticated_creator(
     payload = response.json()
     assert payload["name"] == "Free Consultation"
     assert payload["calendly_url"] == "https://calendly.com/example/free-consult"
+    assert payload["billing_amount_cents"] is None
+    assert payload["billing_currency"] is None
     assert payload["id"]
 
     persisted = _booking_link_row(payload["id"])
@@ -125,7 +129,40 @@ def test_create_booking_link_returns_201_and_persists_for_authenticated_creator(
         "creator_id": inserted["creator_id"],
         "name": "Free Consultation",
         "calendly_url": "https://calendly.com/example/free-consult",
+        "billing_amount_cents": None,
+        "billing_currency": None,
     }
+
+
+def test_create_booking_link_accepts_billing_defaults_and_normalizes_currency():
+    inserted = _insert_creator_user(email=f"booking_link_{uuid.uuid4().hex}@example.com")
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/booking-links",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "Paid Deep Dive",
+                "calendly_url": "https://calendly.com/example/paid-deep-dive",
+                "billing_amount_cents": 15000,
+                "billing_currency": " usd ",
+            },
+        )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["billing_amount_cents"] == 15000
+    assert payload["billing_currency"] == "USD"
+
+    persisted = _booking_link_row(payload["id"])
+    assert persisted["billing_amount_cents"] == 15000
+    assert persisted["billing_currency"] == "USD"
 
 
 def test_create_booking_link_accepts_www_calendly_host():
@@ -177,6 +214,43 @@ def test_create_booking_link_ignores_client_creator_id_input():
     persisted = _booking_link_row(response.json()["id"])
     assert persisted["creator_id"] == inserted["creator_id"]
     assert persisted["creator_id"] != spoofed_creator_id
+
+
+@pytest.mark.parametrize(
+    "payload_overrides",
+    [
+        {"billing_amount_cents": 0},
+        {"billing_amount_cents": -100},
+        {"billing_amount_cents": 12.5},
+        {"billing_amount_cents": "1500"},
+        {"billing_currency": "US"},
+        {"billing_currency": "USDX"},
+        {"billing_currency": "1$D"},
+    ],
+)
+def test_create_booking_link_rejects_invalid_billing_input(payload_overrides: dict[str, object]):
+    inserted = _insert_creator_user(email=f"invalid_booking_link_{uuid.uuid4().hex}@example.com")
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    payload = {
+        "name": "Invalid Billing Booking Link",
+        "calendly_url": "https://calendly.com/example/invalid-billing",
+        **payload_overrides,
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/booking-links",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload,
+        )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(

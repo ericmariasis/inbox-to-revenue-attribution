@@ -59,20 +59,30 @@ def _access_token(*, user_id: str, creator_id: str, email: str, expires_delta: t
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def _insert_booking_link(*, creator_id: str, name: str, calendly_url: str) -> str:
+def _insert_booking_link(
+    *,
+    creator_id: str,
+    name: str,
+    calendly_url: str,
+    billing_amount_cents: int | None = None,
+    billing_currency: str | None = None,
+) -> str:
     booking_link_id = str(uuid.uuid4())
 
     with _engine().begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO booking_links (id, creator_id, name, calendly_url) "
-                "VALUES (:id, :creator_id, :name, :calendly_url)"
+                "INSERT INTO booking_links "
+                "(id, creator_id, name, calendly_url, billing_amount_cents, billing_currency) "
+                "VALUES (:id, :creator_id, :name, :calendly_url, :billing_amount_cents, :billing_currency)"
             ),
             {
                 "id": booking_link_id,
                 "creator_id": creator_id,
                 "name": name,
                 "calendly_url": calendly_url,
+                "billing_amount_cents": billing_amount_cents,
+                "billing_currency": billing_currency,
             },
         )
 
@@ -101,6 +111,8 @@ def test_list_booking_links_returns_only_current_creators_rows():
         creator_id=creator_a["creator_id"],
         name="Discovery Call",
         calendly_url="https://calendly.com/example/discovery-call",
+        billing_amount_cents=20000,
+        billing_currency="USD",
     )
     strategy_id = _insert_booking_link(
         creator_id=creator_a["creator_id"],
@@ -123,11 +135,15 @@ def test_list_booking_links_returns_only_current_creators_rows():
             "id": discovery_id,
             "name": "Discovery Call",
             "calendly_url": "https://calendly.com/example/discovery-call",
+            "billing_amount_cents": 20000,
+            "billing_currency": "USD",
         },
         {
             "id": strategy_id,
             "name": "Strategy Session",
             "calendly_url": "https://calendly.com/example/strategy-session",
+            "billing_amount_cents": None,
+            "billing_currency": None,
         },
     ]
 
@@ -151,6 +167,8 @@ def test_list_booking_links_hides_other_creators_rows_for_second_creator():
         creator_id=creator_b["creator_id"],
         name="Creator B Session",
         calendly_url="https://calendly.com/example/creator-b-session",
+        billing_amount_cents=9000,
+        billing_currency="EUR",
     )
 
     with TestClient(app) as client:
@@ -162,5 +180,7 @@ def test_list_booking_links_hides_other_creators_rows_for_second_creator():
             "id": creator_b_link_id,
             "name": "Creator B Session",
             "calendly_url": "https://calendly.com/example/creator-b-session",
+            "billing_amount_cents": 9000,
+            "billing_currency": "EUR",
         }
     ]

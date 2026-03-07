@@ -10,21 +10,40 @@ def test_migrations_upgrade_and_downgrade():
 
     command.upgrade(cfg, "head")
     engine = create_engine(db_url)
-    with engine.connect() as conn:
-        inspector = inspect(conn)
-        assert "bookings" in inspector.get_table_names(schema="public")
-        assert "content" in inspector.get_table_names(schema="public")
-        assert "booking_links" in inspector.get_table_names(schema="public")
+    try:
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            assert "bookings" in inspector.get_table_names(schema="public")
+            assert "content" in inspector.get_table_names(schema="public")
+            assert "booking_links" in inspector.get_table_names(schema="public")
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
 
-    command.downgrade(cfg, "-1")
-    with engine.connect() as conn:
-        inspector = inspect(conn)
-        table_names = inspector.get_table_names(schema="public")
-        assert "bookings" not in table_names
-        assert "content" in table_names
-        assert "booking_links" in table_names
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" not in booking_link_columns
+            assert "billing_currency" not in booking_link_columns
 
-    command.upgrade(cfg, "head")
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            assert "bookings" not in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
+    finally:
+        command.upgrade(cfg, "head")
 
 
 def test_booking_links_table_has_expected_columns_fk_and_index():
@@ -39,6 +58,8 @@ def test_booking_links_table_has_expected_columns_fk_and_index():
             "creator_id",
             "name",
             "calendly_url",
+            "billing_amount_cents",
+            "billing_currency",
             "created_at",
             "updated_at",
         }

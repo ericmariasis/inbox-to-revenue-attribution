@@ -161,7 +161,7 @@ def test_redirect_lookup_appends_canonical_tid_without_dropping_existing_path():
 
     assert response.status_code == 302
     assert response.headers.get("X-Request-Id")
-    assert response.headers["location"] == f"{booking_link_url}?tid={tid}"
+    assert response.headers["location"] == f"{booking_link_url}?utm_content={tid}"
 
 
 def test_redirect_lookup_sets_ccp_sid_cookie_with_14_day_ttl():
@@ -190,7 +190,7 @@ def test_redirect_lookup_sets_ccp_sid_cookie_with_14_day_ttl():
 
     assert response.status_code == 302
     assert response.headers.get("X-Request-Id")
-    assert response.headers["location"] == f"{booking_link_url}?tid={tid}"
+    assert response.headers["location"] == f"{booking_link_url}?utm_content={tid}"
     assert cookie.value
     assert cookie["max-age"] == str(14 * 24 * 60 * 60)
     assert cookie["path"] == "/r"
@@ -279,7 +279,7 @@ def test_redirect_lookup_emits_click_event_with_hashed_ip_and_cookie_session():
             response = client.get(f"/r/{tid}", follow_redirects=False)
 
     assert response.status_code == 302
-    assert response.headers["location"] == f"{booking_link_url}?tid={tid}"
+    assert response.headers["location"] == f"{booking_link_url}?utm_content={tid}"
     assert len(capture_publisher.events) == 1
 
     event = capture_publisher.events[0]
@@ -352,7 +352,10 @@ def test_redirect_lookup_soft_rate_limit_tracks_repeated_bucket_without_blocking
                     ]
 
     assert all(response.status_code == 302 for response in responses)
-    assert all(response.headers["location"] == f"{booking_link_url}?tid={tid}" for response in responses)
+    assert all(
+        response.headers["location"] == f"{booking_link_url}?utm_content={tid}"
+        for response in responses
+    )
     assert len(capture_publisher.events) == 3
 
     state = rate_limiter.snapshot_bucket(
@@ -447,17 +450,17 @@ def test_redirect_lookup_preserves_existing_query_params_when_appending_canonica
     assert response.headers.get("X-Request-Id")
     assert (
         response.headers["location"]
-        == "https://calendly.com/example/redirect-strategy-call?month=2026-03&utm_source=linkedin&tid=redirectlookupqueryparamstid"
+        == "https://calendly.com/example/redirect-strategy-call?month=2026-03&utm_source=linkedin&utm_content=redirectlookupqueryparamstid"
     )
 
 
-def test_redirect_lookup_rewrites_existing_tid_query_param_to_canonical_tid():
+def test_redirect_lookup_rewrites_existing_utm_content_query_param_to_canonical_tid():
     creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
     tid = "redirectlookupcanonicaltid"
     booking_link_id = _insert_booking_link(
         creator_id=creator["creator_id"],
         name="Redirect Strategy Call With Existing Tid",
-        calendly_url="https://calendly.com/example/redirect-strategy-call?month=2026-03&tid=stale-tid",
+        calendly_url="https://calendly.com/example/redirect-strategy-call?month=2026-03&utm_content=stale-tid",
     )
     _insert_content(
         creator_id=creator["creator_id"],
@@ -474,7 +477,34 @@ def test_redirect_lookup_rewrites_existing_tid_query_param_to_canonical_tid():
     assert response.headers.get("X-Request-Id")
     assert (
         response.headers["location"]
-        == "https://calendly.com/example/redirect-strategy-call?month=2026-03&tid=redirectlookupcanonicaltid"
+        == "https://calendly.com/example/redirect-strategy-call?month=2026-03&utm_content=redirectlookupcanonicaltid"
+    )
+
+
+def test_redirect_lookup_rewrites_legacy_tid_query_param_to_canonical_utm_content():
+    creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
+    tid = "redirectlookuplegacytid"
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Redirect Strategy Call With Legacy Tid",
+        calendly_url="https://calendly.com/example/redirect-strategy-call?month=2026-03&tid=stale-tid",
+    )
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/redirect-legacy-tid-breakdown",
+        tid=tid,
+        created_at=datetime(2026, 3, 6, 15, 10, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/r/{tid}", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers.get("X-Request-Id")
+    assert (
+        response.headers["location"]
+        == "https://calendly.com/example/redirect-strategy-call?month=2026-03&utm_content=redirectlookuplegacytid"
     )
 
 
@@ -510,7 +540,7 @@ def test_redirect_lookup_returns_302_when_click_event_publish_fails():
                 response = client.get(f"/r/{tid}", follow_redirects=False)
 
     assert response.status_code == 302
-    assert response.headers["location"] == f"{booking_link_url}?tid={tid}"
+    assert response.headers["location"] == f"{booking_link_url}?utm_content={tid}"
     assert response.cookies.get("ccp_sid")
     warning_log.assert_called_once()
     assert "click_event_publish_failed" in warning_log.call_args.args[0]

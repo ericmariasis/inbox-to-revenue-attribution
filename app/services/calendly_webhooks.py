@@ -1,0 +1,243 @@
+import hashlib
+import hmac
+import json
+import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, Protocol
+from urllib.parse import urlsplit
+
+
+logger = logging.getLogger(__name__)
+
+_PROVIDER_TO_INTERNAL_EVENT_TYPES = {
+    "invitee.created": "booking.created",
+    "invitee.canceled": "booking.canceled",
+}
+
+
+class CalendlyWebhookVerificationError(ValueError):
+    pass
+
+
+class CalendlyWebhookPayloadError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class CalendlyWebhookEvent:
+    provider_event_type: str
+    calendly_event_id: str
+    calendly_event_id_path: str
+    event_type: str
+    calendly_booking_uuid: str
+    calendly_booking_uuid_path: str
+    tid: str | None
+    tid_path: str | None
+    payload: dict[str, Any]
+
+
+class CalendlyWebhookRouter(Protocol):
+    def handle_event(self, *, event: CalendlyWebhookEvent) -> None: ...
+
+
+class LoggingCalendlyWebhookRouter:
+    def handle_event(self, *, event: CalendlyWebhookEvent) -> None:
+        logger.info(
+            "calendly_webhook_event_verified provider_event_type=%s calendly_event_id=%s calendly_event_id_path=%s calendly_booking_uuid=%s calendly_booking_uuid_path=%s event_type=%s tid=%s tid_path=%s",
+            event.provider_event_type,
+            event.calendly_event_id,
+            event.calendly_event_id_path,
+            event.calendly_booking_uuid,
+            event.calendly_booking_uuid_path,
+            event.event_type,
+            event.tid,
+            event.tid_path,
+        )
+        logger.info(
+            "calendly_webhook_event_noop provider_event_type=%s calendly_event_id=%s calendly_event_id_path=%s calendly_booking_uuid=%s calendly_booking_uuid_path=%s event_type=%s tid=%s tid_path=%s",
+            event.provider_event_type,
+            event.calendly_event_id,
+            event.calendly_event_id_path,
+            event.calendly_booking_uuid,
+            event.calendly_booking_uuid_path,
+            event.event_type,
+            event.tid,
+            event.tid_path,
+        )
+
+
+DEFAULT_CALENDLY_WEBHOOK_ROUTER = LoggingCalendlyWebhookRouter()
+
+
+def verify_and_parse_calendly_webhook(
+    *,
+    payload: bytes,
+    signature_header: str | None,
+    signing_key: str,
+    tolerance_seconds: int,
+    now: datetime | None = None,
+) -> CalendlyWebhookEvent:
+    timestamp, signatures = _parse_signature_header(signature_header)
+    _verify_signature(
+        payload=payload,
+        timestamp=timestamp,
+        signatures=signatures,
+        signing_key=signing_key,
+        tolerance_seconds=tolerance_seconds,
+        now=now,
+    )
+
+    try:
+        parsed_payload = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise CalendlyWebhookPayloadError("invalid calendly webhook payload") from exc
+
+    provider_event_type = parsed_payload.get("event")
+    if not isinstance(provider_event_type, str) or not provider_event_type:
+        raise CalendlyWebhookPayloadError("missing calendly event type")
+
+    event_payload = parsed_payload.get("payload")
+    if not isinstance(event_payload, dict):
+        raise CalendlyWebhookPayloadError("missing calendly payload")
+
+    calendly_event_id, calendly_event_id_path = _extract_calendly_event_id(event_payload)
+    if calendly_event_id is None or calendly_event_id_path is None:
+        raise CalendlyWebhookPayloadError("missing calendly event id")
+
+    calendly_booking_uuid, calendly_booking_uuid_path = _extract_calendly_booking_uuid(event_payload)
+    if calendly_booking_uuid is None or calendly_booking_uuid_path is None:
+        raise CalendlyWebhookPayloadError("missing calendly booking uuid")
+
+    tid, tid_path = _extract_tid(event_payload)
+
+    return CalendlyWebhookEvent(
+        provider_event_type=provider_event_type,
+        calendly_event_id=calendly_event_id,
+        calendly_event_id_path=calendly_event_id_path,
+        event_type=_PROVIDER_TO_INTERNAL_EVENT_TYPES.get(provider_event_type, provider_event_type),
+        calendly_booking_uuid=calendly_booking_uuid,
+        calendly_booking_uuid_path=calendly_booking_uuid_path,
+        tid=tid,
+        tid_path=tid_path,
+        payload=parsed_payload,
+    )
+
+
+def _parse_signature_header(signature_header: str | None) -> tuple[int, list[str]]:
+    if not signature_header:
+        raise CalendlyWebhookVerificationError("missing calendly signature header")
+
+    timestamp: int | None = None
+    signatures: list[str] = []
+    for item in signature_header.split(","):
+        key, separator, value = item.partition("=")
+        if separator != "=" or not value:
+            continue
+        if key == "t":
+            try:
+                timestamp = int(value)
+            except ValueError as exc:
+                raise CalendlyWebhookVerificationError(
+                    "invalid calendly signature timestamp"
+                ) from exc
+        elif key == "v1":
+            signatures.append(value)
+
+    if timestamp is None or not signatures:
+        raise CalendlyWebhookVerificationError("invalid calendly signature header")
+
+    return timestamp, signatures
+
+
+def _verify_signature(
+    *,
+    payload: bytes,
+    timestamp: int,
+    signatures: list[str],
+    signing_key: str,
+    tolerance_seconds: int,
+    now: datetime | None,
+) -> None:
+    current_time = now or datetime.now(UTC)
+    if abs(int(current_time.timestamp()) - timestamp) > tolerance_seconds:
+        raise CalendlyWebhookVerificationError("calendly signature timestamp outside tolerance")
+
+    signed_payload = f"{timestamp}.".encode("utf-8") + payload
+    expected_signature = hmac.new(
+        signing_key.encode("utf-8"),
+        signed_payload,
+        hashlib.sha256,
+    ).hexdigest()
+    if not any(hmac.compare_digest(expected_signature, signature) for signature in signatures):
+        raise CalendlyWebhookVerificationError("invalid calendly signature")
+
+
+def _extract_calendly_event_id(event_payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    return _resource_identifier(
+        ("payload.event", event_payload.get("event")),
+        ("payload.scheduled_event", event_payload.get("scheduled_event")),
+    )
+
+
+def _extract_calendly_booking_uuid(event_payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    return _resource_identifier(
+        ("payload.uri", event_payload.get("uri")),
+        ("payload.invitee", event_payload.get("invitee")),
+        ("payload.invitee_uri", event_payload.get("invitee_uri")),
+        ("payload.uuid", event_payload.get("uuid")),
+    )
+
+
+def _extract_tid(event_payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    tracking = event_payload.get("tracking")
+    if isinstance(tracking, dict):
+        for key in ("utm_content", "tid"):
+            value = tracking.get(key)
+            if isinstance(value, str) and value:
+                return value, f"payload.tracking.{key}"
+
+    for key in ("tid", "utm_content"):
+        value = event_payload.get(key)
+        if isinstance(value, str) and value:
+            return value, f"payload.{key}"
+
+    return None, None
+
+
+def _resource_identifier(*candidates: tuple[str, Any]) -> tuple[str | None, str | None]:
+    for path, candidate in candidates:
+        identifier, identifier_path = _identifier_from_candidate(path, candidate)
+        if identifier:
+            return identifier, identifier_path
+    return None, None
+
+
+def _identifier_from_candidate(path: str, candidate: Any) -> tuple[str | None, str | None]:
+    if isinstance(candidate, str) and candidate:
+        return _identifier_from_string(path, candidate)
+
+    if isinstance(candidate, dict):
+        uuid_value = candidate.get("uuid")
+        if isinstance(uuid_value, str) and uuid_value:
+            return uuid_value, f"{path}.uuid"
+        uri_value = candidate.get("uri")
+        if isinstance(uri_value, str) and uri_value:
+            return _identifier_from_string(f"{path}.uri", uri_value)
+
+    return None, None
+
+
+def _identifier_from_string(source_path: str, value: str) -> tuple[str | None, str | None]:
+    if "://" not in value:
+        return value, source_path
+
+    parsed = urlsplit(value)
+    resource_path = parsed.path.rstrip("/")
+    if not resource_path:
+        return None, None
+
+    identifier = resource_path.rsplit("/", 1)[-1]
+    if not identifier:
+        return None, None
+    return identifier, source_path

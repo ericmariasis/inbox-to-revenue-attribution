@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     stripe_connect_client_id: str = "ca_test_example"
     stripe_connect_authorize_url: str = "https://connect.stripe.com/oauth/authorize"
     stripe_connect_redirect_uri: str = "http://localhost:8000/stripe/connect/callback"
+    stripe_webhook_secret: str = "whsec_test_example"
+    stripe_webhook_tolerance_seconds: int = 300
     tracked_link_base_url: str = "https://trk.example.com"
 
 

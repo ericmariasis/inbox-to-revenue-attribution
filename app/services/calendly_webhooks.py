@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Protocol
@@ -45,8 +46,33 @@ class CalendlyWebhookEvent:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class CanceledBookingContext:
+    booking_id: uuid.UUID
+    creator_id: uuid.UUID
+    booking_link_id: uuid.UUID
+    tid: str
+    calendly_booking_uuid: str
+    canceled_at: datetime
+
+
 class CalendlyWebhookRouter(Protocol):
     def handle_event(self, *, event: CalendlyWebhookEvent) -> None: ...
+
+
+class UnpaidInvoiceVoider(Protocol):
+    def void_unpaid_invoice(self, *, booking: CanceledBookingContext) -> None: ...
+
+
+class NoopUnpaidInvoiceVoider:
+    def void_unpaid_invoice(self, *, booking: CanceledBookingContext) -> None:
+        logger.info(
+            "calendly_webhook_booking_canceled_invoice_void_noop booking_id=%s calendly_booking_uuid=%s creator_id=%s tid=%s",
+            booking.booking_id,
+            booking.calendly_booking_uuid,
+            booking.creator_id,
+            booking.tid,
+        )
 
 
 class BookingCreatedCalendlyWebhookHandler:
@@ -57,32 +83,44 @@ class BookingCreatedCalendlyWebhookHandler:
         if event.event_type != "booking.created":
             return False
 
-        if not event.tid:
-            return False
-
         event_payload = event.payload.get("payload")
         if not isinstance(event_payload, dict):
             return False
 
-        email = _extract_booking_email(event_payload)
-        booked_at = _extract_booked_at(event_payload)
-        if email is None or booked_at is None:
+        if not event.tid:
             logger.warning(
-                "calendly_webhook_booking_created_unhandled calendly_booking_uuid=%s tid=%s missing_email=%s missing_booked_at=%s",
+                "calendly_webhook_booking_created_missing_tid calendly_booking_uuid=%s provider_event_type=%s calendly_event_id=%s",
                 event.calendly_booking_uuid,
-                event.tid,
-                email is None,
-                booked_at is None,
+                event.provider_event_type,
+                event.calendly_event_id,
             )
-            return False
+            return True
 
         with self._session_factory() as session:
             content = session.scalar(select(Content).where(Content.tid == event.tid))
             if content is None:
-                return False
+                logger.warning(
+                    "calendly_webhook_booking_created_unknown_tid calendly_booking_uuid=%s tid=%s calendly_event_id=%s",
+                    event.calendly_booking_uuid,
+                    event.tid,
+                    event.calendly_event_id,
+                )
+                return True
             creator_id = content.creator_id
             booking_link_id = content.booking_link_id
             resolved_tid = content.tid
+
+            email = _extract_booking_email(event_payload)
+            booked_at = _extract_booked_at(event_payload)
+            if email is None or booked_at is None:
+                logger.warning(
+                    "calendly_webhook_booking_created_unhandled calendly_booking_uuid=%s tid=%s missing_email=%s missing_booked_at=%s",
+                    event.calendly_booking_uuid,
+                    resolved_tid,
+                    email is None,
+                    booked_at is None,
+                )
+                return True
 
             existing_booking = session.scalar(
                 select(Booking).where(
@@ -93,7 +131,7 @@ class BookingCreatedCalendlyWebhookHandler:
                 logger.info(
                     "calendly_webhook_booking_created_duplicate calendly_booking_uuid=%s tid=%s",
                     event.calendly_booking_uuid,
-                    event.tid,
+                    resolved_tid,
                 )
                 return True
 
@@ -123,17 +161,82 @@ class BookingCreatedCalendlyWebhookHandler:
                 logger.info(
                     "calendly_webhook_booking_created_duplicate calendly_booking_uuid=%s tid=%s",
                     event.calendly_booking_uuid,
-                    event.tid,
+                    resolved_tid,
                 )
                 return True
 
         logger.info(
             "calendly_webhook_booking_created_persisted calendly_booking_uuid=%s tid=%s creator_id=%s booking_link_id=%s",
             event.calendly_booking_uuid,
-            event.tid,
+            resolved_tid,
             creator_id,
             booking_link_id,
         )
+        return True
+
+
+class BookingCanceledCalendlyWebhookHandler:
+    def __init__(
+        self,
+        *,
+        session_factory: Callable[[], Session],
+        unpaid_invoice_voider: UnpaidInvoiceVoider,
+    ):
+        self._session_factory = session_factory
+        self._unpaid_invoice_voider = unpaid_invoice_voider
+
+    def handle_event(self, *, event: CalendlyWebhookEvent) -> bool:
+        if event.event_type != "booking.canceled":
+            return False
+
+        event_payload = event.payload.get("payload")
+        if not isinstance(event_payload, dict):
+            return False
+
+        with self._session_factory() as session:
+            booking = session.scalar(
+                select(Booking).where(
+                    Booking.calendly_booking_uuid == event.calendly_booking_uuid
+                )
+            )
+            if booking is None:
+                logger.info(
+                    "calendly_webhook_booking_canceled_missing_booking calendly_booking_uuid=%s tid=%s",
+                    event.calendly_booking_uuid,
+                    event.tid,
+                )
+                return True
+
+            if booking.status == "canceled":
+                logger.info(
+                    "calendly_webhook_booking_canceled_duplicate calendly_booking_uuid=%s tid=%s",
+                    booking.calendly_booking_uuid,
+                    booking.tid,
+                )
+                return True
+
+            canceled_at = _extract_canceled_at(event_payload) or datetime.now(UTC)
+            booking.status = "canceled"
+            booking.canceled_at = canceled_at
+            session.commit()
+
+            booking_context = CanceledBookingContext(
+                booking_id=booking.id,
+                creator_id=booking.creator_id,
+                booking_link_id=booking.booking_link_id,
+                tid=booking.tid,
+                calendly_booking_uuid=booking.calendly_booking_uuid,
+                canceled_at=canceled_at,
+            )
+
+        logger.info(
+            "calendly_webhook_booking_canceled_persisted calendly_booking_uuid=%s tid=%s creator_id=%s booking_link_id=%s",
+            booking_context.calendly_booking_uuid,
+            booking_context.tid,
+            booking_context.creator_id,
+            booking_context.booking_link_id,
+        )
+        self._unpaid_invoice_voider.void_unpaid_invoice(booking=booking_context)
         return True
 
 
@@ -142,9 +245,16 @@ class DefaultCalendlyWebhookRouter:
         self,
         *,
         booking_created_handler: BookingCreatedCalendlyWebhookHandler | None = None,
+        booking_canceled_handler: BookingCanceledCalendlyWebhookHandler | None = None,
+        unpaid_invoice_voider: UnpaidInvoiceVoider | None = None,
     ):
+        resolved_unpaid_invoice_voider = unpaid_invoice_voider or NoopUnpaidInvoiceVoider()
         self._booking_created_handler = booking_created_handler or BookingCreatedCalendlyWebhookHandler(
             session_factory=SessionLocal
+        )
+        self._booking_canceled_handler = booking_canceled_handler or BookingCanceledCalendlyWebhookHandler(
+            session_factory=SessionLocal,
+            unpaid_invoice_voider=resolved_unpaid_invoice_voider,
         )
 
     def handle_event(self, *, event: CalendlyWebhookEvent) -> None:
@@ -160,6 +270,8 @@ class DefaultCalendlyWebhookRouter:
             event.tid_path,
         )
         if self._booking_created_handler.handle_event(event=event):
+            return
+        if self._booking_canceled_handler.handle_event(event=event):
             return
         logger.info(
             "calendly_webhook_event_noop provider_event_type=%s calendly_event_id=%s calendly_event_id_path=%s calendly_booking_uuid=%s calendly_booking_uuid_path=%s event_type=%s tid=%s tid_path=%s",
@@ -344,6 +456,19 @@ def _extract_booked_at(event_payload: dict[str, Any]) -> datetime | None:
     event_value = event_payload.get("event")
     if isinstance(event_value, dict):
         parsed = _parse_datetime(event_value.get("start_time"))
+        if parsed is not None:
+            return parsed
+
+    return None
+
+
+def _extract_canceled_at(event_payload: dict[str, Any]) -> datetime | None:
+    for candidate in (
+        event_payload.get("canceled_at"),
+        event_payload.get("cancelled_at"),
+        event_payload.get("updated_at"),
+    ):
+        parsed = _parse_datetime(candidate)
         if parsed is not None:
             return parsed
 

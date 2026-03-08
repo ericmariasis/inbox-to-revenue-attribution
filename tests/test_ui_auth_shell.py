@@ -143,6 +143,43 @@ def _insert_content(
     return content_id
 
 
+def _insert_booking(
+    *,
+    creator_id: str,
+    booking_link_id: str,
+    tid: str,
+    calendly_booking_uuid: str,
+    booked_at: datetime,
+    status: str = "created",
+    canceled_at: datetime | None = None,
+    email: str = "booked@example.com",
+) -> str:
+    booking_id = str(uuid.uuid4())
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO bookings "
+                "(id, creator_id, booking_link_id, tid, calendly_booking_uuid, email, status, booked_at, canceled_at) "
+                "VALUES "
+                "(:id, :creator_id, :booking_link_id, :tid, :calendly_booking_uuid, :email, :status, :booked_at, :canceled_at)"
+            ),
+            {
+                "id": booking_id,
+                "creator_id": creator_id,
+                "booking_link_id": booking_link_id,
+                "tid": tid,
+                "calendly_booking_uuid": calendly_booking_uuid,
+                "email": email,
+                "status": status,
+                "booked_at": booked_at,
+                "canceled_at": canceled_at,
+            },
+        )
+
+    return booking_id
+
+
 @contextmanager
 def _override_app_state(name, value):
     had_attr = hasattr(app.state, name)
@@ -236,6 +273,18 @@ def test_content_page_redirects_unauthenticated_browser_requests():
     assert response.headers["location"] == "/sign-in"
 
 
+def test_booking_activity_page_redirects_unauthenticated_browser_requests():
+    with TestClient(app) as client:
+        response = client.get(
+            "/app/bookings",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+
+
 def test_browser_magic_link_verify_sets_session_cookie_and_lands_in_app_shell():
     email = f"ui_shell_{uuid.uuid4().hex}@example.com"
 
@@ -315,6 +364,8 @@ def test_setup_home_pending_stripe_state_shows_connect_cta_and_checklist():
     assert 'href="/app/booking-links"' in response.text
     assert "Create a tracked link" in response.text
     assert 'href="/app/content"' in response.text
+    assert "Review booking activity" in response.text
+    assert 'href="/app/bookings"' in response.text
     assert "later invoice automation can create invoices on your account" in response.text
 
 
@@ -484,6 +535,31 @@ def test_content_page_without_booking_links_explains_prerequisite():
     assert "0 saved" in response.text
 
 
+def test_booking_activity_page_empty_state_explains_delay_and_next_steps():
+    inserted = _insert_creator_user(
+        email=f"ui_booking_activity_empty_{uuid.uuid4().hex}@example.com",
+        name="No Booking Activity Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/bookings", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Booking Activity" in response.text
+    assert "No bookings captured yet" in response.text
+    assert "may not appear immediately" in response.text
+    assert "Create tracked content" in response.text
+    assert 'href="/app/content"' in response.text
+    assert "0 captured" in response.text
+
+
 def test_content_page_create_success_shows_tracked_link_and_saved_item():
     inserted = _insert_creator_user(
         email=f"ui_content_create_{uuid.uuid4().hex}@example.com",
@@ -583,6 +659,106 @@ def test_content_page_lists_only_current_creators_content():
     assert "creator-b-content" not in response.text
     assert f"{tracked_base_url}/r/uibcontenttid" not in response.text
     assert "Creator B Strategy" not in response.text
+
+
+def test_booking_activity_page_lists_only_current_creators_bookings_with_context_and_status():
+    creator_a = _insert_creator_user(
+        email=f"ui_booking_activity_creator_a_{uuid.uuid4().hex}@example.com",
+        name="Booking Activity Creator A",
+    )
+    creator_b = _insert_creator_user(
+        email=f"ui_booking_activity_creator_b_{uuid.uuid4().hex}@example.com",
+        name="Booking Activity Creator B",
+    )
+    access_token = _access_token(
+        user_id=creator_a["user_id"],
+        creator_id=creator_a["creator_id"],
+        email=creator_a["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    creator_a_booking_link_created = _insert_booking_link(
+        creator_id=creator_a["creator_id"],
+        name="Creator A Strategy",
+        calendly_url="https://calendly.com/example/creator-a-strategy",
+    )
+    creator_a_booking_link_canceled = _insert_booking_link(
+        creator_id=creator_a["creator_id"],
+        name="Creator A Workshop",
+        calendly_url="https://calendly.com/example/creator-a-workshop",
+    )
+    creator_b_booking_link_id = _insert_booking_link(
+        creator_id=creator_b["creator_id"],
+        name="Creator B Intro",
+        calendly_url="https://calendly.com/example/creator-b-intro",
+    )
+
+    _insert_content(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=creator_a_booking_link_created,
+        source_url="https://example.com/posts/creator-a-created",
+        tid="uiactivitycreated",
+    )
+    _insert_content(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=creator_a_booking_link_canceled,
+        source_url="https://example.com/posts/creator-a-canceled",
+        tid="uiactivitycanceled",
+    )
+    _insert_content(
+        creator_id=creator_b["creator_id"],
+        booking_link_id=creator_b_booking_link_id,
+        source_url="https://example.com/posts/creator-b-booking",
+        tid="uibbookingactivity",
+    )
+
+    _insert_booking(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=creator_a_booking_link_created,
+        tid="uiactivitycreated",
+        calendly_booking_uuid="BOOK_UI_ACTIVITY_CREATED",
+        booked_at=datetime(2026, 3, 7, 17, 0, tzinfo=timezone.utc),
+        status="created",
+    )
+    _insert_booking(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=creator_a_booking_link_canceled,
+        tid="uiactivitycanceled",
+        calendly_booking_uuid="BOOK_UI_ACTIVITY_CANCELED",
+        booked_at=datetime(2026, 3, 7, 18, 0, tzinfo=timezone.utc),
+        status="canceled",
+        canceled_at=datetime(2026, 3, 7, 18, 30, tzinfo=timezone.utc),
+    )
+    _insert_booking(
+        creator_id=creator_b["creator_id"],
+        booking_link_id=creator_b_booking_link_id,
+        tid="uibbookingactivity",
+        calendly_booking_uuid="BOOK_UI_ACTIVITY_OTHER_CREATOR",
+        booked_at=datetime(2026, 3, 7, 19, 0, tzinfo=timezone.utc),
+        status="created",
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/bookings", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Recent booking activity" in response.text
+    assert "2 captured" in response.text
+    assert "Creator A Strategy" in response.text
+    assert "Creator A Workshop" in response.text
+    assert "https://example.com/posts/creator-a-created" in response.text
+    assert "https://example.com/posts/creator-a-canceled" in response.text
+    assert "uiactivitycreated" in response.text
+    assert "uiactivitycanceled" in response.text
+    assert "Created" in response.text
+    assert "Canceled" in response.text
+    assert "March 07, 2026 at 06:00 PM UTC" in response.text
+    assert "March 07, 2026 at 06:30 PM UTC" in response.text
+    assert "Creator B Intro" not in response.text
+    assert "https://example.com/posts/creator-b-booking" not in response.text
+    assert "uibbookingactivity" not in response.text
+    assert response.text.index("creator-a-canceled") < response.text.index("creator-a-created")
 
 
 def test_setup_home_disconnected_stripe_state_shows_reconnect_cta():

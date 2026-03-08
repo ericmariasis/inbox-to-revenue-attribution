@@ -46,3 +46,9 @@ class Booking(Base):
     creator = relationship("Creator", back_populates="bookings")
     booking_link = relationship("BookingLink", back_populates="bookings")
     content = relationship("Content", back_populates="bookings", foreign_keys=[tid])
+    invoice = relationship(
+        "Invoice",
+        back_populates="booking",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )

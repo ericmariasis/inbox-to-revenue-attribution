@@ -25,7 +25,15 @@ def isolate_test_data():
 
     with engine.begin() as conn:
         existing = set(inspect(conn).get_table_names(schema="public"))
-        ordered_tables = ["bookings", "content", "booking_links", "magic_link_tokens", "auth_users", "creators"]
+        ordered_tables = [
+            "invoices",
+            "bookings",
+            "content",
+            "booking_links",
+            "magic_link_tokens",
+            "auth_users",
+            "creators",
+        ]
         tables_to_truncate = [table_name for table_name in ordered_tables if table_name in existing]
         if tables_to_truncate:
             conn.execute(

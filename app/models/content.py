@@ -48,4 +48,10 @@ class Content(Base):
         cascade="all, delete-orphan",
         foreign_keys="Booking.tid",
     )
+    invoices = relationship(
+        "Invoice",
+        back_populates="content",
+        cascade="all, delete-orphan",
+        foreign_keys="Invoice.tid",
+    )
     booking_link = relationship("BookingLink", back_populates="content_items")

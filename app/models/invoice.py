@@ -45,3 +45,4 @@ class Invoice(Base):
     creator = relationship("Creator", back_populates="invoices")
     booking = relationship("Booking", back_populates="invoice")
     content = relationship("Content", back_populates="invoices", foreign_keys=[tid])
+    payment_events = relationship("InvoicePaymentEvent", back_populates="invoice")

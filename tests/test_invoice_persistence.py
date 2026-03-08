@@ -11,6 +11,7 @@ from app.models.booking_link import BookingLink
 from app.models.content import Content
 from app.models.creator import Creator
 from app.models.invoice import Invoice
+from app.models.invoice_payment_event import InvoicePaymentEvent
 
 
 def _create_creator_booking_link_content_and_booking(
@@ -60,6 +61,31 @@ def _create_creator_booking_link_content_and_booking(
     return creator, booking_link, content, booking
 
 
+def _create_invoice(
+    *,
+    creator: Creator,
+    content: Content,
+    booking: Booking,
+    stripe_account_id: str = "acct_story43_primary",
+    stripe_invoice_id: str = "in_story43_primary",
+    amount_cents: int = 15000,
+    currency: str = "USD",
+    status: str = "open",
+    issued_at: datetime | None = None,
+) -> Invoice:
+    return Invoice(
+        creator_id=creator.id,
+        booking_id=booking.id,
+        tid=content.tid,
+        stripe_account_id=stripe_account_id,
+        stripe_invoice_id=stripe_invoice_id,
+        amount_cents=amount_cents,
+        currency=currency,
+        status=status,
+        issued_at=issued_at or datetime(2026, 3, 8, 15, 0, tzinfo=timezone.utc),
+    )
+
+
 def test_invoice_row_can_persist_against_canonical_booking():
     engine = create_engine(os.environ["TEST_DATABASE_URL"])
     issued_at = datetime(2026, 3, 8, 15, 0, tzinfo=timezone.utc)
@@ -67,15 +93,10 @@ def test_invoice_row_can_persist_against_canonical_booking():
     with Session(engine) as session:
         creator, _, content, booking = _create_creator_booking_link_content_and_booking(session)
         session.add(
-            Invoice(
-                creator_id=creator.id,
-                booking_id=booking.id,
-                tid=content.tid,
-                stripe_account_id="acct_story43_primary",
-                stripe_invoice_id="in_story43_primary",
-                amount_cents=15000,
-                currency="USD",
-                status="open",
+            _create_invoice(
+                creator=creator,
+                content=content,
+                booking=booking,
                 issued_at=issued_at,
             )
         )
@@ -113,15 +134,12 @@ def test_duplicate_stripe_invoice_id_is_blocked_by_db_constraint():
             booked_at=datetime(2026, 3, 8, 16, 0, tzinfo=timezone.utc),
         )
         session.add(
-            Invoice(
-                creator_id=creator.id,
-                booking_id=booking.id,
-                tid=content.tid,
+            _create_invoice(
+                creator=creator,
+                content=content,
+                booking=booking,
                 stripe_account_id="acct_story43_duplicate",
                 stripe_invoice_id="in_story43_duplicate",
-                amount_cents=15000,
-                currency="USD",
-                status="open",
                 issued_at=datetime(2026, 3, 8, 16, 5, tzinfo=timezone.utc),
             )
         )
@@ -134,15 +152,13 @@ def test_duplicate_stripe_invoice_id_is_blocked_by_db_constraint():
             booked_at=datetime(2026, 3, 8, 16, 30, tzinfo=timezone.utc),
         )
         session.add(
-            Invoice(
-                creator_id=creator.id,
-                booking_id=second_booking.id,
-                tid=second_content.tid,
+            _create_invoice(
+                creator=creator,
+                content=second_content,
+                booking=second_booking,
                 stripe_account_id="acct_story43_duplicate",
                 stripe_invoice_id="in_story43_duplicate",
                 amount_cents=17500,
-                currency="USD",
-                status="open",
                 issued_at=datetime(2026, 3, 8, 16, 35, tzinfo=timezone.utc),
             )
         )
@@ -165,30 +181,24 @@ def test_duplicate_invoice_for_same_booking_is_blocked_by_db_constraint():
             booking_uuid="cal_booking_story43_duplicate_booking",
         )
         session.add(
-            Invoice(
-                creator_id=creator.id,
-                booking_id=booking.id,
-                tid=content.tid,
+            _create_invoice(
+                creator=creator,
+                content=content,
+                booking=booking,
                 stripe_account_id="acct_story43_same_booking",
                 stripe_invoice_id="in_story43_same_booking_primary",
-                amount_cents=15000,
-                currency="USD",
-                status="open",
                 issued_at=datetime(2026, 3, 8, 17, 0, tzinfo=timezone.utc),
             )
         )
         session.commit()
 
         session.add(
-            Invoice(
-                creator_id=creator.id,
-                booking_id=booking.id,
-                tid=content.tid,
+            _create_invoice(
+                creator=creator,
+                content=content,
+                booking=booking,
                 stripe_account_id="acct_story43_same_booking",
                 stripe_invoice_id="in_story43_same_booking_duplicate",
-                amount_cents=15000,
-                currency="USD",
-                status="open",
                 issued_at=datetime(2026, 3, 8, 17, 5, tzinfo=timezone.utc),
             )
         )
@@ -199,4 +209,166 @@ def test_duplicate_invoice_for_same_booking_is_blocked_by_db_constraint():
         session.rollback()
 
         rows = session.scalars(select(Invoice).where(Invoice.booking_id == booking.id)).all()
+        assert len(rows) == 1
+
+
+def test_invoice_payment_event_can_persist_against_canonical_invoice_chain():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    paid_at = datetime(2026, 3, 8, 18, 0, tzinfo=timezone.utc)
+    received_at = datetime(2026, 3, 8, 18, 1, tzinfo=timezone.utc)
+    processed_at = datetime(2026, 3, 8, 18, 2, tzinfo=timezone.utc)
+
+    with Session(engine) as session:
+        creator, _, content, booking = _create_creator_booking_link_content_and_booking(
+            session,
+            booking_uuid="cal_booking_story47_primary",
+            tid="story47_tid_primary",
+        )
+        invoice = _create_invoice(
+            creator=creator,
+            content=content,
+            booking=booking,
+            stripe_account_id="acct_story47_primary",
+            stripe_invoice_id="in_story47_primary",
+            issued_at=datetime(2026, 3, 8, 17, 30, tzinfo=timezone.utc),
+        )
+        session.add(invoice)
+        session.flush()
+        session.add(
+            InvoicePaymentEvent(
+                stripe_event_id="evt_story47_primary",
+                stripe_event_type="invoice.paid",
+                stripe_account_id="acct_story47_primary",
+                stripe_invoice_id="in_story47_primary",
+                invoice_id=invoice.id,
+                creator_id=creator.id,
+                booking_id=booking.id,
+                tid=content.tid,
+                status="applied",
+                paid_at=paid_at,
+                received_at=received_at,
+                processed_at=processed_at,
+            )
+        )
+        session.commit()
+
+        fetched = session.scalar(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.stripe_event_id == "evt_story47_primary"
+            )
+        )
+
+        assert fetched is not None
+        assert fetched.stripe_event_id == "evt_story47_primary"
+        assert fetched.stripe_event_type == "invoice.paid"
+        assert fetched.stripe_account_id == "acct_story47_primary"
+        assert fetched.stripe_invoice_id == "in_story47_primary"
+        assert fetched.invoice_id == invoice.id
+        assert fetched.creator_id == creator.id
+        assert fetched.booking_id == booking.id
+        assert fetched.tid == content.tid
+        assert fetched.status == "applied"
+        assert fetched.unattributed_reason is None
+        assert fetched.paid_at == paid_at
+        assert fetched.received_at == received_at
+        assert fetched.processed_at == processed_at
+        assert fetched.invoice is not None
+        assert fetched.invoice.id == invoice.id
+        assert fetched.creator is not None
+        assert fetched.creator.id == creator.id
+        assert fetched.booking is not None
+        assert fetched.booking.id == booking.id
+        assert fetched.content is not None
+        assert fetched.content.tid == content.tid
+        assert fetched.invoice.payment_events[0].id == fetched.id
+
+
+def test_invoice_payment_event_can_persist_unmatched_state_with_null_local_linkage():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    paid_at = datetime(2026, 3, 8, 19, 0, tzinfo=timezone.utc)
+    received_at = datetime(2026, 3, 8, 19, 1, tzinfo=timezone.utc)
+
+    with Session(engine) as session:
+        session.add(
+            InvoicePaymentEvent(
+                stripe_event_id="evt_story47_unmatched",
+                stripe_event_type="invoice.paid",
+                stripe_account_id="acct_story47_unmatched",
+                stripe_invoice_id="in_story47_unmatched",
+                invoice_id=None,
+                creator_id=None,
+                booking_id=None,
+                tid=None,
+                status="unmatched",
+                unattributed_reason="UNKNOWN_STRIPE_INVOICE_ID",
+                paid_at=paid_at,
+                received_at=received_at,
+                processed_at=None,
+            )
+        )
+        session.commit()
+
+        fetched = session.scalar(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.stripe_event_id == "evt_story47_unmatched"
+            )
+        )
+
+        assert fetched is not None
+        assert fetched.invoice_id is None
+        assert fetched.creator_id is None
+        assert fetched.booking_id is None
+        assert fetched.tid is None
+        assert fetched.status == "unmatched"
+        assert fetched.unattributed_reason == "UNKNOWN_STRIPE_INVOICE_ID"
+        assert fetched.paid_at == paid_at
+        assert fetched.received_at == received_at
+        assert fetched.processed_at is None
+        assert fetched.invoice is None
+        assert fetched.creator is None
+        assert fetched.booking is None
+        assert fetched.content is None
+
+
+def test_duplicate_invoice_payment_event_stripe_event_id_is_blocked_by_db_constraint():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+
+    with Session(engine) as session:
+        session.add(
+            InvoicePaymentEvent(
+                stripe_event_id="evt_story47_duplicate",
+                stripe_event_type="invoice.paid",
+                stripe_account_id="acct_story47_duplicate_a",
+                stripe_invoice_id="in_story47_duplicate_a",
+                status="unmatched",
+                unattributed_reason="UNKNOWN_STRIPE_INVOICE_ID",
+                paid_at=datetime(2026, 3, 8, 20, 0, tzinfo=timezone.utc),
+                received_at=datetime(2026, 3, 8, 20, 1, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+
+        session.add(
+            InvoicePaymentEvent(
+                stripe_event_id="evt_story47_duplicate",
+                stripe_event_type="invoice.paid",
+                stripe_account_id="acct_story47_duplicate_b",
+                stripe_invoice_id="in_story47_duplicate_b",
+                status="unmatched",
+                unattributed_reason="UNKNOWN_STRIPE_INVOICE_ID",
+                paid_at=datetime(2026, 3, 8, 20, 2, tzinfo=timezone.utc),
+                received_at=datetime(2026, 3, 8, 20, 3, tzinfo=timezone.utc),
+            )
+        )
+
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+        session.rollback()
+
+        rows = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.stripe_event_id == "evt_story47_duplicate"
+            )
+        ).all()
         assert len(rows) == 1

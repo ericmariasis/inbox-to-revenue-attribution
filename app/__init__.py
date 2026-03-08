@@ -4,5 +4,6 @@ from app.models.auth_user import AuthUser
 from app.models.booking_link import BookingLink
 from app.models.content import Content
 from app.models.invoice import Invoice
+from app.models.invoice_payment_event import InvoicePaymentEvent
 from app.models.magic_link_token import MagicLinkToken
 

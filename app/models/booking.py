@@ -52,3 +52,4 @@ class Booking(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    invoice_payment_events = relationship("InvoicePaymentEvent", back_populates="booking")

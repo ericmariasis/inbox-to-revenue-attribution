@@ -3,6 +3,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
+
 def test_migrations_upgrade_and_downgrade():
     db_url = os.getenv("TEST_DATABASE_URL")
     cfg = Config("alembic.ini")
@@ -13,10 +14,26 @@ def test_migrations_upgrade_and_downgrade():
     try:
         with engine.connect() as conn:
             inspector = inspect(conn)
+            assert "invoice_payment_events" in inspector.get_table_names(schema="public")
             assert "invoices" in inspector.get_table_names(schema="public")
             assert "bookings" in inspector.get_table_names(schema="public")
             assert "content" in inspector.get_table_names(schema="public")
             assert "booking_links" in inspector.get_table_names(schema="public")
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            assert "invoice_payment_events" not in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
             booking_link_columns = {
                 column["name"] for column in inspector.get_columns("booking_links")
             }
@@ -267,5 +284,87 @@ def test_invoices_table_has_expected_columns_fk_indexes_and_unique_constraints()
         assert any(
             constraint["name"] == "uq_invoices_stripe_invoice_id"
             and constraint["column_names"] == ["stripe_invoice_id"]
+            for constraint in unique_constraints
+        )
+
+
+def test_invoice_payment_events_table_has_expected_columns_fk_indexes_and_unique_constraints():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {column["name"] for column in inspector.get_columns("invoice_payment_events")}
+        assert columns == {
+            "id",
+            "stripe_event_id",
+            "stripe_event_type",
+            "stripe_account_id",
+            "stripe_invoice_id",
+            "invoice_id",
+            "creator_id",
+            "booking_id",
+            "tid",
+            "status",
+            "unattributed_reason",
+            "paid_at",
+            "received_at",
+            "processed_at",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("invoice_payment_events")
+        assert any(
+            fk["referred_table"] == "invoices"
+            and fk["constrained_columns"] == ["invoice_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "creators"
+            and fk["constrained_columns"] == ["creator_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "bookings"
+            and fk["constrained_columns"] == ["booking_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "content"
+            and fk["constrained_columns"] == ["tid"]
+            and fk["referred_columns"] == ["tid"]
+            for fk in foreign_keys
+        )
+
+        indexes = inspector.get_indexes("invoice_payment_events")
+        assert any(
+            index["name"] == "ix_invoice_payment_events_invoice_id"
+            and index["column_names"] == ["invoice_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_invoice_payment_events_creator_id"
+            and index["column_names"] == ["creator_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_invoice_payment_events_booking_id"
+            and index["column_names"] == ["booking_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_invoice_payment_events_tid"
+            and index["column_names"] == ["tid"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_invoice_payment_events_stripe_invoice_id"
+            and index["column_names"] == ["stripe_invoice_id"]
+            for index in indexes
+        )
+
+        unique_constraints = inspector.get_unique_constraints("invoice_payment_events")
+        assert any(
+            constraint["name"] == "uq_invoice_payment_events_stripe_event_id"
+            and constraint["column_names"] == ["stripe_event_id"]
             for constraint in unique_constraints
         )

@@ -1,5 +1,5 @@
 import html
-from datetime import timezone
+from datetime import date, timezone
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -33,6 +33,12 @@ from app.services.browser_session import (
     clear_browser_session_cookie,
     get_browser_session_token,
 )
+from app.services.invoice_payment_events import (
+    UNATTRIBUTED_REASON_MISSING_TID,
+    UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
+    UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+)
+from app.services.reporting import CreatorReportsSummary, ReportsSummaryRow, get_creator_reports_summary
 
 router = APIRouter(include_in_schema=False)
 
@@ -60,6 +66,10 @@ BOOKING_LINK_FORM_FIELDS = (
 CONTENT_FORM_FIELDS = (
     "source_url",
     "booking_link_id",
+)
+REPORT_FILTER_FIELDS = (
+    "start_date",
+    "end_date",
 )
 
 
@@ -336,6 +346,49 @@ def creator_booking_activity_page(
     )
 
 
+@router.get("/app/reports")
+def creator_reports_page(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    content_items = list_content_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    filter_values = _reports_filter_values(dict(request.query_params))
+    start_date, end_date, field_errors = _reports_date_filters_from_values(filter_values)
+
+    summary = get_creator_reports_summary(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    if not field_errors:
+        try:
+            summary = get_creator_reports_summary(
+                creator_id=current_user.creator_id,
+                db=db,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except ValueError:
+            field_errors["date_range"] = "Start date must be on or before end date."
+
+    return _html_response(
+        _render_reports_page(
+            current_user=current_user,
+            content_items=content_items,
+            summary=summary,
+            filter_values=filter_values,
+            field_errors=field_errors,
+        )
+    )
+
+
 @router.post("/sign-out")
 def sign_out() -> RedirectResponse:
     return _redirect("/sign-in", clear_session=True)
@@ -431,6 +484,64 @@ def _content_form_values(raw_values: dict[str, str]) -> dict[str, str]:
         }
     )
     return form_values
+
+
+def _empty_reports_filter_values() -> dict[str, str]:
+    return {field_name: "" for field_name in REPORT_FILTER_FIELDS}
+
+
+def _reports_filter_values(raw_values: dict[str, str]) -> dict[str, str]:
+    form_values = _empty_reports_filter_values()
+    form_values.update(
+        {
+            "start_date": raw_values.get("start_date", "").strip(),
+            "end_date": raw_values.get("end_date", "").strip(),
+        }
+    )
+    return form_values
+
+
+def _reports_date_filters_from_values(
+    filter_values: dict[str, str],
+) -> tuple[date | None, date | None, dict[str, str]]:
+    field_errors: dict[str, str] = {}
+    start_date = _parse_optional_reports_date(
+        raw_value=filter_values["start_date"],
+        field_name="start_date",
+        field_errors=field_errors,
+    )
+    end_date = _parse_optional_reports_date(
+        raw_value=filter_values["end_date"],
+        field_name="end_date",
+        field_errors=field_errors,
+    )
+
+    if (
+        "start_date" not in field_errors
+        and "end_date" not in field_errors
+        and start_date is not None
+        and end_date is not None
+        and start_date > end_date
+    ):
+        field_errors["date_range"] = "Start date must be on or before end date."
+
+    return start_date, end_date, field_errors
+
+
+def _parse_optional_reports_date(
+    *,
+    raw_value: str,
+    field_name: str,
+    field_errors: dict[str, str],
+) -> date | None:
+    if not raw_value:
+        return None
+
+    try:
+        return date.fromisoformat(raw_value)
+    except ValueError:
+        field_errors[field_name] = "Use a valid date in YYYY-MM-DD format."
+        return None
 
 
 def _content_payload_from_form(
@@ -541,8 +652,8 @@ def _render_app_shell(current_user: AuthUser) -> str:
     <section class="grid">
       <article class="card">
         <p class="eyebrow">Account</p>
-        <h2>{creator_name}</h2>
-        <p>Signed in as <strong>{creator_email}</strong></p>
+        <h2 class="wrap-anywhere">{creator_name}</h2>
+        <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong></p>
         <p>This is the current creator workspace for the thin Phase 6.5 setup flow.</p>
       </article>
       <article class="card accent">
@@ -608,6 +719,7 @@ def _render_shell_nav(*, current_path: str) -> str:
         ("/app/booking-links", "Booking Links"),
         ("/app/content", "Content"),
         ("/app/bookings", "Bookings"),
+        ("/app/reports", "Reports"),
     ]
     items = []
     for href, label in links:
@@ -649,7 +761,7 @@ def _render_booking_links_page(
         <div>
           <p class="eyebrow">Create link</p>
           <h2>Add a booking link</h2>
-          <p>Signed in as <strong>{creator_email}</strong> for <strong>{creator_name}</strong>.</p>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
         <form action="/app/booking-links" method="post">
           <label for="name">Name</label>
@@ -885,7 +997,7 @@ def _render_content_form_panel(
       <div>
         <p class="eyebrow">Create tracked content</p>
         <h2>Add a source URL</h2>
-        <p>Signed in as <strong>{creator_email}</strong> for <strong>{creator_name}</strong>.</p>
+        <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
       </div>
       <form action="/app/content" method="post">
         <label for="source_url">Public source URL</label>
@@ -1050,7 +1162,7 @@ def _render_booking_activity_page(
         <div>
           <p class="eyebrow">Captured bookings</p>
           <h2>Creator-scoped activity only</h2>
-          <p>Signed in as <strong>{creator_email}</strong> for <strong>{creator_name}</strong>.</p>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
         <p>This first visibility slice shows only the basics: booking status, timestamps, and the tracked content plus booking-link context that the verified webhook resolved from stored app data.</p>
         <p>Client PII, invoices, revenue reporting, and deeper analytics stay out of scope for Story 41.</p>
@@ -1077,6 +1189,123 @@ def _render_booking_activity_page(
     </section>
     """
     return _page_layout(title="Booking Activity", body=body)
+
+
+def _render_reports_page(
+    *,
+    current_user: AuthUser,
+    content_items: list[ContentResponse],
+    summary: CreatorReportsSummary,
+    filter_values: dict[str, str],
+    field_errors: dict[str, str],
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    filters_active = _reports_filters_are_active(filter_values)
+    list_heading = "Paid content results" if summary.rows else "No paid results yet"
+    clear_filters_link = (
+        '<a href="/app/reports" class="inline-link">Clear filters</a>'
+        if filters_active
+        else ""
+    )
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Reports</h1>
+        <p class="lede">Review which tracked content is producing paid results, using the date each invoice was actually paid.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/reports")}
+    {_render_reports_notice(field_errors=field_errors)}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Paid-date filter</p>
+          <h2>Invoice-backed paid results</h2>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+        </div>
+        <p>Use the paid date below to narrow the summary by when the invoice payment actually landed. This page does not group results by booking date.</p>
+        <form action="/app/reports" method="get">
+          <div class="filter-row">
+            <div>
+              <label for="start_date">Start date</label>
+              <input
+                id="start_date"
+                name="start_date"
+                type="date"
+                value="{html.escape(filter_values["start_date"], quote=True)}"
+                aria-invalid="{str("start_date" in field_errors).lower()}"
+              />
+              {_render_reports_field_error(field_errors.get("start_date"))}
+            </div>
+            <div>
+              <label for="end_date">End date</label>
+              <input
+                id="end_date"
+                name="end_date"
+                type="date"
+                value="{html.escape(filter_values["end_date"], quote=True)}"
+                aria-invalid="{str("end_date" in field_errors or "date_range" in field_errors).lower()}"
+              />
+              {_render_reports_field_error(field_errors.get("end_date"))}
+            </div>
+          </div>
+          {_render_reports_field_error(field_errors.get("date_range"))}
+          <div class="filter-actions">
+            <button type="submit">Apply filters</button>
+            {clear_filters_link}
+          </div>
+        </form>
+        <div class="stat-grid">
+          <article class="stat-tile">
+            <p class="eyebrow">Paid revenue</p>
+            <p class="stat-value">{html.escape(_format_money_from_cents(summary.paid_revenue_cents))}</p>
+          </article>
+          <article class="stat-tile">
+            <p class="eyebrow">Paid invoices</p>
+            <p class="stat-value">{html.escape(str(summary.paid_invoice_count))}</p>
+            <p>{html.escape(_count_copy(summary.paid_invoice_count, "paid invoice"))}</p>
+          </article>
+          <article class="stat-tile">
+            <p class="eyebrow">Paid bookings</p>
+            <p class="stat-value">{html.escape(str(summary.paid_booking_count))}</p>
+            <p>{html.escape(_count_copy(summary.paid_booking_count, "paid booking"))}</p>
+          </article>
+        </div>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">What is not counted yet</p>
+          <h2>Keep pending fixes separate from paid totals</h2>
+        </div>
+        <p>Paid totals on this page come only from invoices that are marked paid and matched back to your tracked content through the stored booking chain.</p>
+        <p><strong>Current unmatched backlog</strong>: {html.escape(_count_copy(summary.unattributed_current_backlog.event_count, "event"))} waiting on more attribution context.</p>
+        {_render_reports_unmatched_explainer(summary)}
+        {_render_reports_unmatched_reasons(summary)}
+        <p><strong>Blocked billing cases</strong>: some booking attempts may still be blocked before invoicing, but this page does not show a numeric blocked count yet.</p>
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Content summary</p>
+          <h2>{list_heading}</h2>
+        </div>
+        <p>{html.escape(_count_copy(len(summary.rows), "content row"))} visible</p>
+      </div>
+      {_render_reports_results(
+          content_items=content_items,
+          summary=summary,
+          filters_active=filters_active,
+      )}
+    </section>
+    """
+    return _page_layout(title="Reports", body=body)
 
 
 def _render_booking_activity_list(
@@ -1127,7 +1356,118 @@ def _render_booking_activity_card(*, booking: BookingActivityResponse) -> str:
     """
 
 
+def _render_reports_notice(*, field_errors: dict[str, str]) -> str:
+    if not field_errors:
+        return ""
+
+    return """
+    <section class="notice error">
+      <p class="eyebrow">Fix the paid-date filters</p>
+      <p>Use valid dates and keep the start date on or before the end date. The summary below is showing the current unfiltered results.</p>
+    </section>
+    """
+
+
+def _render_reports_results(
+    *,
+    content_items: list[ContentResponse],
+    summary: CreatorReportsSummary,
+    filters_active: bool,
+) -> str:
+    if not summary.rows:
+        return _render_reports_empty_state(
+            has_tracked_content=bool(content_items),
+            filters_active=filters_active,
+        )
+
+    items = "".join(_render_reports_row_card(row=row) for row in summary.rows)
+    return f'<div class="content-list">{items}</div>'
+
+
+def _render_reports_empty_state(*, has_tracked_content: bool, filters_active: bool) -> str:
+    if not has_tracked_content:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">No tracked content yet</p>
+          <h2>Create tracked content first</h2>
+          <p>This reporting page fills in only after you save a tracked link and a paid invoice is matched back to it.</p>
+          <a href="/app/content" class="inline-link">Create tracked content</a>
+        </section>
+        """
+
+    if filters_active:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">No results in this window</p>
+          <h2>No paid results match this paid-date filter</h2>
+          <p>Try widening the paid-date range or clear the filters to see all invoice-backed paid results for this creator.</p>
+          <a href="/app/reports" class="inline-link">Clear filters</a>
+        </section>
+        """
+
+    return """
+    <section class="empty-state">
+      <p class="eyebrow">No paid results yet</p>
+      <h2>No paid results yet</h2>
+      <p>You already have tracked content, but nothing is counted here until a matching invoice is marked paid.</p>
+      <a href="/app/content" class="inline-link">Review tracked content</a>
+    </section>
+    """
+
+
+def _render_reports_row_card(*, row: ReportsSummaryRow) -> str:
+    return f"""
+    <article class="content-card stack">
+      <div class="content-card-header">
+        <div>
+          <p class="eyebrow">Paid content</p>
+          <h2>{html.escape(_content_card_title(row.source_url))}</h2>
+        </div>
+        <p class="pill-note">{html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))}</p>
+      </div>
+      <p><strong>Source URL</strong>: <a href="{html.escape(row.source_url)}" class="inline-link">{html.escape(row.source_url)}</a></p>
+      <p><strong>Tracking ID</strong>: <code>{html.escape(row.tid)}</code></p>
+      <p><strong>Paid revenue</strong>: {html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
+      <p><strong>Paid bookings</strong>: {html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
+      <p><strong>Paid window</strong>: {html.escape(_reports_paid_window_copy(row))}</p>
+    </article>
+    """
+
+
+def _render_reports_unmatched_reasons(summary: CreatorReportsSummary) -> str:
+    backlog = summary.unattributed_current_backlog
+    if backlog.event_count == 0:
+        return "<p>No current unmatched payment backlog is waiting to be repaired.</p>"
+
+    items = "".join(
+        (
+            f"<li><strong>{html.escape(_reports_reason_label(reason.reason))}</strong>: "
+            f"{html.escape(_count_copy(reason.event_count, 'event'))}</li>"
+        )
+        for reason in backlog.reasons
+    )
+    return f'<ul class="reason-list">{items}</ul>'
+
+
+def _render_reports_unmatched_explainer(summary: CreatorReportsSummary) -> str:
+    backlog = summary.unattributed_current_backlog
+    if backlog.event_count == 0:
+        return ""
+
+    return (
+        "<p>These backlog events are separate from the paid content rows below. "
+        "You can still see an attributed paid result while a different payment is "
+        "waiting for its tracking details to be repaired.</p>"
+    )
+
+
 def _render_content_field_error(message: str | None) -> str:
+    if not message:
+        return ""
+    return f'<p class="field-error">{html.escape(message)}</p>'
+
+
+def _render_reports_field_error(message: str | None) -> str:
     if not message:
         return ""
     return f'<p class="field-error">{html.escape(message)}</p>'
@@ -1191,6 +1531,10 @@ def _billing_defaults_copy(
 
 
 def _format_billing_amount(amount_cents: int) -> str:
+    return f"{amount_cents / 100:,.2f}"
+
+
+def _format_money_from_cents(amount_cents: int) -> str:
     return f"{amount_cents / 100:,.2f}"
 
 
@@ -1260,6 +1604,34 @@ def _format_timestamp_in_utc(value) -> str:
 
 def _format_connected_at(value) -> str:
     return _format_timestamp_in_utc(value)
+
+
+def _count_copy(count: int, singular: str, plural: str | None = None) -> str:
+    label = singular if count == 1 else plural or f"{singular}s"
+    return f"{count} {label}"
+
+
+def _reports_filters_are_active(filter_values: dict[str, str]) -> bool:
+    return any(filter_values[field_name] for field_name in REPORT_FILTER_FIELDS)
+
+
+def _reports_paid_window_copy(row: ReportsSummaryRow) -> str:
+    if row.first_paid_at == row.last_paid_at:
+        return row.first_paid_at.astimezone(timezone.utc).strftime("%B %d, %Y")
+    return (
+        f"{row.first_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')} to "
+        f"{row.last_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')}"
+    )
+
+
+def _reports_reason_label(reason: str | None) -> str:
+    if reason == UNATTRIBUTED_REASON_MISSING_TID:
+        return "Missing tracking ID"
+    if reason == UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID:
+        return "Unknown booking"
+    if reason == UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID:
+        return "Unknown invoice"
+    return (reason or "Unknown reason").replace("_", " ").title()
 
 
 def _page_layout(*, title: str, body: str) -> str:
@@ -1336,6 +1708,11 @@ def _page_layout(*, title: str, body: str) -> str:
         color: var(--ink);
       }}
 
+      .wrap-anywhere {{
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }}
+
       code {{
         font-family: "SFMono-Regular", "Consolas", monospace;
         font-size: 0.94em;
@@ -1363,6 +1740,10 @@ def _page_layout(*, title: str, body: str) -> str:
         grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
         gap: 16px;
         margin-bottom: 16px;
+      }}
+
+      .grid > * {{
+        min-width: 0;
       }}
 
       .shell-header {{
@@ -1529,6 +1910,23 @@ def _page_layout(*, title: str, body: str) -> str:
         gap: 16px;
       }}
 
+      .filter-row {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 12px;
+      }}
+
+      .filter-row > div {{
+        min-width: 0;
+      }}
+
+      .filter-actions {{
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+      }}
+
       form {{
         display: grid;
         gap: 12px;
@@ -1568,6 +1966,26 @@ def _page_layout(*, title: str, body: str) -> str:
         margin-top: -6px;
         color: #972f17;
         font-weight: 700;
+      }}
+
+      .stat-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 12px;
+      }}
+
+      .stat-tile {{
+        padding: 18px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: var(--panel-strong);
+      }}
+
+      .stat-value {{
+        color: var(--ink);
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+        font-size: 2rem;
+        line-height: 1.05;
       }}
 
       button {{
@@ -1619,6 +2037,14 @@ def _page_layout(*, title: str, body: str) -> str:
       .activity-list {{
         display: grid;
         gap: 12px;
+      }}
+
+      .reason-list {{
+        margin: 0;
+        padding-left: 20px;
+        display: grid;
+        gap: 8px;
+        color: var(--muted);
       }}
 
       .booking-link-card,

@@ -14,12 +14,29 @@ class StripeAccountReadiness:
     charges_enabled: bool
 
 
+@dataclass(frozen=True)
+class StripeInvoiceCreateResult:
+    stripe_invoice_id: str
+
+
 class StripeProvider(Protocol):
     def build_connect_onboarding_url(self, *, creator_id: str, state: str) -> str: ...
 
     def exchange_connect_callback(self, *, code: str, state: str) -> str: ...
 
     def get_account_readiness(self, *, stripe_account_id: str) -> StripeAccountReadiness: ...
+
+    def create_invoice(
+        self,
+        *,
+        stripe_account_id: str,
+        amount_cents: int,
+        currency: str,
+        metadata: dict[str, str],
+        idempotency_key: str,
+    ) -> StripeInvoiceCreateResult: ...
+
+    def void_invoice(self, *, stripe_account_id: str, stripe_invoice_id: str) -> None: ...
 
 
 class StripeOAuthProvider:
@@ -54,6 +71,22 @@ class StripeOAuthProvider:
     def get_account_readiness(self, *, stripe_account_id: str) -> StripeAccountReadiness:
         del stripe_account_id
         raise StripeProviderError("default stripe account readiness lookup is not implemented")
+
+    def create_invoice(
+        self,
+        *,
+        stripe_account_id: str,
+        amount_cents: int,
+        currency: str,
+        metadata: dict[str, str],
+        idempotency_key: str,
+    ) -> StripeInvoiceCreateResult:
+        del stripe_account_id, amount_cents, currency, metadata, idempotency_key
+        raise StripeProviderError("default stripe invoice creation is not implemented")
+
+    def void_invoice(self, *, stripe_account_id: str, stripe_invoice_id: str) -> None:
+        del stripe_account_id, stripe_invoice_id
+        raise StripeProviderError("default stripe invoice void is not implemented")
 
 
 def build_default_stripe_provider(*, settings: Settings | None = None) -> StripeProvider:

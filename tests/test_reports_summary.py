@@ -23,6 +23,7 @@ from app.services.invoice_payment_events import (
 from app.services.reporting import (
     BLOCKED_REPORTING_UNSUPPORTED_REASON,
     CURRENT_UNATTRIBUTED_BACKLOG_SCOPE,
+    get_creator_paid_attribution_explanation,
     get_creator_reports_summary,
 )
 
@@ -175,6 +176,36 @@ def _create_unmatched_payment_event(
         paid_at=paid_at,
         received_at=paid_at,
         processed_at=None,
+    )
+    session.add(event)
+    session.flush()
+    return event
+
+
+def _create_matched_payment_event(
+    session: Session,
+    *,
+    creator: Creator,
+    booking: Booking,
+    invoice: Invoice,
+    stripe_event_id: str,
+    paid_at: datetime,
+    status: str = "applied",
+) -> InvoicePaymentEvent:
+    event = InvoicePaymentEvent(
+        stripe_event_id=stripe_event_id,
+        stripe_event_type="invoice.paid",
+        stripe_account_id=creator.stripe_account_id,
+        stripe_invoice_id=invoice.stripe_invoice_id,
+        invoice_id=invoice.id,
+        creator_id=creator.id,
+        booking_id=booking.id,
+        tid=booking.tid,
+        status=status,
+        unattributed_reason=None,
+        paid_at=paid_at,
+        received_at=paid_at,
+        processed_at=paid_at,
     )
     session.add(event)
     session.flush()
@@ -356,6 +387,100 @@ def test_creator_reports_summary_groups_paid_revenue_by_content_and_keeps_curren
     ]
     assert filtered_summary.blocked_summary.supported is False
     assert filtered_summary.blocked_summary.reason == BLOCKED_REPORTING_UNSUPPORTED_REASON
+
+
+def test_creator_paid_attribution_explanation_returns_canonical_chain_for_creator_scoped_row():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, _ = _create_creator_with_user(
+            session,
+            suffix="explanation",
+            stripe_account_id="acct_reports_explanation",
+        )
+        other_creator, _ = _create_creator_with_user(
+            session,
+            suffix="explanation_other",
+            stripe_account_id="acct_reports_explanation_other",
+        )
+        booking_link = _create_booking_link(
+            session,
+            creator=creator,
+            suffix="explanation",
+        )
+        content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="explanation",
+        )
+        booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_REPORTS_EXPLANATION",
+            booked_at=datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+        )
+        invoice = _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=booking,
+            stripe_invoice_id="in_reports_explanation",
+            amount_cents=19500,
+            paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+        )
+        _create_matched_payment_event(
+            session,
+            creator=creator,
+            booking=booking,
+            invoice=invoice,
+            stripe_event_id="evt_reports_explanation",
+            paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+        )
+
+        creator_id = creator.id
+        other_creator_id = other_creator.id
+        content_tid = content.tid
+        content_source_url = content.source_url
+        booking_link_id = booking_link.id
+        session.commit()
+
+    with Session(engine) as session:
+        explanation = get_creator_paid_attribution_explanation(
+            creator_id=creator_id,
+            tid=content_tid,
+            db=session,
+            start_date=date(2026, 3, 8),
+            end_date=date(2026, 3, 8),
+        )
+        hidden_from_other_creator = get_creator_paid_attribution_explanation(
+            creator_id=other_creator_id,
+            tid=content_tid,
+            db=session,
+        )
+        filtered_out = get_creator_paid_attribution_explanation(
+            creator_id=creator_id,
+            tid=content_tid,
+            db=session,
+            start_date=date(2026, 3, 9),
+            end_date=date(2026, 3, 9),
+        )
+
+    assert explanation is not None
+    assert explanation.summary_row.booking_link_id == booking_link_id
+    assert explanation.summary_row.tid == content_tid
+    assert explanation.summary_row.source_url == content_source_url
+    assert explanation.summary_row.paid_revenue_cents == 19500
+    assert explanation.summary_row.paid_invoice_count == 1
+    assert explanation.summary_row.paid_booking_count == 1
+    assert len(explanation.evidence) == 1
+    assert explanation.evidence[0].booking_uuid == "BOOK_REPORTS_EXPLANATION"
+    assert explanation.evidence[0].stripe_invoice_id == "in_reports_explanation"
+    assert explanation.evidence[0].stripe_event_id == "evt_reports_explanation"
+    assert explanation.evidence[0].payment_event_status == "applied"
+    assert hidden_from_other_creator is None
+    assert filtered_out is None
 
 
 def test_reports_summary_requires_auth():

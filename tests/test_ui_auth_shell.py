@@ -262,6 +262,49 @@ def _insert_unmatched_payment_event(
     return payment_event_id
 
 
+def _insert_matched_payment_event(
+    *,
+    creator_id: str,
+    booking_id: str,
+    tid: str,
+    invoice_id: str,
+    stripe_account_id: str,
+    stripe_event_id: str,
+    stripe_invoice_id: str,
+    paid_at: datetime,
+    status: str = "applied",
+) -> str:
+    payment_event_id = str(uuid.uuid4())
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO invoice_payment_events "
+                "(id, stripe_event_id, stripe_event_type, stripe_account_id, stripe_invoice_id, invoice_id, creator_id, booking_id, tid, status, unattributed_reason, paid_at, received_at, processed_at) "
+                "VALUES "
+                "(:id, :stripe_event_id, :stripe_event_type, :stripe_account_id, :stripe_invoice_id, :invoice_id, :creator_id, :booking_id, :tid, :status, :unattributed_reason, :paid_at, :received_at, :processed_at)"
+            ),
+            {
+                "id": payment_event_id,
+                "stripe_event_id": stripe_event_id,
+                "stripe_event_type": "invoice.paid",
+                "stripe_account_id": stripe_account_id,
+                "stripe_invoice_id": stripe_invoice_id,
+                "invoice_id": invoice_id,
+                "creator_id": creator_id,
+                "booking_id": booking_id,
+                "tid": tid,
+                "status": status,
+                "unattributed_reason": None,
+                "paid_at": paid_at,
+                "received_at": paid_at,
+                "processed_at": paid_at,
+            },
+        )
+
+    return payment_event_id
+
+
 @contextmanager
 def _override_app_state(name, value):
     had_attr = hasattr(app.state, name)
@@ -996,7 +1039,347 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
     assert "Missing tracking ID" in response.text
     assert "1 event waiting on more attribution context" in response.text
     assert "These backlog events are separate from the paid content rows below" in response.text
+    assert (
+        'href="/app/reports/export.csv?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
+    assert (
+        'href="/app/reports/explanations/unattributed?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
+    assert (
+        f'href="/app/reports/explanations/paid/{current_content_tid}?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
     assert "does not show a numeric blocked count yet" in response.text
+
+
+def test_reports_paid_explanation_page_renders_creator_scoped_canonical_chain():
+    creator = _insert_creator_user(
+        email=f"ui_reports_explanation_{uuid.uuid4().hex}@example.com",
+        name="Reports Explanation Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_explanation",
+    )
+    access_token = _access_token(
+        user_id=creator["user_id"],
+        creator_id=creator["creator_id"],
+        email=creator["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Explanation Strategy",
+        calendly_url="https://calendly.com/example/explanation-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    content_tid = f"uireportsexplanation{uuid.uuid4().hex[:8]}"
+    source_url = "https://example.com/posts/reports-explanation"
+    booking_uuid = f"BOOK_UI_REPORTS_EXPLANATION_{uuid.uuid4().hex[:8]}"
+    stripe_invoice_id = f"in_ui_reports_explanation_{uuid.uuid4().hex[:8]}"
+    stripe_event_id = f"evt_ui_reports_explanation_{uuid.uuid4().hex[:8]}"
+
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url=source_url,
+        tid=content_tid,
+    )
+    booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=booking_uuid,
+        booked_at=datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+    )
+    invoice_id = _insert_invoice(
+        creator_id=creator["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        stripe_account_id="acct_ui_reports_explanation",
+        stripe_invoice_id=stripe_invoice_id,
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=creator["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        invoice_id=invoice_id,
+        stripe_account_id="acct_ui_reports_explanation",
+        stripe_event_id=stripe_event_id,
+        stripe_invoice_id=stripe_invoice_id,
+        paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get(
+            f"/app/reports/explanations/paid/{content_tid}",
+            params={"start_date": "2026-03-08", "end_date": "2026-03-08"},
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert "Why this revenue counted" in response.text
+    assert "the same tracking ID moved through your stored content, booking, invoice, and payment record chain" in response.text
+    assert source_url in response.text
+    assert content_tid in response.text
+    assert booking_uuid in response.text
+    assert stripe_invoice_id in response.text
+    assert stripe_event_id in response.text
+    assert "Applied" in response.text
+    assert (
+        'href="/app/reports?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
+
+
+def test_reports_paid_explanation_page_returns_404_for_other_creators_row():
+    creator_a = _insert_creator_user(
+        email=f"ui_reports_explanation_a_{uuid.uuid4().hex}@example.com",
+        name="Reports Explanation Creator A",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_explanation_a",
+    )
+    creator_b = _insert_creator_user(
+        email=f"ui_reports_explanation_b_{uuid.uuid4().hex}@example.com",
+        name="Reports Explanation Creator B",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_explanation_b",
+    )
+    access_token_b = _access_token(
+        user_id=creator_b["user_id"],
+        creator_id=creator_b["creator_id"],
+        email=creator_b["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=creator_a["creator_id"],
+        name="Explanation Isolation Strategy",
+        calendly_url="https://calendly.com/example/explanation-isolation",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    content_tid = f"uireportsexplanationhidden{uuid.uuid4().hex[:8]}"
+    stripe_invoice_id = f"in_ui_reports_explanation_hidden_{uuid.uuid4().hex[:8]}"
+
+    _insert_content(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/reports-explanation-hidden",
+        tid=content_tid,
+    )
+    booking_id = _insert_booking(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_EXPLANATION_HIDDEN_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+    )
+    invoice_id = _insert_invoice(
+        creator_id=creator_a["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        stripe_account_id="acct_ui_reports_explanation_a",
+        stripe_invoice_id=stripe_invoice_id,
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=creator_a["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        invoice_id=invoice_id,
+        stripe_account_id="acct_ui_reports_explanation_a",
+        stripe_event_id=f"evt_ui_reports_explanation_hidden_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=stripe_invoice_id,
+        paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token_b)
+        response = client.get(
+            f"/app/reports/explanations/paid/{content_tid}",
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "report explanation not found"}
+
+
+def test_reports_unattributed_explanation_page_renders_current_backlog_reason():
+    creator = _insert_creator_user(
+        email=f"ui_reports_unattributed_{uuid.uuid4().hex}@example.com",
+        name="Reports Unattributed Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_unattributed",
+    )
+    access_token = _access_token(
+        user_id=creator["user_id"],
+        creator_id=creator["creator_id"],
+        email=creator["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_unmatched_payment_event(
+        creator_id=creator["creator_id"],
+        stripe_account_id="acct_ui_reports_unattributed",
+        stripe_event_id=f"evt_ui_reports_unattributed_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=f"in_ui_reports_unattributed_{uuid.uuid4().hex[:8]}",
+        reason=UNATTRIBUTED_REASON_MISSING_TID,
+        paid_at=datetime(2026, 3, 8, 11, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get(
+            "/app/reports/explanations/unattributed",
+            params={"start_date": "2026-03-08", "end_date": "2026-03-08"},
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert "Why some payments are not counted yet" in response.text
+    assert "counts and reasons only" in response.text
+    assert "Missing tracking ID" in response.text
+    assert "stays out of paid totals until that creator-scoped link can be repaired" in response.text
+    assert (
+        'href="/app/reports?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
+
+
+def test_reports_csv_export_uses_same_filtered_creator_scoped_dataset():
+    creator_a = _insert_creator_user(
+        email=f"ui_reports_export_a_{uuid.uuid4().hex}@example.com",
+        name="Reports Export Creator A",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_export_a",
+    )
+    creator_b = _insert_creator_user(
+        email=f"ui_reports_export_b_{uuid.uuid4().hex}@example.com",
+        name="Reports Export Creator B",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_export_b",
+    )
+    access_token = _access_token(
+        user_id=creator_a["user_id"],
+        creator_id=creator_a["creator_id"],
+        email=creator_a["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    creator_a_booking_link_id = _insert_booking_link(
+        creator_id=creator_a["creator_id"],
+        name="Export Creator A Strategy",
+        calendly_url="https://calendly.com/example/export-creator-a-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    old_tid = f"uireportsexportold{uuid.uuid4().hex[:8]}"
+    current_tid = f"uireportsexportcurrent{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=creator_a_booking_link_id,
+        source_url="https://example.com/posts/reports-export-old",
+        tid=old_tid,
+    )
+    _insert_content(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=creator_a_booking_link_id,
+        source_url="https://example.com/posts/reports-export-current",
+        tid=current_tid,
+    )
+    old_booking_id = _insert_booking(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=creator_a_booking_link_id,
+        tid=old_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_EXPORT_OLD_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 7, 12, 0, tzinfo=timezone.utc),
+    )
+    current_booking_id = _insert_booking(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=creator_a_booking_link_id,
+        tid=current_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_EXPORT_CURRENT_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=creator_a["creator_id"],
+        booking_id=old_booking_id,
+        tid=old_tid,
+        stripe_account_id="acct_ui_reports_export_a",
+        stripe_invoice_id=f"in_ui_reports_export_old_{uuid.uuid4().hex[:8]}",
+        amount_cents=5000,
+        paid_at=datetime(2026, 3, 7, 13, 0, tzinfo=timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=creator_a["creator_id"],
+        booking_id=current_booking_id,
+        tid=current_tid,
+        stripe_account_id="acct_ui_reports_export_a",
+        stripe_invoice_id=f"in_ui_reports_export_current_{uuid.uuid4().hex[:8]}",
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+    )
+
+    creator_b_booking_link_id = _insert_booking_link(
+        creator_id=creator_b["creator_id"],
+        name="Export Creator B Strategy",
+        calendly_url="https://calendly.com/example/export-creator-b-strategy",
+        billing_amount_cents=88000,
+        billing_currency="USD",
+    )
+    hidden_tid = f"uireportsexporthidden{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=creator_b["creator_id"],
+        booking_link_id=creator_b_booking_link_id,
+        source_url="https://example.com/posts/reports-export-hidden",
+        tid=hidden_tid,
+    )
+    hidden_booking_id = _insert_booking(
+        creator_id=creator_b["creator_id"],
+        booking_link_id=creator_b_booking_link_id,
+        tid=hidden_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_EXPORT_HIDDEN_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 8, 14, 0, tzinfo=timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=creator_b["creator_id"],
+        booking_id=hidden_booking_id,
+        tid=hidden_tid,
+        stripe_account_id="acct_ui_reports_export_b",
+        stripe_invoice_id=f"in_ui_reports_export_hidden_{uuid.uuid4().hex[:8]}",
+        amount_cents=88000,
+        paid_at=datetime(2026, 3, 8, 15, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get(
+            "/app/reports/export.csv",
+            params={"start_date": "2026-03-08", "end_date": "2026-03-08"},
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert (
+        response.headers["content-disposition"]
+        == 'attachment; filename="reports-summary-2026-03-08-to-2026-03-08.csv"'
+    )
+    assert response.text.startswith(
+        "content_id,booking_link_id,tid,source_url,paid_revenue_cents,paid_invoice_count,paid_booking_count,first_paid_at,last_paid_at\n"
+    )
+    assert current_tid in response.text
+    assert "https://example.com/posts/reports-export-current" in response.text
+    assert "19500" in response.text
+    assert "2026-03-08T09:00:00Z" in response.text
+    assert old_tid not in response.text
+    assert "https://example.com/posts/reports-export-old" not in response.text
+    assert hidden_tid not in response.text
+    assert "https://example.com/posts/reports-export-hidden" not in response.text
 
 
 def test_reports_page_without_tracked_content_explains_prerequisite():

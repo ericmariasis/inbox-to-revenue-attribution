@@ -1,6 +1,6 @@
 import html
 from datetime import date, timezone
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -38,7 +38,15 @@ from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
 )
-from app.services.reporting import CreatorReportsSummary, ReportsSummaryRow, get_creator_reports_summary
+from app.services.reporting import (
+    CreatorPaidAttributionExplanation,
+    CreatorReportsSummary,
+    PaidAttributionEvidence,
+    ReportsSummaryRow,
+    build_reports_summary_csv,
+    get_creator_paid_attribution_explanation,
+    get_creator_reports_summary,
+)
 
 router = APIRouter(include_in_schema=False)
 
@@ -387,6 +395,106 @@ def creator_reports_page(
             field_errors=field_errors,
         )
     )
+
+
+@router.get("/app/reports/explanations/paid/{tid}")
+def creator_reports_paid_explanation_page(
+    tid: str,
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    filter_values = _reports_filter_values(dict(request.query_params))
+    start_date, end_date, field_errors = _reports_date_filters_from_values(filter_values)
+    if field_errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=_reports_filter_error_detail(field_errors),
+        )
+
+    explanation = get_creator_paid_attribution_explanation(
+        creator_id=current_user.creator_id,
+        tid=tid,
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if explanation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="report explanation not found",
+        )
+
+    return _html_response(
+        _render_reports_paid_explanation_page(
+            current_user=current_user,
+            explanation=explanation,
+            filter_values=filter_values,
+        )
+    )
+
+
+@router.get("/app/reports/explanations/unattributed")
+def creator_reports_unattributed_explanation_page(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    filter_values = _reports_filter_values(dict(request.query_params))
+    summary = get_creator_reports_summary(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    return _html_response(
+        _render_reports_unattributed_explanation_page(
+            current_user=current_user,
+            summary=summary,
+            filter_values=filter_values,
+        )
+    )
+
+
+@router.get("/app/reports/export.csv")
+def creator_reports_csv_export(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    filter_values = _reports_filter_values(dict(request.query_params))
+    start_date, end_date, field_errors = _reports_date_filters_from_values(filter_values)
+    if field_errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=_reports_filter_error_detail(field_errors),
+        )
+
+    summary = get_creator_reports_summary(
+        creator_id=current_user.creator_id,
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    response = Response(
+        content=build_reports_summary_csv(summary),
+        media_type="text/csv",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="{_reports_csv_filename(start_date=start_date, end_date=end_date)}"'
+    )
+    return response
 
 
 @router.post("/sign-out")
@@ -1208,6 +1316,10 @@ def _render_reports_page(
         if filters_active
         else ""
     )
+    export_link = _render_reports_export_link(
+        filter_values=filter_values,
+        field_errors=field_errors,
+    )
 
     body = f"""
     <header class="shell-header">
@@ -1259,6 +1371,7 @@ def _render_reports_page(
           <div class="filter-actions">
             <button type="submit">Apply filters</button>
             {clear_filters_link}
+            {export_link}
           </div>
         </form>
         <div class="stat-grid">
@@ -1287,6 +1400,10 @@ def _render_reports_page(
         <p><strong>Current unmatched backlog</strong>: {html.escape(_count_copy(summary.unattributed_current_backlog.event_count, "event"))} waiting on more attribution context.</p>
         {_render_reports_unmatched_explainer(summary)}
         {_render_reports_unmatched_reasons(summary)}
+        {_render_reports_unmatched_explanation_link(
+            summary=summary,
+            filter_values=filter_values,
+        )}
         <p><strong>Blocked billing cases</strong>: some booking attempts may still be blocked before invoicing, but this page does not show a numeric blocked count yet.</p>
       </article>
     </section>
@@ -1302,6 +1419,7 @@ def _render_reports_page(
           content_items=content_items,
           summary=summary,
           filters_active=filters_active,
+          filter_values=filter_values,
       )}
     </section>
     """
@@ -1373,6 +1491,7 @@ def _render_reports_results(
     content_items: list[ContentResponse],
     summary: CreatorReportsSummary,
     filters_active: bool,
+    filter_values: dict[str, str],
 ) -> str:
     if not summary.rows:
         return _render_reports_empty_state(
@@ -1380,7 +1499,13 @@ def _render_reports_results(
             filters_active=filters_active,
         )
 
-    items = "".join(_render_reports_row_card(row=row) for row in summary.rows)
+    items = "".join(
+        _render_reports_row_card(
+            row=row,
+            filter_values=filter_values,
+        )
+        for row in summary.rows
+    )
     return f'<div class="content-list">{items}</div>'
 
 
@@ -1415,7 +1540,14 @@ def _render_reports_empty_state(*, has_tracked_content: bool, filters_active: bo
     """
 
 
-def _render_reports_row_card(*, row: ReportsSummaryRow) -> str:
+def _render_reports_row_card(*, row: ReportsSummaryRow, filter_values: dict[str, str]) -> str:
+    explanation_href = html.escape(
+        _reports_paid_explanation_href(
+            tid=row.tid,
+            filter_values=filter_values,
+        ),
+        quote=True,
+    )
     return f"""
     <article class="content-card stack">
       <div class="content-card-header">
@@ -1430,8 +1562,255 @@ def _render_reports_row_card(*, row: ReportsSummaryRow) -> str:
       <p><strong>Paid revenue</strong>: {html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
       <p><strong>Paid bookings</strong>: {html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
       <p><strong>Paid window</strong>: {html.escape(_reports_paid_window_copy(row))}</p>
+      <a href="{explanation_href}" class="inline-link">Why this revenue counted</a>
     </article>
     """
+
+
+def _render_reports_export_link(
+    *,
+    filter_values: dict[str, str],
+    field_errors: dict[str, str],
+) -> str:
+    if field_errors:
+        return ""
+
+    return (
+        f'<a href="{html.escape(_reports_export_href(filter_values), quote=True)}" '
+        'class="inline-link">Export CSV</a>'
+    )
+
+
+def _render_reports_unmatched_explanation_link(
+    *,
+    summary: CreatorReportsSummary,
+    filter_values: dict[str, str],
+) -> str:
+    if summary.unattributed_current_backlog.event_count == 0:
+        return ""
+
+    return (
+        f'<a href="{html.escape(_reports_unattributed_explanation_href(filter_values), quote=True)}" '
+        'class="inline-link">Why some payments are not counted yet</a>'
+    )
+
+
+def _render_reports_paid_explanation_page(
+    *,
+    current_user: AuthUser,
+    explanation: CreatorPaidAttributionExplanation,
+    filter_values: dict[str, str],
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    row = explanation.summary_row
+    back_href = html.escape(_reports_page_href(filter_values), quote=True)
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Why this revenue counted</h1>
+        <p class="lede">This result is counted because the same tracking ID moved through your stored content, booking, invoice, and payment record chain.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/reports")}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Creator-scoped evidence</p>
+          <h2>Paid attribution for one tracked content row</h2>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+        </div>
+        <p><strong>Source URL</strong>: <a href="{html.escape(row.source_url)}" class="inline-link">{html.escape(row.source_url)}</a></p>
+        <p><strong>Tracking ID</strong>: <code>{html.escape(row.tid)}</code></p>
+        <p><strong>Paid window</strong>: {html.escape(_reports_paid_window_copy(row))}</p>
+        <a href="{back_href}" class="inline-link">Back to reports</a>
+        <div class="stat-grid">
+          <article class="stat-tile">
+            <p class="eyebrow">Paid revenue</p>
+            <p class="stat-value">{html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
+          </article>
+          <article class="stat-tile">
+            <p class="eyebrow">Paid invoices</p>
+            <p class="stat-value">{html.escape(str(row.paid_invoice_count))}</p>
+            <p>{html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))}</p>
+          </article>
+          <article class="stat-tile">
+            <p class="eyebrow">Paid bookings</p>
+            <p class="stat-value">{html.escape(str(row.paid_booking_count))}</p>
+            <p>{html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
+          </article>
+        </div>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">How attribution works here</p>
+          <h2>The stored chain decides what counts</h2>
+        </div>
+        <p>This row stays in paid totals only when the stored content, booking, invoice, and payment-event records all point back to the same creator-scoped tracking ID.</p>
+        <p>If any part of that chain is missing, the payment is explained separately and kept out of paid totals until the missing link is repaired.</p>
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Counted payment evidence</p>
+          <h2>Content to booking to invoice to payment event</h2>
+        </div>
+        <p>{html.escape(_count_copy(len(explanation.evidence), "invoice chain"))} shown</p>
+      </div>
+      {_render_reports_paid_evidence(explanation)}
+    </section>
+    """
+    return _page_layout(title="Why this revenue counted", body=body)
+
+
+def _render_reports_paid_evidence(
+    explanation: CreatorPaidAttributionExplanation,
+) -> str:
+    if not explanation.evidence:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">Evidence pending</p>
+          <h2>No linked payment event is stored for this row yet</h2>
+          <p>The paid row is visible from canonical invoice state, but the matching payment-event evidence is not available in local reporting data yet.</p>
+        </section>
+        """
+
+    items = "".join(
+        _render_reports_paid_evidence_card(
+            index=index,
+            evidence=evidence,
+        )
+        for index, evidence in enumerate(explanation.evidence, start=1)
+    )
+    return f'<div class="content-list">{items}</div>'
+
+
+def _render_reports_paid_evidence_card(
+    *,
+    index: int,
+    evidence: PaidAttributionEvidence,
+) -> str:
+    payment_event_line = (
+        f"<p><strong>Payment event</strong>: "
+        f"<code>{html.escape(evidence.stripe_event_id or '')}</code> "
+        f"stored as {html.escape(_reports_payment_event_status_label(evidence.payment_event_status))} "
+        f"and received {_format_timestamp_in_utc(evidence.payment_event_received_at)}.</p>"
+        if evidence.stripe_event_id is not None and evidence.payment_event_received_at is not None
+        else "<p><strong>Payment event</strong>: No linked payment event is stored for this invoice yet.</p>"
+    )
+    payment_paid_line = (
+        f"<p><strong>Provider paid time</strong>: {_format_timestamp_in_utc(evidence.payment_event_paid_at)}</p>"
+        if evidence.payment_event_paid_at is not None
+        else ""
+    )
+
+    return f"""
+    <article class="content-card stack">
+      <div class="content-card-header">
+        <div>
+          <p class="eyebrow">Invoice chain {index}</p>
+          <h2>{html.escape(_reports_currency_amount_copy(evidence.invoice_currency, evidence.invoice_amount_cents))}</h2>
+        </div>
+        <p class="pill-note">{html.escape(_reports_payment_event_status_label(evidence.payment_event_status))}</p>
+      </div>
+      <p><strong>Booking</strong>: <code>{html.escape(evidence.booking_uuid)}</code> captured {_format_timestamp_in_utc(evidence.booked_at)}.</p>
+      <p><strong>Invoice</strong>: <code>{html.escape(evidence.stripe_invoice_id)}</code> marked paid {_format_timestamp_in_utc(evidence.invoice_paid_at)}.</p>
+      {payment_event_line}
+      {payment_paid_line}
+    </article>
+    """
+
+
+def _render_reports_unattributed_explanation_page(
+    *,
+    current_user: AuthUser,
+    summary: CreatorReportsSummary,
+    filter_values: dict[str, str],
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    backlog = summary.unattributed_current_backlog
+    back_href = html.escape(_reports_page_href(filter_values), quote=True)
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Why some payments are not counted yet</h1>
+        <p class="lede">These are verified payment events that still cannot be trusted as paid content revenue because the creator-scoped attribution chain is incomplete.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/reports")}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Current backlog</p>
+          <h2>Unmatched payments stay separate from paid totals</h2>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+        </div>
+        <p>This page shows counts and reasons only. It does not estimate revenue for unmatched events because the missing content, booking, or invoice link has not been repaired yet.</p>
+        <p><strong>Current unmatched backlog</strong>: {html.escape(_count_copy(backlog.event_count, "event"))} waiting on more attribution context.</p>
+        <a href="{back_href}" class="inline-link">Back to reports</a>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">What happens next</p>
+          <h2>Only repaired chains move into paid totals</h2>
+        </div>
+        <p>Once the missing tracking, booking, or invoice link is restored in canonical local data, the payment can be reconciled and counted through the same reporting path as the paid content rows.</p>
+        <p>Until then, this backlog remains explanatory only and does not change the paid totals or CSV export.</p>
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Reason summary</p>
+          <h2>Why payments are still unmatched</h2>
+        </div>
+        <p>{html.escape(_count_copy(len(backlog.reasons), "reason"))} visible</p>
+      </div>
+      {_render_reports_unattributed_reason_cards(summary)}
+    </section>
+    """
+    return _page_layout(title="Why some payments are not counted yet", body=body)
+
+
+def _render_reports_unattributed_reason_cards(summary: CreatorReportsSummary) -> str:
+    backlog = summary.unattributed_current_backlog
+    if backlog.event_count == 0:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">No backlog</p>
+          <h2>No unmatched payments are waiting right now</h2>
+          <p>Your current paid totals do not have a separate unmatched payment backlog attached to them.</p>
+        </section>
+        """
+
+    items = "".join(
+        f"""
+        <article class="content-card stack">
+          <div class="content-card-header">
+            <div>
+              <p class="eyebrow">Unmatched reason</p>
+              <h2>{html.escape(_reports_reason_label(reason.reason))}</h2>
+            </div>
+            <p class="pill-note">{html.escape(_count_copy(reason.event_count, "event"))}</p>
+          </div>
+          <p>{html.escape(_reports_reason_explanation(reason.reason))}</p>
+        </article>
+        """
+        for reason in backlog.reasons
+    )
+    return f'<div class="content-list">{items}</div>'
 
 
 def _render_reports_unmatched_reasons(summary: CreatorReportsSummary) -> str:
@@ -1611,8 +1990,51 @@ def _count_copy(count: int, singular: str, plural: str | None = None) -> str:
     return f"{count} {label}"
 
 
+def _reports_filter_error_detail(field_errors: dict[str, str]) -> str:
+    for key in ("start_date", "end_date", "date_range"):
+        if key in field_errors:
+            return field_errors[key]
+    return "invalid paid-date filters"
+
+
 def _reports_filters_are_active(filter_values: dict[str, str]) -> bool:
     return any(filter_values[field_name] for field_name in REPORT_FILTER_FIELDS)
+
+
+def _reports_page_href(filter_values: dict[str, str]) -> str:
+    return f"/app/reports{_reports_query_string(filter_values)}"
+
+
+def _reports_export_href(filter_values: dict[str, str]) -> str:
+    return f"/app/reports/export.csv{_reports_query_string(filter_values)}"
+
+
+def _reports_unattributed_explanation_href(filter_values: dict[str, str]) -> str:
+    return f"/app/reports/explanations/unattributed{_reports_query_string(filter_values)}"
+
+
+def _reports_paid_explanation_href(*, tid: str, filter_values: dict[str, str]) -> str:
+    return f"/app/reports/explanations/paid/{quote(tid, safe='')}{_reports_query_string(filter_values)}"
+
+
+def _reports_query_string(filter_values: dict[str, str]) -> str:
+    query_values = [
+        (field_name, filter_values[field_name])
+        for field_name in REPORT_FILTER_FIELDS
+        if filter_values[field_name]
+    ]
+    if not query_values:
+        return ""
+    return f"?{urlencode(query_values)}"
+
+
+def _reports_csv_filename(*, start_date: date | None, end_date: date | None) -> str:
+    if start_date is None and end_date is None:
+        return "reports-summary.csv"
+
+    start_label = start_date.isoformat() if start_date is not None else "open"
+    end_label = end_date.isoformat() if end_date is not None else "open"
+    return f"reports-summary-{start_label}-to-{end_label}.csv"
 
 
 def _reports_paid_window_copy(row: ReportsSummaryRow) -> str:
@@ -1632,6 +2054,41 @@ def _reports_reason_label(reason: str | None) -> str:
     if reason == UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID:
         return "Unknown invoice"
     return (reason or "Unknown reason").replace("_", " ").title()
+
+
+def _reports_reason_explanation(reason: str | None) -> str:
+    if reason == UNATTRIBUTED_REASON_MISSING_TID:
+        return (
+            "A verified payment event arrived, but the tracking ID needed to connect it back "
+            "to a tracked content row was missing. The payment stays out of paid totals until "
+            "that creator-scoped link can be repaired."
+        )
+    if reason == UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID:
+        return (
+            "The payment event carried invoice context, but the current creator-scoped chain "
+            "could not find the matching booking yet. Until the booking is linked, the payment "
+            "cannot be trusted as paid content revenue."
+        )
+    if reason == UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID:
+        return (
+            "The payment event could not be matched to a canonical stored invoice yet. Until "
+            "that invoice link exists, the event stays explanatory instead of changing paid totals."
+        )
+    return "The payment event is missing canonical attribution context, so it stays out of paid totals for now."
+
+
+def _reports_payment_event_status_label(status_value: str | None) -> str:
+    if status_value == "applied":
+        return "Applied"
+    if status_value == "reconciled":
+        return "Reconciled"
+    if status_value:
+        return status_value.replace("_", " ").title()
+    return "Pending evidence"
+
+
+def _reports_currency_amount_copy(currency: str, amount_cents: int) -> str:
+    return f"{currency} {_format_billing_amount(amount_cents)}"
 
 
 def _page_layout(*, title: str, body: str) -> str:

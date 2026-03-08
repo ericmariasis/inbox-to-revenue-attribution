@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Protocol
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
-from app.models.invoice import Invoice
-from app.models.invoice_payment_event import InvoicePaymentEvent
+from app.services.invoice_payment_events import (
+    InvoicePaidEventHints,
+    InvoicePaymentEventService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,11 @@ class InvoicePaidStripeWebhookHandler:
         session_factory: Callable[[], Session],
         now_fn: Callable[[], datetime] | None = None,
     ):
-        self._session_factory = session_factory
         self._now_fn = now_fn or _utc_now
+        self._payment_event_service = InvoicePaymentEventService(
+            session_factory=session_factory,
+            now_fn=self._now_fn,
+        )
 
     def handle_event(self, *, event: StripeWebhookEvent) -> bool:
         if event.event_type != "invoice.paid":
@@ -74,108 +77,95 @@ class InvoicePaidStripeWebhookHandler:
 
         handled_at = self._now_fn()
         paid_at = _extract_paid_at(event.payload) or handled_at
+        hints = _extract_invoice_paid_event_hints(event.payload)
+        result = self._payment_event_service.handle_invoice_paid_event(
+            stripe_event_id=event.stripe_event_id,
+            stripe_event_type=event.event_type,
+            stripe_account_id=event.stripe_account_id,
+            stripe_invoice_id=stripe_invoice_id,
+            paid_at=paid_at,
+            received_at=handled_at,
+            hints=hints,
+        )
 
-        with self._session_factory() as session:
-            invoice = session.scalar(
-                select(Invoice)
-                .where(
-                    Invoice.stripe_invoice_id == stripe_invoice_id,
-                    Invoice.stripe_account_id == event.stripe_account_id,
-                )
-                .with_for_update()
-            )
-            if invoice is None:
-                logger.info(
-                    "stripe_webhook_invoice_paid_noop_unmatched stripe_event_id=%s stripe_invoice_id=%s stripe_account_id=%s",
-                    event.stripe_event_id,
-                    stripe_invoice_id,
-                    event.stripe_account_id,
-                )
-                return True
-
-            existing_payment_event = session.scalar(
-                select(InvoicePaymentEvent).where(
-                    InvoicePaymentEvent.stripe_event_id == event.stripe_event_id
-                )
-            )
-            if existing_payment_event is not None:
-                logger.info(
-                    "stripe_webhook_invoice_paid_duplicate_event stripe_event_id=%s stripe_invoice_id=%s stripe_account_id=%s invoice_id=%s",
-                    event.stripe_event_id,
-                    stripe_invoice_id,
-                    event.stripe_account_id,
-                    existing_payment_event.invoice_id,
-                )
-                return True
-
-            if invoice.status == "paid":
-                logger.info(
-                    "stripe_webhook_invoice_paid_noop_already_paid stripe_event_id=%s stripe_invoice_id=%s stripe_account_id=%s invoice_id=%s",
-                    event.stripe_event_id,
-                    stripe_invoice_id,
-                    event.stripe_account_id,
-                    invoice.id,
-                )
-                return True
-
-            if invoice.status != "open":
-                logger.info(
-                    "stripe_webhook_invoice_paid_noop_non_open stripe_event_id=%s stripe_invoice_id=%s stripe_account_id=%s invoice_id=%s status=%s",
-                    event.stripe_event_id,
-                    stripe_invoice_id,
-                    event.stripe_account_id,
-                    invoice.id,
-                    invoice.status,
-                )
-                return True
-
-            invoice_id = invoice.id
-            invoice.status = "paid"
-            invoice.paid_at = paid_at
-            payment_event = InvoicePaymentEvent(
-                stripe_event_id=event.stripe_event_id,
-                stripe_event_type=event.event_type,
-                stripe_account_id=event.stripe_account_id,
-                stripe_invoice_id=stripe_invoice_id,
-                invoice_id=invoice_id,
-                creator_id=invoice.creator_id,
-                booking_id=invoice.booking_id,
-                tid=invoice.tid,
-                status="applied",
-                paid_at=paid_at,
-                received_at=handled_at,
-                processed_at=handled_at,
-            )
-            session.add(payment_event)
-
-            try:
-                session.commit()
-            except IntegrityError:
-                session.rollback()
-                logger.info(
-                    "stripe_webhook_invoice_paid_duplicate_event stripe_event_id=%s stripe_invoice_id=%s stripe_account_id=%s invoice_id=%s",
-                    event.stripe_event_id,
-                    stripe_invoice_id,
-                    event.stripe_account_id,
-                    invoice_id,
-                )
-                return True
-
-            session.refresh(invoice)
-            session.refresh(payment_event)
+        if result.outcome == "applied":
             logger.info(
                 "stripe_webhook_invoice_paid_applied stripe_event_id=%s stripe_invoice_id=%s stripe_account_id=%s invoice_id=%s creator_id=%s booking_uuid=%s tid=%s paid_at=%s payment_event_id=%s",
                 event.stripe_event_id,
                 stripe_invoice_id,
                 event.stripe_account_id,
-                invoice.id,
-                invoice.creator_id,
-                invoice.booking.calendly_booking_uuid,
-                invoice.tid,
-                invoice.paid_at.isoformat(),
-                payment_event.id,
+                result.invoice_id,
+                result.creator_id,
+                result.booking_uuid,
+                result.tid,
+                paid_at.isoformat(),
+                result.payment_event_id,
             )
             return True
+
+        if result.outcome == "reconciled":
+            logger.info(
+                "stripe_webhook_invoice_paid_reconciled stripe_event_id=%s stripe_invoice_id=%s stripe_account_id=%s invoice_id=%s creator_id=%s booking_uuid=%s tid=%s paid_at=%s payment_event_id=%s",
+                event.stripe_event_id,
+                stripe_invoice_id,
+                event.stripe_account_id,
+                result.invoice_id,
+                result.creator_id,
+                result.booking_uuid,
+                result.tid,
+                paid_at.isoformat(),
+                result.payment_event_id,
+            )
+            return True
+
+        if result.outcome == "unmatched":
+            logger.info(
+                "stripe_webhook_invoice_paid_recorded_unmatched stripe_event_id=%s stripe_invoice_id=%s stripe_account_id=%s creator_id=%s booking_uuid=%s tid=%s unattributed_reason=%s payment_event_id=%s",
+                event.stripe_event_id,
+                stripe_invoice_id,
+                event.stripe_account_id,
+                result.creator_id,
+                result.booking_uuid,
+                result.tid,
+                result.unattributed_reason,
+                result.payment_event_id,
+            )
+            return True
+
+        if result.outcome == "duplicate":
+            logger.info(
+                "stripe_webhook_invoice_paid_duplicate_event stripe_event_id=%s stripe_invoice_id=%s stripe_account_id=%s invoice_id=%s payment_event_id=%s unattributed_reason=%s",
+                event.stripe_event_id,
+                stripe_invoice_id,
+                event.stripe_account_id,
+                result.invoice_id,
+                result.payment_event_id,
+                result.unattributed_reason,
+            )
+            return True
+
+        if result.outcome == "noop_already_paid":
+            logger.info(
+                "stripe_webhook_invoice_paid_noop_already_paid stripe_event_id=%s stripe_invoice_id=%s stripe_account_id=%s invoice_id=%s",
+                event.stripe_event_id,
+                stripe_invoice_id,
+                event.stripe_account_id,
+                result.invoice_id,
+            )
+            return True
+
+        if result.outcome == "noop_non_open":
+            logger.info(
+                "stripe_webhook_invoice_paid_noop_non_open stripe_event_id=%s stripe_invoice_id=%s stripe_account_id=%s invoice_id=%s status=%s",
+                event.stripe_event_id,
+                stripe_invoice_id,
+                event.stripe_account_id,
+                result.invoice_id,
+                result.invoice_status,
+            )
+            return True
+
+        return True
 
 
 class DefaultStripeWebhookRouter:
@@ -349,6 +339,21 @@ def _extract_paid_at(payload: dict[str, Any]) -> datetime | None:
     return _datetime_from_unix_timestamp(event_object.get("paid_at"))
 
 
+def _extract_invoice_paid_event_hints(payload: dict[str, Any]) -> InvoicePaidEventHints:
+    event_object = _extract_event_object(payload)
+    if event_object is None:
+        return InvoicePaidEventHints()
+
+    metadata = event_object.get("metadata")
+    if not isinstance(metadata, dict):
+        return InvoicePaidEventHints()
+
+    return InvoicePaidEventHints(
+        booking_uuid=_extract_string(metadata.get("booking_uuid")),
+        tid=_extract_string(metadata.get("tid")),
+    )
+
+
 def _extract_event_object(payload: dict[str, Any]) -> dict[str, Any] | None:
     data = payload.get("data")
     if not isinstance(data, dict):
@@ -358,6 +363,12 @@ def _extract_event_object(payload: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(event_object, dict):
         return None
     return event_object
+
+
+def _extract_string(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
 
 
 def _datetime_from_unix_timestamp(value: Any) -> datetime | None:

@@ -7,6 +7,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.api.bookings import (
+    BookingActivityResponse,
+    list_booking_activity_responses_for_creator,
+)
 from app.api.booking_links import (
     create_booking_link_response_for_creator,
     list_booking_link_responses_for_creator,
@@ -310,6 +314,28 @@ async def creator_content_create(
     return _redirect(f"/app/content?status=created&tid={created_content.tid}")
 
 
+@router.get("/app/bookings")
+def creator_booking_activity_page(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    booking_activity = list_booking_activity_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    return _html_response(
+        _render_booking_activity_page(
+            current_user=current_user,
+            booking_activity=booking_activity,
+        )
+    )
+
+
 @router.post("/sign-out")
 def sign_out() -> RedirectResponse:
     return _redirect("/sign-in", clear_session=True)
@@ -556,6 +582,13 @@ def _render_app_shell(current_user: AuthUser) -> str:
             </div>
             <span class="list-state">Available now</span>
           </li>
+          <li class="checklist-item next">
+            <div>
+              <strong>Review booking activity</strong>
+              <p>Once a tracked link is live and Calendly sends the verified webhook, use the browser activity view to confirm bookings are arriving with the right creator-owned context. <a href="/app/bookings" class="inline-link">Open booking activity</a>.</p>
+            </div>
+            <span class="list-state">Available now</span>
+          </li>
         </ul>
       </article>
       <article class="card">
@@ -574,6 +607,7 @@ def _render_shell_nav(*, current_path: str) -> str:
         ("/app", "Setup Home"),
         ("/app/booking-links", "Booking Links"),
         ("/app/content", "Content"),
+        ("/app/bookings", "Bookings"),
     ]
     items = []
     for href, label in links:
@@ -990,6 +1024,109 @@ def _render_content_notice(
     return ""
 
 
+def _render_booking_activity_page(
+    *,
+    current_user: AuthUser,
+    booking_activity: list[BookingActivityResponse],
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    list_heading = "Recent booking activity" if booking_activity else "No booking activity yet"
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Booking Activity</h1>
+        <p class="lede">See whether tracked content is turning into verified Calendly bookings, without needing raw DB checks or API tooling.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/bookings")}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Captured bookings</p>
+          <h2>Creator-scoped activity only</h2>
+          <p>Signed in as <strong>{creator_email}</strong> for <strong>{creator_name}</strong>.</p>
+        </div>
+        <p>This first visibility slice shows only the basics: booking status, timestamps, and the tracked content plus booking-link context that the verified webhook resolved from stored app data.</p>
+        <p>Client PII, invoices, revenue reporting, and deeper analytics stay out of scope for Story 41.</p>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">Attribution timing</p>
+          <h2>New bookings may take a moment to appear</h2>
+        </div>
+        <p>Bookings only show up here after someone uses a tracked link and Calendly delivers the verified webhook back to this app. That handoff is not always instant.</p>
+        <p>If you just created tracked content, publish the redirect URL first, complete a booking through that path, then refresh this page after the provider callback lands.</p>
+        <a href="/app/content" class="inline-link">Open content manager</a>
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Creator-owned bookings</p>
+          <h2>{list_heading}</h2>
+        </div>
+        <p>{len(booking_activity)} captured</p>
+      </div>
+      {_render_booking_activity_list(booking_activity)}
+    </section>
+    """
+    return _page_layout(title="Booking Activity", body=body)
+
+
+def _render_booking_activity_list(
+    booking_activity: list[BookingActivityResponse],
+) -> str:
+    if not booking_activity:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">Empty state</p>
+          <h2>No bookings captured yet</h2>
+          <p>Bookings appear here only after someone uses one of your tracked links and the verified Calendly webhook is processed, so a brand-new booking may not appear immediately.</p>
+          <p>Create tracked content, make sure the redirect URL is the one being shared, then check back here after the provider handoff completes.</p>
+          <a href="/app/content" class="inline-link">Create tracked content</a>
+        </section>
+        """
+
+    items = "".join(
+        _render_booking_activity_card(booking=booking)
+        for booking in booking_activity
+    )
+    return f'<div class="activity-list">{items}</div>'
+
+
+def _render_booking_activity_card(*, booking: BookingActivityResponse) -> str:
+    status = _booking_activity_status(booking.status)
+    canceled_at_line = ""
+    if booking.canceled_at is not None:
+        canceled_at_line = (
+            f"<p><strong>Canceled at</strong>: "
+            f"{_format_timestamp_in_utc(booking.canceled_at)}</p>"
+        )
+
+    return f"""
+    <article class="activity-card stack">
+      <div class="activity-card-header">
+        <div>
+          <p class="eyebrow">Booking activity</p>
+          <h2>{html.escape(_content_card_title(booking.source_url))}</h2>
+        </div>
+        <span class="status-pill {html.escape(status["badge_class"])}">{html.escape(status["label"])}</span>
+      </div>
+      <p><strong>Booked at</strong>: {_format_timestamp_in_utc(booking.booked_at)}</p>
+      {canceled_at_line}
+      <p><strong>Booking link</strong>: {html.escape(booking.booking_link_name)}</p>
+      <p><strong>Source URL</strong>: <a href="{html.escape(booking.source_url)}" class="inline-link">{html.escape(booking.source_url)}</a></p>
+      <p><strong>Tracking ID</strong>: <code>{html.escape(booking.tid)}</code></p>
+    </article>
+    """
+
+
 def _render_content_field_error(message: str | None) -> str:
     if not message:
         return ""
@@ -1095,10 +1232,34 @@ def _stripe_setup_home_state(raw_status: str) -> dict[str, str]:
     }
 
 
-def _format_connected_at(value) -> str:
+def _booking_activity_status(raw_status: str) -> dict[str, str]:
+    normalized_status = raw_status.strip().lower()
+    if normalized_status == "canceled":
+        return {
+            "label": "Canceled",
+            "badge_class": "canceled",
+        }
+
+    if normalized_status == "created":
+        return {
+            "label": "Created",
+            "badge_class": "created",
+        }
+
+    return {
+        "label": normalized_status.title() or "Unknown",
+        "badge_class": "pending",
+    }
+
+
+def _format_timestamp_in_utc(value) -> str:
     return html.escape(
         value.astimezone(timezone.utc).strftime("%B %d, %Y at %I:%M %p UTC")
     )
+
+
+def _format_connected_at(value) -> str:
+    return _format_timestamp_in_utc(value)
 
 
 def _page_layout(*, title: str, body: str) -> str:
@@ -1303,6 +1464,16 @@ def _page_layout(*, title: str, body: str) -> str:
         color: #1f5e58;
       }}
 
+      .status-pill.created {{
+        background: #d9ede8;
+        color: #1f5e58;
+      }}
+
+      .status-pill.canceled {{
+        background: #f6d7d0;
+        color: #972f17;
+      }}
+
       .checklist {{
         list-style: none;
         padding: 0;
@@ -1431,7 +1602,8 @@ def _page_layout(*, title: str, body: str) -> str:
 
       .empty-state,
       .booking-link-card,
-      .content-card {{
+      .content-card,
+      .activity-card {{
         border-radius: 20px;
         border: 1px solid var(--line);
         background: var(--panel-strong);
@@ -1443,18 +1615,21 @@ def _page_layout(*, title: str, body: str) -> str:
       }}
 
       .booking-link-list,
-      .content-list {{
+      .content-list,
+      .activity-list {{
         display: grid;
         gap: 12px;
       }}
 
       .booking-link-card,
-      .content-card {{
+      .content-card,
+      .activity-card {{
         padding: 20px;
       }}
 
       .booking-link-header,
-      .content-card-header {{
+      .content-card-header,
+      .activity-card-header {{
         display: flex;
         justify-content: space-between;
         align-items: flex-start;
@@ -1509,7 +1684,8 @@ def _page_layout(*, title: str, body: str) -> str:
         .checklist-item,
         .section-heading,
         .booking-link-header,
-        .content-card-header {{
+        .content-card-header,
+        .activity-card-header {{
           flex-direction: column;
           align-items: flex-start;
         }}

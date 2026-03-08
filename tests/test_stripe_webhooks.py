@@ -17,6 +17,11 @@ from app.models.content import Content
 from app.models.creator import Creator
 from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
+from app.services.invoice_payment_events import (
+    UNATTRIBUTED_REASON_MISSING_TID,
+    UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
+    UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+)
 
 
 def _stripe_signature_header(*, payload: bytes, secret: str, timestamp: int | None = None) -> str:
@@ -125,12 +130,26 @@ def _persist_open_invoice(
         return invoice
 
 
+def _persist_creator(*, stripe_account_id: str) -> Creator:
+    with Session(_engine()) as session:
+        creator = Creator(
+            name="Story 49 Stripe Webhook Creator",
+            stripe_connect_status="connected",
+            stripe_account_id=stripe_account_id,
+        )
+        session.add(creator)
+        session.commit()
+        session.refresh(creator)
+        return creator
+
+
 def _invoice_paid_payload(
     *,
     stripe_event_id: str,
     stripe_account_id: str,
     stripe_invoice_id: str,
     paid_at: datetime,
+    metadata: dict[str, str] | None = None,
 ) -> bytes:
     return json.dumps(
         {
@@ -143,6 +162,7 @@ def _invoice_paid_payload(
                     "object": "invoice",
                     "status": "paid",
                     "status_transitions": {"paid_at": int(paid_at.timestamp())},
+                    "metadata": metadata or {},
                 }
             },
         }
@@ -330,6 +350,146 @@ def test_stripe_webhook_duplicate_stripe_event_id_delivery_is_idempotent_for_inv
     assert persisted_invoice.paid_at == paid_at
     assert len(payment_events) == 1
     assert payment_events[0].stripe_event_id == "evt_story48_duplicate"
+
+
+def test_stripe_webhook_invoice_paid_persists_one_unmatched_payment_event_when_local_invoice_is_missing():
+    creator = _persist_creator(stripe_account_id="acct_story49_unmatched")
+    paid_at = datetime(2026, 3, 8, 22, 45, tzinfo=timezone.utc)
+    payload = _invoice_paid_payload(
+        stripe_event_id="evt_story49_unmatched",
+        stripe_account_id="acct_story49_unmatched",
+        stripe_invoice_id="in_story49_unmatched",
+        paid_at=paid_at,
+        metadata={"tid": "story49_unmatched_tid"},
+    )
+    signature_header = _stripe_signature_header(
+        payload=payload,
+        secret=_StubSettings.stripe_webhook_secret,
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            first_response = client.post(
+                "/webhooks/stripe",
+                content=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Stripe-Signature": signature_header,
+                },
+            )
+            second_response = client.post(
+                "/webhooks/stripe",
+                content=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Stripe-Signature": signature_header,
+                },
+            )
+
+    with Session(_engine()) as session:
+        payment_events = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.stripe_event_id == "evt_story49_unmatched"
+            )
+        ).all()
+        invoice_count = session.query(Invoice).count()
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert invoice_count == 0
+    assert len(payment_events) == 1
+    assert payment_events[0].status == "unmatched"
+    assert payment_events[0].unattributed_reason == UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID
+    assert payment_events[0].invoice_id is None
+    assert payment_events[0].creator_id == creator.id
+    assert payment_events[0].booking_id is None
+    assert payment_events[0].tid is None
+    assert payment_events[0].paid_at == paid_at
+    assert payment_events[0].processed_at is None
+
+
+def test_stripe_webhook_invoice_paid_records_missing_tid_reason_for_unmatched_event():
+    creator = _persist_creator(stripe_account_id="acct_story49_missing_tid")
+    paid_at = datetime(2026, 3, 8, 22, 46, tzinfo=timezone.utc)
+    payload = _invoice_paid_payload(
+        stripe_event_id="evt_story49_missing_tid",
+        stripe_account_id="acct_story49_missing_tid",
+        stripe_invoice_id="in_story49_missing_tid",
+        paid_at=paid_at,
+    )
+    signature_header = _stripe_signature_header(
+        payload=payload,
+        secret=_StubSettings.stripe_webhook_secret,
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            response = client.post(
+                "/webhooks/stripe",
+                content=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Stripe-Signature": signature_header,
+                },
+            )
+
+    with Session(_engine()) as session:
+        payment_event = session.scalar(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.stripe_event_id == "evt_story49_missing_tid"
+            )
+        )
+
+    assert response.status_code == 200
+    assert payment_event is not None
+    assert payment_event.status == "unmatched"
+    assert payment_event.unattributed_reason == UNATTRIBUTED_REASON_MISSING_TID
+    assert payment_event.creator_id == creator.id
+
+
+def test_stripe_webhook_invoice_paid_records_unknown_booking_uuid_reason_for_unmatched_event():
+    creator = _persist_creator(stripe_account_id="acct_story49_unknown_booking")
+    paid_at = datetime(2026, 3, 8, 22, 47, tzinfo=timezone.utc)
+    payload = _invoice_paid_payload(
+        stripe_event_id="evt_story49_unknown_booking",
+        stripe_account_id="acct_story49_unknown_booking",
+        stripe_invoice_id="in_story49_unknown_booking",
+        paid_at=paid_at,
+        metadata={
+            "booking_uuid": "BOOK_story49_missing",
+            "tid": "story49_unknown_booking_tid",
+        },
+    )
+    signature_header = _stripe_signature_header(
+        payload=payload,
+        secret=_StubSettings.stripe_webhook_secret,
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            response = client.post(
+                "/webhooks/stripe",
+                content=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Stripe-Signature": signature_header,
+                },
+            )
+
+    with Session(_engine()) as session:
+        payment_event = session.scalar(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.stripe_event_id == "evt_story49_unknown_booking"
+            )
+        )
+
+    assert response.status_code == 200
+    assert payment_event is not None
+    assert payment_event.status == "unmatched"
+    assert payment_event.unattributed_reason == UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID
+    assert payment_event.creator_id == creator.id
+    assert payment_event.booking_id is None
+    assert payment_event.tid is None
 
 
 def test_stripe_webhook_repeated_invoice_paid_for_already_paid_invoice_stays_safe():

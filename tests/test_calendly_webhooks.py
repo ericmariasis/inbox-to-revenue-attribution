@@ -18,7 +18,15 @@ from app.models.booking import Booking
 from app.models.booking_link import BookingLink
 from app.models.content import Content
 from app.models.creator import Creator
-from app.services.calendly_webhooks import DefaultCalendlyWebhookRouter
+from app.models.invoice import Invoice
+from app.services.calendly_webhooks import (
+    DefaultCalendlyWebhookRouter,
+    build_default_calendly_webhook_router,
+)
+from app.services.stripe_provider import (
+    StripeAccountReadiness,
+    StripeInvoiceCreateResult,
+)
 
 
 def _calendly_signature_header(*, payload: bytes, signing_key: str, timestamp: int | None = None) -> str:
@@ -83,17 +91,85 @@ class _CaptureUnpaidInvoiceVoider:
         )
 
 
+class _StubStripeProvider:
+    def __init__(
+        self,
+        *,
+        readiness: StripeAccountReadiness,
+        created_invoice_id: str = "in_story45_created",
+    ):
+        self._readiness = readiness
+        self._created_invoice_id = created_invoice_id
+        self.readiness_calls: list[str] = []
+        self.create_calls: list[dict[str, object]] = []
+        self.void_calls: list[dict[str, str]] = []
+
+    def build_connect_onboarding_url(self, *, creator_id: str, state: str) -> str:
+        raise AssertionError(f"unexpected onboarding call creator_id={creator_id} state={state}")
+
+    def exchange_connect_callback(self, *, code: str, state: str) -> str:
+        raise AssertionError(f"unexpected callback exchange code={code} state={state}")
+
+    def get_account_readiness(self, *, stripe_account_id: str) -> StripeAccountReadiness:
+        self.readiness_calls.append(stripe_account_id)
+        return self._readiness
+
+    def create_invoice(
+        self,
+        *,
+        stripe_account_id: str,
+        amount_cents: int,
+        currency: str,
+        metadata: dict[str, str],
+        idempotency_key: str,
+    ) -> StripeInvoiceCreateResult:
+        self.create_calls.append(
+            {
+                "stripe_account_id": stripe_account_id,
+                "amount_cents": amount_cents,
+                "currency": currency,
+                "metadata": metadata,
+                "idempotency_key": idempotency_key,
+            }
+        )
+        return StripeInvoiceCreateResult(stripe_invoice_id=self._created_invoice_id)
+
+    def void_invoice(self, *, stripe_account_id: str, stripe_invoice_id: str) -> None:
+        self.void_calls.append(
+            {
+                "stripe_account_id": stripe_account_id,
+                "stripe_invoice_id": stripe_invoice_id,
+            }
+        )
+
+
 def _booking_count() -> int:
     engine = create_engine(os.environ["TEST_DATABASE_URL"])
     with Session(engine) as session:
         return len(session.scalars(select(Booking)).all())
 
 
-def _create_creator_booking_link_and_content(*, tid: str) -> dict[str, Any]:
+def _invoice_count() -> int:
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    with Session(engine) as session:
+        return len(session.scalars(select(Invoice)).all())
+
+
+def _create_creator_booking_link_and_content(
+    *,
+    tid: str,
+    stripe_account_id: str | None = None,
+    billing_amount_cents: int | None = None,
+    billing_currency: str | None = None,
+) -> dict[str, Any]:
     engine = create_engine(os.environ["TEST_DATABASE_URL"])
 
     with Session(engine) as session:
-        creator = Creator(name=f"Story 33 Creator {uuid.uuid4().hex}")
+        creator = Creator(
+            name=f"Story 33 Creator {uuid.uuid4().hex}",
+            stripe_account_id=stripe_account_id,
+            stripe_connect_status="connected" if stripe_account_id else "pending",
+        )
         session.add(creator)
         session.flush()
 
@@ -101,6 +177,8 @@ def _create_creator_booking_link_and_content(*, tid: str) -> dict[str, Any]:
             creator_id=creator.id,
             name="Story 33 Booking Call",
             calendly_url="https://calendly.com/example/story33-call",
+            billing_amount_cents=billing_amount_cents,
+            billing_currency=billing_currency,
         )
         session.add(booking_link)
         session.flush()
@@ -118,6 +196,9 @@ def _create_creator_booking_link_and_content(*, tid: str) -> dict[str, Any]:
             "creator_id": creator.id,
             "booking_link_id": booking_link.id,
             "tid": content.tid,
+            "stripe_account_id": creator.stripe_account_id,
+            "billing_amount_cents": booking_link.billing_amount_cents,
+            "billing_currency": booking_link.billing_currency,
         }
 
 
@@ -127,6 +208,17 @@ def _bookings_for_uuid(*, calendly_booking_uuid: str) -> list[Booking]:
         return session.scalars(
             select(Booking).where(Booking.calendly_booking_uuid == calendly_booking_uuid)
         ).all()
+
+
+def _invoices_for_booking_uuid(*, calendly_booking_uuid: str) -> list[Invoice]:
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    with Session(engine) as session:
+        booking = session.scalar(
+            select(Booking).where(Booking.calendly_booking_uuid == calendly_booking_uuid)
+        )
+        if booking is None:
+            return []
+        return session.scalars(select(Invoice).where(Invoice.booking_id == booking.id)).all()
 
 
 def _invitee_created_payload(
@@ -274,6 +366,7 @@ def test_calendly_webhook_persists_booking_created_for_valid_tid():
     assert bookings[0].status == "created"
     assert bookings[0].booked_at == datetime(2026, 3, 7, 14, 30, tzinfo=timezone.utc)
     assert bookings[0].canceled_at is None
+    assert _invoice_count() == 0
 
 
 def test_calendly_webhook_duplicate_delivery_is_idempotent_by_booking_uuid():
@@ -320,6 +413,7 @@ def test_calendly_webhook_duplicate_delivery_is_idempotent_by_booking_uuid():
     assert bookings[0].email == "story33-duplicate@example.com"
     assert bookings[0].status == "created"
     assert bookings[0].booked_at == datetime(2026, 3, 7, 16, 0, tzinfo=timezone.utc)
+    assert _invoice_count() == 0
 
 
 def test_calendly_webhook_resolves_creator_and_booking_link_from_stored_content_not_payload_fields():
@@ -363,6 +457,251 @@ def test_calendly_webhook_resolves_creator_and_booking_link_from_stored_content_
     assert bookings[0].tid == stored["tid"]
     assert bookings[0].email == "story33-spoof@example.com"
     assert bookings[0].status == "created"
+    assert _invoice_count() == 0
+
+
+def test_calendly_webhook_billable_booking_created_persists_invoice_and_duplicate_is_idempotent():
+    stored = _create_creator_booking_link_and_content(
+        tid="story45_billable_tid",
+        stripe_account_id="acct_story45_billable",
+        billing_amount_cents=15000,
+        billing_currency="USD",
+    )
+    payload = _invitee_created_payload(
+        event_id="EVT_story45_billable",
+        calendly_booking_uuid="BOOK_story45_billable",
+        tid=stored["tid"],
+        email="story45-billable@example.com",
+        created_at="2026-03-08T20:00:00Z",
+    )
+    signature_header = _calendly_signature_header(
+        payload=payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_story45_billable",
+    )
+    router = build_default_calendly_webhook_router(provider=provider)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("calendly_webhook_router", router):
+                first_response = client.post(
+                    "/webhooks/calendly",
+                    content=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": signature_header,
+                    },
+                )
+                second_response = client.post(
+                    "/webhooks/calendly",
+                    content=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": signature_header,
+                    },
+                )
+
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story45_billable")
+    invoices = _invoices_for_booking_uuid(calendly_booking_uuid="BOOK_story45_billable")
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert len(bookings) == 1
+    assert len(invoices) == 1
+    assert invoices[0].creator_id == stored["creator_id"]
+    assert invoices[0].booking_id == bookings[0].id
+    assert invoices[0].tid == stored["tid"]
+    assert invoices[0].stripe_account_id == "acct_story45_billable"
+    assert invoices[0].stripe_invoice_id == "in_story45_billable"
+    assert invoices[0].amount_cents == 15000
+    assert invoices[0].currency == "USD"
+    assert invoices[0].status == "open"
+    assert invoices[0].voided_at is None
+    assert provider.readiness_calls == ["acct_story45_billable"]
+    assert len(provider.create_calls) == 1
+    assert provider.create_calls[0] == {
+        "stripe_account_id": "acct_story45_billable",
+        "amount_cents": 15000,
+        "currency": "USD",
+        "metadata": {
+            "creator_id": str(stored["creator_id"]),
+            "booking_uuid": "BOOK_story45_billable",
+            "tid": stored["tid"],
+        },
+        "idempotency_key": "billing:create:BOOK_story45_billable",
+    }
+    assert provider.void_calls == []
+
+
+def test_calendly_webhook_booking_canceled_voids_open_invoice_once_and_repeat_is_safe():
+    stored = _create_creator_booking_link_and_content(
+        tid="story45_cancel_tid",
+        stripe_account_id="acct_story45_cancel",
+        billing_amount_cents=18000,
+        billing_currency="USD",
+    )
+    created_payload = _invitee_created_payload(
+        event_id="EVT_story45_cancel",
+        calendly_booking_uuid="BOOK_story45_cancel",
+        tid=stored["tid"],
+        email="story45-cancel@example.com",
+        created_at="2026-03-08T20:15:00Z",
+    )
+    canceled_payload = _invitee_canceled_payload(
+        event_id="EVT_story45_cancel",
+        calendly_booking_uuid="BOOK_story45_cancel",
+        tid=stored["tid"],
+        canceled_at="2026-03-08T20:45:00Z",
+    )
+    created_signature_header = _calendly_signature_header(
+        payload=created_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    canceled_signature_header = _calendly_signature_header(
+        payload=canceled_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_story45_cancel",
+    )
+    router = build_default_calendly_webhook_router(provider=provider)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("calendly_webhook_router", router):
+                created_response = client.post(
+                    "/webhooks/calendly",
+                    content=created_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": created_signature_header,
+                    },
+                )
+                first_canceled_response = client.post(
+                    "/webhooks/calendly",
+                    content=canceled_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": canceled_signature_header,
+                    },
+                )
+                second_canceled_response = client.post(
+                    "/webhooks/calendly",
+                    content=canceled_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": canceled_signature_header,
+                    },
+                )
+
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story45_cancel")
+    invoices = _invoices_for_booking_uuid(calendly_booking_uuid="BOOK_story45_cancel")
+
+    assert created_response.status_code == 200
+    assert first_canceled_response.status_code == 200
+    assert second_canceled_response.status_code == 200
+    assert len(bookings) == 1
+    assert bookings[0].status == "canceled"
+    assert len(invoices) == 1
+    assert invoices[0].status == "void"
+    assert invoices[0].voided_at is not None
+    assert len(provider.create_calls) == 1
+    assert provider.void_calls == [
+        {
+            "stripe_account_id": "acct_story45_cancel",
+            "stripe_invoice_id": "in_story45_cancel",
+        }
+    ]
+
+
+def test_calendly_webhook_booking_created_with_missing_billing_defaults_creates_no_invoice():
+    stored = _create_creator_booking_link_and_content(
+        tid="story45_missing_defaults_tid",
+        stripe_account_id="acct_story45_missing_defaults",
+    )
+    payload = _invitee_created_payload(
+        event_id="EVT_story45_missing_defaults",
+        calendly_booking_uuid="BOOK_story45_missing_defaults",
+        tid=stored["tid"],
+        email="story45-missing-defaults@example.com",
+        created_at="2026-03-08T21:00:00Z",
+    )
+    signature_header = _calendly_signature_header(
+        payload=payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    provider = _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=True))
+    router = build_default_calendly_webhook_router(provider=provider)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("calendly_webhook_router", router):
+                response = client.post(
+                    "/webhooks/calendly",
+                    content=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": signature_header,
+                    },
+                )
+
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story45_missing_defaults")
+    invoices = _invoices_for_booking_uuid(calendly_booking_uuid="BOOK_story45_missing_defaults")
+
+    assert response.status_code == 200
+    assert len(bookings) == 1
+    assert invoices == []
+    assert provider.readiness_calls == []
+    assert provider.create_calls == []
+    assert provider.void_calls == []
+
+
+def test_calendly_webhook_booking_created_with_non_billable_creator_creates_no_invoice():
+    stored = _create_creator_booking_link_and_content(
+        tid="story45_not_billable_tid",
+        stripe_account_id="acct_story45_not_billable",
+        billing_amount_cents=22000,
+        billing_currency="USD",
+    )
+    payload = _invitee_created_payload(
+        event_id="EVT_story45_not_billable",
+        calendly_booking_uuid="BOOK_story45_not_billable",
+        tid=stored["tid"],
+        email="story45-not-billable@example.com",
+        created_at="2026-03-08T21:15:00Z",
+    )
+    signature_header = _calendly_signature_header(
+        payload=payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    provider = _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=False))
+    router = build_default_calendly_webhook_router(provider=provider)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("calendly_webhook_router", router):
+                response = client.post(
+                    "/webhooks/calendly",
+                    content=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": signature_header,
+                    },
+                )
+
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story45_not_billable")
+    invoices = _invoices_for_booking_uuid(calendly_booking_uuid="BOOK_story45_not_billable")
+
+    assert response.status_code == 200
+    assert len(bookings) == 1
+    assert invoices == []
+    assert provider.readiness_calls == ["acct_story45_not_billable"]
+    assert provider.create_calls == []
+    assert provider.void_calls == []
 
 
 def test_calendly_webhook_marks_booking_canceled_and_stays_safe_without_invoice_persistence():

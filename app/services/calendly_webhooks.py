@@ -15,6 +15,12 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.models.booking import Booking
 from app.models.content import Content
+from app.services.billing import (
+    BillingInvoiceResult,
+    BillingInvoiceVoidResult,
+    BillingOrchestrator,
+)
+from app.services.stripe_provider import StripeProvider, build_default_stripe_provider
 
 
 logger = logging.getLogger(__name__)
@@ -64,6 +70,16 @@ class UnpaidInvoiceVoider(Protocol):
     def void_unpaid_invoice(self, *, booking: CanceledBookingContext) -> None: ...
 
 
+class BookingBillingService(Protocol):
+    def create_invoice_for_booking(self, *, booking_id: uuid.UUID) -> BillingInvoiceResult: ...
+
+    def void_open_invoice_for_booking(
+        self,
+        *,
+        booking_id: uuid.UUID,
+    ) -> BillingInvoiceVoidResult: ...
+
+
 class NoopUnpaidInvoiceVoider:
     def void_unpaid_invoice(self, *, booking: CanceledBookingContext) -> None:
         logger.info(
@@ -75,9 +91,33 @@ class NoopUnpaidInvoiceVoider:
         )
 
 
+class BillingBackedUnpaidInvoiceVoider:
+    def __init__(self, *, billing_service: BookingBillingService):
+        self._billing_service = billing_service
+
+    def void_unpaid_invoice(self, *, booking: CanceledBookingContext) -> None:
+        result = self._billing_service.void_open_invoice_for_booking(booking_id=booking.booking_id)
+        logger.info(
+            "calendly_webhook_booking_canceled_invoice_result booking_id=%s calendly_booking_uuid=%s outcome=%s reason=%s invoice_id=%s stripe_invoice_id=%s invoice_status=%s",
+            booking.booking_id,
+            booking.calendly_booking_uuid,
+            result.outcome,
+            result.reason,
+            result.invoice_id,
+            result.stripe_invoice_id,
+            result.invoice_status,
+        )
+
+
 class BookingCreatedCalendlyWebhookHandler:
-    def __init__(self, *, session_factory: Callable[[], Session]):
+    def __init__(
+        self,
+        *,
+        session_factory: Callable[[], Session],
+        billing_service: BookingBillingService | None = None,
+    ):
         self._session_factory = session_factory
+        self._billing_service = billing_service
 
     def handle_event(self, *, event: CalendlyWebhookEvent) -> bool:
         if event.event_type != "booking.created":
@@ -95,6 +135,8 @@ class BookingCreatedCalendlyWebhookHandler:
                 event.calendly_event_id,
             )
             return True
+
+        booking_id_for_billing: uuid.UUID | None = None
 
         with self._session_factory() as session:
             content = session.scalar(select(Content).where(Content.tid == event.tid))
@@ -133,10 +175,9 @@ class BookingCreatedCalendlyWebhookHandler:
                     event.calendly_booking_uuid,
                     resolved_tid,
                 )
-                return True
-
-            session.add(
-                Booking(
+                booking_id_for_billing = existing_booking.id
+            else:
+                booking = Booking(
                     creator_id=creator_id,
                     booking_link_id=booking_link_id,
                     tid=resolved_tid,
@@ -145,33 +186,50 @@ class BookingCreatedCalendlyWebhookHandler:
                     booked_at=booked_at,
                     status="created",
                 )
-            )
+                session.add(booking)
 
-            try:
-                session.commit()
-            except IntegrityError:
-                session.rollback()
-                existing_booking = session.scalar(
-                    select(Booking).where(
-                        Booking.calendly_booking_uuid == event.calendly_booking_uuid
+                try:
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+                    existing_booking = session.scalar(
+                        select(Booking).where(
+                            Booking.calendly_booking_uuid == event.calendly_booking_uuid
+                        )
                     )
-                )
-                if existing_booking is None:
-                    raise
-                logger.info(
-                    "calendly_webhook_booking_created_duplicate calendly_booking_uuid=%s tid=%s",
-                    event.calendly_booking_uuid,
-                    resolved_tid,
-                )
-                return True
+                    if existing_booking is None:
+                        raise
+                    logger.info(
+                        "calendly_webhook_booking_created_duplicate calendly_booking_uuid=%s tid=%s",
+                        event.calendly_booking_uuid,
+                        resolved_tid,
+                    )
+                    booking_id_for_billing = existing_booking.id
+                else:
+                    session.refresh(booking)
+                    booking_id_for_billing = booking.id
+                    logger.info(
+                        "calendly_webhook_booking_created_persisted calendly_booking_uuid=%s tid=%s creator_id=%s booking_link_id=%s",
+                        event.calendly_booking_uuid,
+                        resolved_tid,
+                        creator_id,
+                        booking_link_id,
+                    )
 
-        logger.info(
-            "calendly_webhook_booking_created_persisted calendly_booking_uuid=%s tid=%s creator_id=%s booking_link_id=%s",
-            event.calendly_booking_uuid,
-            resolved_tid,
-            creator_id,
-            booking_link_id,
-        )
+        if booking_id_for_billing is not None and self._billing_service is not None:
+            billing_result = self._billing_service.create_invoice_for_booking(
+                booking_id=booking_id_for_billing
+            )
+            logger.info(
+                "calendly_webhook_booking_created_invoice_result booking_id=%s calendly_booking_uuid=%s outcome=%s reason=%s invoice_id=%s stripe_invoice_id=%s invoice_status=%s",
+                booking_id_for_billing,
+                event.calendly_booking_uuid,
+                billing_result.outcome,
+                billing_result.reason,
+                billing_result.invoice_id,
+                billing_result.stripe_invoice_id,
+                billing_result.invoice_status,
+            )
         return True
 
 
@@ -246,11 +304,20 @@ class DefaultCalendlyWebhookRouter:
         *,
         booking_created_handler: BookingCreatedCalendlyWebhookHandler | None = None,
         booking_canceled_handler: BookingCanceledCalendlyWebhookHandler | None = None,
+        billing_service: BookingBillingService | None = None,
         unpaid_invoice_voider: UnpaidInvoiceVoider | None = None,
     ):
-        resolved_unpaid_invoice_voider = unpaid_invoice_voider or NoopUnpaidInvoiceVoider()
+        resolved_unpaid_invoice_voider = unpaid_invoice_voider
+        if resolved_unpaid_invoice_voider is None:
+            if billing_service is None:
+                resolved_unpaid_invoice_voider = NoopUnpaidInvoiceVoider()
+            else:
+                resolved_unpaid_invoice_voider = BillingBackedUnpaidInvoiceVoider(
+                    billing_service=billing_service
+                )
         self._booking_created_handler = booking_created_handler or BookingCreatedCalendlyWebhookHandler(
-            session_factory=SessionLocal
+            session_factory=SessionLocal,
+            billing_service=billing_service,
         )
         self._booking_canceled_handler = booking_canceled_handler or BookingCanceledCalendlyWebhookHandler(
             session_factory=SessionLocal,
@@ -287,6 +354,29 @@ class DefaultCalendlyWebhookRouter:
 
 
 DEFAULT_CALENDLY_WEBHOOK_ROUTER = DefaultCalendlyWebhookRouter()
+
+
+def build_default_calendly_webhook_router(
+    *,
+    provider: StripeProvider | None = None,
+    session_factory: Callable[[], Session] = SessionLocal,
+) -> DefaultCalendlyWebhookRouter:
+    billing_service = BillingOrchestrator(
+        session_factory=session_factory,
+        provider=provider or build_default_stripe_provider(),
+    )
+    return DefaultCalendlyWebhookRouter(
+        booking_created_handler=BookingCreatedCalendlyWebhookHandler(
+            session_factory=session_factory,
+            billing_service=billing_service,
+        ),
+        booking_canceled_handler=BookingCanceledCalendlyWebhookHandler(
+            session_factory=session_factory,
+            unpaid_invoice_voider=BillingBackedUnpaidInvoiceVoider(
+                billing_service=billing_service
+            ),
+        ),
+    )
 
 
 def verify_and_parse_calendly_webhook(

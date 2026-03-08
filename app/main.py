@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api.auth import me_router, router as auth_router
 from app.api.booking_links import router as booking_links_router
 from app.api.content import router as content_router
+from app.api.reports import router as reports_router
 from app.api.redirects import router as redirects_router
 from app.api.stripe import router as stripe_router
 from app.api.ui import router as ui_router
@@ -48,6 +49,7 @@ app.include_router(auth_router)
 app.include_router(me_router)
 app.include_router(booking_links_router)
 app.include_router(content_router)
+app.include_router(reports_router)
 app.include_router(redirects_router)
 app.include_router(stripe_router)
 app.include_router(webhooks_router)

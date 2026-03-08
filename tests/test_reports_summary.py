@@ -1,0 +1,550 @@
+import os
+import uuid
+from datetime import date, datetime, timedelta, timezone
+
+from fastapi.testclient import TestClient
+from jose import jwt
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from app.core.config import get_settings
+from app.main import app
+from app.models.auth_user import AuthUser
+from app.models.booking import Booking
+from app.models.booking_link import BookingLink
+from app.models.content import Content
+from app.models.creator import Creator
+from app.models.invoice import Invoice
+from app.models.invoice_payment_event import InvoicePaymentEvent
+from app.services.invoice_payment_events import (
+    UNATTRIBUTED_REASON_MISSING_TID,
+    UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
+)
+from app.services.reporting import (
+    BLOCKED_REPORTING_UNSUPPORTED_REASON,
+    CURRENT_UNATTRIBUTED_BACKLOG_SCOPE,
+    get_creator_reports_summary,
+)
+
+
+def _engine():
+    return create_engine(os.environ["TEST_DATABASE_URL"])
+
+
+def _access_token(*, user_id: str, creator_id: str, email: str, expires_delta: timedelta) -> str:
+    settings = get_settings()
+    issued_at = datetime.now(timezone.utc)
+    payload = {
+        "sub": user_id,
+        "creator_id": creator_id,
+        "email": email,
+        "iat": issued_at,
+        "exp": issued_at + expires_delta,
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def _create_creator_with_user(
+    session: Session,
+    *,
+    suffix: str,
+    stripe_account_id: str,
+) -> tuple[Creator, AuthUser]:
+    creator = Creator(
+        name=f"Reports Creator {suffix}",
+        stripe_connect_status="connected",
+        stripe_account_id=stripe_account_id,
+    )
+    session.add(creator)
+    session.flush()
+
+    user = AuthUser(
+        creator_id=creator.id,
+        email=f"reports_{suffix}@example.com",
+    )
+    session.add(user)
+    session.flush()
+    return creator, user
+
+
+def _create_booking_link(
+    session: Session,
+    *,
+    creator: Creator,
+    suffix: str,
+) -> BookingLink:
+    booking_link = BookingLink(
+        creator_id=creator.id,
+        name=f"Reports Link {suffix}",
+        calendly_url=f"https://calendly.com/example/reports-{suffix}",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    session.add(booking_link)
+    session.flush()
+    return booking_link
+
+
+def _create_content(
+    session: Session,
+    *,
+    creator: Creator,
+    booking_link: BookingLink,
+    suffix: str,
+) -> Content:
+    content = Content(
+        creator_id=creator.id,
+        booking_link_id=booking_link.id,
+        source_url=f"https://example.com/posts/{suffix}",
+        tid=f"reports_tid_{suffix}",
+    )
+    session.add(content)
+    session.flush()
+    return content
+
+
+def _create_booking(
+    session: Session,
+    *,
+    creator: Creator,
+    booking_link: BookingLink,
+    content: Content,
+    booking_uuid: str,
+    booked_at: datetime,
+) -> Booking:
+    booking = Booking(
+        creator_id=creator.id,
+        booking_link_id=booking_link.id,
+        tid=content.tid,
+        calendly_booking_uuid=booking_uuid,
+        email=f"{booking_uuid.lower()}@example.com",
+        status="created",
+        booked_at=booked_at,
+    )
+    session.add(booking)
+    session.flush()
+    return booking
+
+
+def _create_paid_invoice(
+    session: Session,
+    *,
+    creator: Creator,
+    booking: Booking,
+    stripe_invoice_id: str,
+    amount_cents: int,
+    paid_at: datetime,
+) -> Invoice:
+    invoice = Invoice(
+        creator_id=creator.id,
+        booking_id=booking.id,
+        tid=booking.tid,
+        stripe_account_id=creator.stripe_account_id,
+        stripe_invoice_id=stripe_invoice_id,
+        amount_cents=amount_cents,
+        currency="USD",
+        status="paid",
+        issued_at=paid_at - timedelta(hours=1),
+        paid_at=paid_at,
+    )
+    session.add(invoice)
+    session.flush()
+    return invoice
+
+
+def _create_unmatched_payment_event(
+    session: Session,
+    *,
+    creator: Creator,
+    stripe_event_id: str,
+    stripe_invoice_id: str,
+    reason: str,
+    paid_at: datetime,
+) -> InvoicePaymentEvent:
+    event = InvoicePaymentEvent(
+        stripe_event_id=stripe_event_id,
+        stripe_event_type="invoice.paid",
+        stripe_account_id=creator.stripe_account_id,
+        stripe_invoice_id=stripe_invoice_id,
+        invoice_id=None,
+        creator_id=creator.id,
+        booking_id=None,
+        tid=None,
+        status="unmatched",
+        unattributed_reason=reason,
+        paid_at=paid_at,
+        received_at=paid_at,
+        processed_at=None,
+    )
+    session.add(event)
+    session.flush()
+    return event
+
+
+def test_creator_reports_summary_groups_paid_revenue_by_content_and_keeps_current_unattributed_backlog():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, _ = _create_creator_with_user(
+            session,
+            suffix="service",
+            stripe_account_id="acct_reports_service",
+        )
+        booking_link = _create_booking_link(session, creator=creator, suffix="service")
+
+        content_old = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="service_old",
+        )
+        booking_old = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content_old,
+            booking_uuid="BOOK_REPORTS_SERVICE_OLD",
+            booked_at=datetime(2026, 3, 7, 12, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=booking_old,
+            stripe_invoice_id="in_reports_service_old",
+            amount_cents=10000,
+            paid_at=datetime(2026, 3, 7, 13, 0, tzinfo=timezone.utc),
+        )
+
+        content_current = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="service_current",
+        )
+        booking_current_a = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content_current,
+            booking_uuid="BOOK_REPORTS_SERVICE_CURRENT_A",
+            booked_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=booking_current_a,
+            stripe_invoice_id="in_reports_service_current_a",
+            amount_cents=25000,
+            paid_at=datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc),
+        )
+        booking_current_b = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content_current,
+            booking_uuid="BOOK_REPORTS_SERVICE_CURRENT_B",
+            booked_at=datetime(2026, 3, 8, 18, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=booking_current_b,
+            stripe_invoice_id="in_reports_service_current_b",
+            amount_cents=5000,
+            paid_at=datetime(2026, 3, 8, 19, 0, tzinfo=timezone.utc),
+        )
+
+        _create_unmatched_payment_event(
+            session,
+            creator=creator,
+            stripe_event_id="evt_reports_service_missing_tid",
+            stripe_invoice_id="in_reports_service_missing_tid",
+            reason=UNATTRIBUTED_REASON_MISSING_TID,
+            paid_at=datetime(2026, 3, 8, 20, 0, tzinfo=timezone.utc),
+        )
+        _create_unmatched_payment_event(
+            session,
+            creator=creator,
+            stripe_event_id="evt_reports_service_unknown_booking",
+            stripe_invoice_id="in_reports_service_unknown_booking",
+            reason=UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
+            paid_at=datetime(2026, 3, 8, 21, 0, tzinfo=timezone.utc),
+        )
+
+        other_creator, _ = _create_creator_with_user(
+            session,
+            suffix="service_other",
+            stripe_account_id="acct_reports_service_other",
+        )
+        other_booking_link = _create_booking_link(
+            session,
+            creator=other_creator,
+            suffix="service_other",
+        )
+        other_content = _create_content(
+            session,
+            creator=other_creator,
+            booking_link=other_booking_link,
+            suffix="service_other",
+        )
+        other_booking = _create_booking(
+            session,
+            creator=other_creator,
+            booking_link=other_booking_link,
+            content=other_content,
+            booking_uuid="BOOK_REPORTS_SERVICE_OTHER",
+            booked_at=datetime(2026, 3, 8, 11, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=other_creator,
+            booking=other_booking,
+            stripe_invoice_id="in_reports_service_other",
+            amount_cents=99999,
+            paid_at=datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc),
+        )
+
+        creator_id = creator.id
+        old_content_id = str(content_old.id)
+        current_content_id = str(content_current.id)
+        booking_link_id = str(booking_link.id)
+        old_tid = content_old.tid
+        current_tid = content_current.tid
+        session.commit()
+
+    with Session(engine) as session:
+        full_summary = get_creator_reports_summary(
+            creator_id=creator_id,
+            db=session,
+        )
+        filtered_summary = get_creator_reports_summary(
+            creator_id=creator_id,
+            db=session,
+            start_date=date(2026, 3, 8),
+            end_date=date(2026, 3, 8),
+        )
+
+    assert [(row.content_id, row.tid, row.paid_revenue_cents) for row in full_summary.rows] == [
+        (uuid.UUID(current_content_id), current_tid, 30000),
+        (uuid.UUID(old_content_id), old_tid, 10000),
+    ]
+    assert full_summary.paid_revenue_cents == 40000
+    assert full_summary.paid_invoice_count == 3
+    assert full_summary.paid_booking_count == 3
+    assert full_summary.rows[0].booking_link_id == uuid.UUID(booking_link_id)
+    assert full_summary.rows[0].paid_invoice_count == 2
+    assert full_summary.rows[0].paid_booking_count == 2
+    assert full_summary.rows[0].first_paid_at == datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc)
+    assert full_summary.rows[0].last_paid_at == datetime(2026, 3, 8, 19, 0, tzinfo=timezone.utc)
+
+    assert filtered_summary.start_date == date(2026, 3, 8)
+    assert filtered_summary.end_date == date(2026, 3, 8)
+    assert [(row.content_id, row.tid, row.paid_revenue_cents) for row in filtered_summary.rows] == [
+        (uuid.UUID(current_content_id), current_tid, 30000),
+    ]
+    assert filtered_summary.paid_revenue_cents == 30000
+    assert filtered_summary.paid_invoice_count == 2
+    assert filtered_summary.paid_booking_count == 2
+    assert filtered_summary.unattributed_current_backlog.scope == CURRENT_UNATTRIBUTED_BACKLOG_SCOPE
+    assert filtered_summary.unattributed_current_backlog.event_count == 2
+    assert [
+        (item.reason, item.event_count)
+        for item in filtered_summary.unattributed_current_backlog.reasons
+    ] == [
+        (UNATTRIBUTED_REASON_MISSING_TID, 1),
+        (UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID, 1),
+    ]
+    assert filtered_summary.blocked_summary.supported is False
+    assert filtered_summary.blocked_summary.reason == BLOCKED_REPORTING_UNSUPPORTED_REASON
+
+
+def test_reports_summary_requires_auth():
+    with TestClient(app) as client:
+        response = client.get("/reports/summary")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "not authenticated"}
+
+
+def test_reports_summary_returns_creator_scoped_filtered_rows_and_current_unattributed_backlog():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, user = _create_creator_with_user(
+            session,
+            suffix="api",
+            stripe_account_id="acct_reports_api",
+        )
+        booking_link = _create_booking_link(session, creator=creator, suffix="api")
+
+        content_in_range = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="api_in_range",
+        )
+        booking_in_range = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content_in_range,
+            booking_uuid="BOOK_REPORTS_API_IN_RANGE",
+            booked_at=datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=booking_in_range,
+            stripe_invoice_id="in_reports_api_in_range",
+            amount_cents=19500,
+            paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+        )
+
+        content_out_of_range = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="api_out_of_range",
+        )
+        booking_out_of_range = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content_out_of_range,
+            booking_uuid="BOOK_REPORTS_API_OUT_OF_RANGE",
+            booked_at=datetime(2026, 3, 7, 8, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=booking_out_of_range,
+            stripe_invoice_id="in_reports_api_out_of_range",
+            amount_cents=5000,
+            paid_at=datetime(2026, 3, 7, 9, 0, tzinfo=timezone.utc),
+        )
+
+        _create_unmatched_payment_event(
+            session,
+            creator=creator,
+            stripe_event_id="evt_reports_api_missing_tid",
+            stripe_invoice_id="in_reports_api_missing_tid",
+            reason=UNATTRIBUTED_REASON_MISSING_TID,
+            paid_at=datetime(2026, 3, 8, 11, 0, tzinfo=timezone.utc),
+        )
+
+        other_creator, _ = _create_creator_with_user(
+            session,
+            suffix="api_other",
+            stripe_account_id="acct_reports_api_other",
+        )
+        other_booking_link = _create_booking_link(
+            session,
+            creator=other_creator,
+            suffix="api_other",
+        )
+        other_content = _create_content(
+            session,
+            creator=other_creator,
+            booking_link=other_booking_link,
+            suffix="api_other",
+        )
+        other_booking = _create_booking(
+            session,
+            creator=other_creator,
+            booking_link=other_booking_link,
+            content=other_content,
+            booking_uuid="BOOK_REPORTS_API_OTHER",
+            booked_at=datetime(2026, 3, 8, 14, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=other_creator,
+            booking=other_booking,
+            stripe_invoice_id="in_reports_api_other",
+            amount_cents=88000,
+            paid_at=datetime(2026, 3, 8, 15, 0, tzinfo=timezone.utc),
+        )
+
+        token = _access_token(
+            user_id=str(user.id),
+            creator_id=str(creator.id),
+            email=user.email,
+            expires_delta=timedelta(hours=24),
+        )
+        content_in_range_id = str(content_in_range.id)
+        content_in_range_booking_link_id = str(booking_link.id)
+        content_in_range_tid = content_in_range.tid
+        content_in_range_source_url = content_in_range.source_url
+        session.commit()
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/reports/summary",
+            params={"start_date": "2026-03-08", "end_date": "2026-03-08"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers.get("X-Request-Id")
+    assert response.json() == {
+        "start_date": "2026-03-08",
+        "end_date": "2026-03-08",
+        "rows": [
+                {
+                    "content_id": content_in_range_id,
+                    "booking_link_id": content_in_range_booking_link_id,
+                    "tid": content_in_range_tid,
+                    "source_url": content_in_range_source_url,
+                "paid_revenue_cents": 19500,
+                "paid_invoice_count": 1,
+                "paid_booking_count": 1,
+                "first_paid_at": "2026-03-08T09:00:00Z",
+                "last_paid_at": "2026-03-08T09:00:00Z",
+            }
+        ],
+        "paid_revenue_cents": 19500,
+        "paid_invoice_count": 1,
+        "paid_booking_count": 1,
+        "unattributed_current_backlog": {
+            "scope": CURRENT_UNATTRIBUTED_BACKLOG_SCOPE,
+            "event_count": 1,
+            "reasons": [
+                {
+                    "reason": UNATTRIBUTED_REASON_MISSING_TID,
+                    "event_count": 1,
+                }
+            ],
+        },
+        "blocked_summary": {
+            "supported": False,
+            "reason": BLOCKED_REPORTING_UNSUPPORTED_REASON,
+        },
+    }
+
+
+def test_reports_summary_rejects_inverted_date_range():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, user = _create_creator_with_user(
+            session,
+            suffix="invalid_range",
+            stripe_account_id="acct_reports_invalid_range",
+        )
+        token = _access_token(
+            user_id=str(user.id),
+            creator_id=str(creator.id),
+            email=user.email,
+            expires_delta=timedelta(hours=24),
+        )
+        session.commit()
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/reports/summary",
+            params={"start_date": "2026-03-09", "end_date": "2026-03-08"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "start_date must be on or before end_date"}

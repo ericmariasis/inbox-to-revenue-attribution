@@ -1,12 +1,22 @@
 import hashlib
 import hmac
 import json
+import os
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from time import time
 
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 from app.main import app
+from app.models.booking import Booking
+from app.models.booking_link import BookingLink
+from app.models.content import Content
+from app.models.creator import Creator
+from app.models.invoice import Invoice
+from app.models.invoice_payment_event import InvoicePaymentEvent
 
 
 def _stripe_signature_header(*, payload: bytes, secret: str, timestamp: int | None = None) -> str:
@@ -47,6 +57,96 @@ class _CaptureStripeWebhookRouter:
                 "event_type": event.event_type,
             }
         )
+
+
+def _engine():
+    return create_engine(os.environ["TEST_DATABASE_URL"])
+
+
+def _persist_open_invoice(
+    *,
+    stripe_account_id: str,
+    stripe_invoice_id: str,
+    booking_uuid: str,
+    tid: str,
+) -> Invoice:
+    with Session(_engine()) as session:
+        creator = Creator(
+            name="Story 48 Stripe Webhook Creator",
+            stripe_connect_status="connected",
+            stripe_account_id=stripe_account_id,
+        )
+        session.add(creator)
+        session.flush()
+
+        booking_link = BookingLink(
+            creator_id=creator.id,
+            name="Story 48 Stripe Webhook Link",
+            calendly_url="https://calendly.com/example/story48-stripe-webhook",
+        )
+        session.add(booking_link)
+        session.flush()
+
+        content = Content(
+            creator_id=creator.id,
+            booking_link_id=booking_link.id,
+            source_url="https://example.com/story48-stripe-webhook",
+            tid=tid,
+        )
+        session.add(content)
+        session.flush()
+
+        booking = Booking(
+            creator_id=creator.id,
+            tid=content.tid,
+            booking_link_id=booking_link.id,
+            calendly_booking_uuid=booking_uuid,
+            email="story48-booked@example.com",
+            status="created",
+            booked_at=datetime(2026, 3, 8, 22, 0, tzinfo=timezone.utc),
+        )
+        session.add(booking)
+        session.flush()
+
+        invoice = Invoice(
+            creator_id=creator.id,
+            booking_id=booking.id,
+            tid=content.tid,
+            stripe_account_id=stripe_account_id,
+            stripe_invoice_id=stripe_invoice_id,
+            amount_cents=19500,
+            currency="USD",
+            status="open",
+            issued_at=datetime(2026, 3, 8, 22, 5, tzinfo=timezone.utc),
+        )
+        session.add(invoice)
+        session.commit()
+        session.refresh(invoice)
+        return invoice
+
+
+def _invoice_paid_payload(
+    *,
+    stripe_event_id: str,
+    stripe_account_id: str,
+    stripe_invoice_id: str,
+    paid_at: datetime,
+) -> bytes:
+    return json.dumps(
+        {
+            "id": stripe_event_id,
+            "type": "invoice.paid",
+            "account": stripe_account_id,
+            "data": {
+                "object": {
+                    "id": stripe_invoice_id,
+                    "object": "invoice",
+                    "status": "paid",
+                    "status_transitions": {"paid_at": int(paid_at.timestamp())},
+                }
+            },
+        }
+    ).encode("utf-8")
 
 
 def test_stripe_webhook_accepts_valid_signature_and_routes_verified_event():
@@ -117,7 +217,195 @@ def test_stripe_webhook_rejects_invalid_signature_without_routing():
     assert capture_router.events == []
 
 
+def test_stripe_webhook_invoice_paid_marks_matched_invoice_paid_and_persists_linked_payment_event():
+    invoice = _persist_open_invoice(
+        stripe_account_id="acct_story48_matched",
+        stripe_invoice_id="in_story48_matched",
+        booking_uuid="BOOK_story48_matched",
+        tid="story48_tid_matched",
+    )
+    paid_at = datetime(2026, 3, 8, 22, 30, tzinfo=timezone.utc)
+    payload = _invoice_paid_payload(
+        stripe_event_id="evt_story48_matched",
+        stripe_account_id="acct_story48_matched",
+        stripe_invoice_id="in_story48_matched",
+        paid_at=paid_at,
+    )
+    signature_header = _stripe_signature_header(
+        payload=payload,
+        secret=_StubSettings.stripe_webhook_secret,
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            response = client.post(
+                "/webhooks/stripe",
+                content=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Stripe-Signature": signature_header,
+                },
+            )
+
+    with Session(_engine()) as session:
+        persisted_invoice = session.get(Invoice, invoice.id)
+        payment_events = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.stripe_invoice_id == "in_story48_matched"
+            )
+        ).all()
+
+    assert response.status_code == 200
+    assert response.headers.get("X-Request-Id")
+    assert response.json() == {"status": "ok"}
+    assert persisted_invoice is not None
+    assert persisted_invoice.status == "paid"
+    assert persisted_invoice.paid_at == paid_at
+    assert len(payment_events) == 1
+    assert payment_events[0].stripe_event_id == "evt_story48_matched"
+    assert payment_events[0].stripe_event_type == "invoice.paid"
+    assert payment_events[0].stripe_account_id == "acct_story48_matched"
+    assert payment_events[0].stripe_invoice_id == "in_story48_matched"
+    assert payment_events[0].invoice_id == invoice.id
+    assert payment_events[0].creator_id == invoice.creator_id
+    assert payment_events[0].booking_id == invoice.booking_id
+    assert payment_events[0].tid == "story48_tid_matched"
+    assert payment_events[0].status == "applied"
+    assert payment_events[0].unattributed_reason is None
+    assert payment_events[0].paid_at == paid_at
+    assert payment_events[0].received_at is not None
+    assert payment_events[0].processed_at is not None
+
+
+def test_stripe_webhook_duplicate_stripe_event_id_delivery_is_idempotent_for_invoice_paid():
+    invoice = _persist_open_invoice(
+        stripe_account_id="acct_story48_duplicate",
+        stripe_invoice_id="in_story48_duplicate",
+        booking_uuid="BOOK_story48_duplicate",
+        tid="story48_tid_duplicate",
+    )
+    paid_at = datetime(2026, 3, 8, 22, 40, tzinfo=timezone.utc)
+    payload = _invoice_paid_payload(
+        stripe_event_id="evt_story48_duplicate",
+        stripe_account_id="acct_story48_duplicate",
+        stripe_invoice_id="in_story48_duplicate",
+        paid_at=paid_at,
+    )
+    signature_header = _stripe_signature_header(
+        payload=payload,
+        secret=_StubSettings.stripe_webhook_secret,
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            first_response = client.post(
+                "/webhooks/stripe",
+                content=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Stripe-Signature": signature_header,
+                },
+            )
+            second_response = client.post(
+                "/webhooks/stripe",
+                content=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Stripe-Signature": signature_header,
+                },
+            )
+
+    with Session(_engine()) as session:
+        persisted_invoice = session.get(Invoice, invoice.id)
+        payment_events = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.stripe_invoice_id == "in_story48_duplicate"
+            )
+        ).all()
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert persisted_invoice is not None
+    assert persisted_invoice.status == "paid"
+    assert persisted_invoice.paid_at == paid_at
+    assert len(payment_events) == 1
+    assert payment_events[0].stripe_event_id == "evt_story48_duplicate"
+
+
+def test_stripe_webhook_repeated_invoice_paid_for_already_paid_invoice_stays_safe():
+    invoice = _persist_open_invoice(
+        stripe_account_id="acct_story48_already_paid",
+        stripe_invoice_id="in_story48_already_paid",
+        booking_uuid="BOOK_story48_already_paid",
+        tid="story48_tid_already_paid",
+    )
+    first_paid_at = datetime(2026, 3, 8, 22, 50, tzinfo=timezone.utc)
+    second_paid_at = datetime(2026, 3, 8, 22, 55, tzinfo=timezone.utc)
+    first_payload = _invoice_paid_payload(
+        stripe_event_id="evt_story48_first_paid",
+        stripe_account_id="acct_story48_already_paid",
+        stripe_invoice_id="in_story48_already_paid",
+        paid_at=first_paid_at,
+    )
+    second_payload = _invoice_paid_payload(
+        stripe_event_id="evt_story48_second_paid",
+        stripe_account_id="acct_story48_already_paid",
+        stripe_invoice_id="in_story48_already_paid",
+        paid_at=second_paid_at,
+    )
+    first_signature_header = _stripe_signature_header(
+        payload=first_payload,
+        secret=_StubSettings.stripe_webhook_secret,
+    )
+    second_signature_header = _stripe_signature_header(
+        payload=second_payload,
+        secret=_StubSettings.stripe_webhook_secret,
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            first_response = client.post(
+                "/webhooks/stripe",
+                content=first_payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Stripe-Signature": first_signature_header,
+                },
+            )
+            second_response = client.post(
+                "/webhooks/stripe",
+                content=second_payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Stripe-Signature": second_signature_header,
+                },
+            )
+
+    with Session(_engine()) as session:
+        persisted_invoice = session.get(Invoice, invoice.id)
+        payment_events = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.stripe_invoice_id == "in_story48_already_paid"
+            )
+        ).all()
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert persisted_invoice is not None
+    assert persisted_invoice.status == "paid"
+    assert persisted_invoice.paid_at == first_paid_at
+    assert len(payment_events) == 1
+    assert payment_events[0].stripe_event_id == "evt_story48_first_paid"
+    assert payment_events[0].paid_at == first_paid_at
+
+
 def test_stripe_webhook_accepts_verified_unsupported_event_type_as_safe_noop():
+    invoice = _persist_open_invoice(
+        stripe_account_id="acct_story48_noop",
+        stripe_invoice_id="in_story48_noop",
+        booking_uuid="BOOK_story48_noop",
+        tid="story48_tid_noop",
+    )
     payload = json.dumps(
         {
             "id": "evt_story29_noop",
@@ -142,6 +430,14 @@ def test_stripe_webhook_accepts_verified_unsupported_event_type_as_safe_noop():
                 },
             )
 
+    with Session(_engine()) as session:
+        persisted_invoice = session.get(Invoice, invoice.id)
+        payment_event_count = session.query(InvoicePaymentEvent).count()
+
     assert response.status_code == 200
     assert response.headers.get("X-Request-Id")
     assert response.json() == {"status": "ok"}
+    assert persisted_invoice is not None
+    assert persisted_invoice.status == "open"
+    assert persisted_invoice.paid_at is None
+    assert payment_event_count == 0

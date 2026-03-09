@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.models.booking import Booking
 from app.models.content import Content
+from app.services.blocked_billing import resolve_blocked_billing_case_for_booking_canceled
 from app.services.billing import (
     BillingInvoiceResult,
     BillingInvoiceVoidResult,
@@ -276,6 +277,11 @@ class BookingCanceledCalendlyWebhookHandler:
             canceled_at = _extract_canceled_at(event_payload) or datetime.now(UTC)
             booking.status = "canceled"
             booking.canceled_at = canceled_at
+            resolve_blocked_billing_case_for_booking_canceled(
+                session,
+                booking_id=booking.id,
+                resolved_at=canceled_at,
+            )
             session.commit()
 
             booking_context = CanceledBookingContext(

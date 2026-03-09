@@ -44,5 +44,10 @@ class Invoice(Base):
 
     creator = relationship("Creator", back_populates="invoices")
     booking = relationship("Booking", back_populates="invoice")
+    blocked_billing_case = relationship(
+        "BlockedBillingCase",
+        back_populates="invoice",
+        uselist=False,
+    )
     content = relationship("Content", back_populates="invoices", foreign_keys=[tid])
     payment_events = relationship("InvoicePaymentEvent", back_populates="invoice")

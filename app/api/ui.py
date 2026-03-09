@@ -1,4 +1,5 @@
 import html
+import uuid
 from datetime import date, timezone
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
@@ -23,12 +24,20 @@ from app.api.content import (
 from app.api.deps import get_optional_browser_auth_user
 from app.api.stripe import build_stripe_connect_start_response
 from app.core.config import get_settings
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.auth_user import AuthUser
 from app.schemas.booking_link import BookingLinkCreateRequest, BookingLinkResponse
 from app.schemas.auth import MagicLinkStartRequest
 from app.schemas.content import ContentCreateRequest, ContentResponse
 from app.services.auth_magic_link import start_magic_link
+from app.services.blocked_billing import (
+    BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
+    BLOCKED_BILLING_REASON_PROVIDER_ERROR,
+    BlockedBillingCaseSummary,
+    BlockedBillingRetryService,
+    count_open_blocked_billing_cases,
+    list_open_blocked_billing_cases,
+)
 from app.services.browser_session import (
     clear_browser_session_cookie,
     get_browser_session_token,
@@ -38,6 +47,8 @@ from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_MISSING_TID,
     UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+    UnmatchedPaymentEventSummary,
+    list_current_unmatched_payment_events,
 )
 from app.services.reporting import (
     CreatorPaidAttributionExplanation,
@@ -48,6 +59,7 @@ from app.services.reporting import (
     get_creator_paid_attribution_explanation,
     get_creator_reports_summary,
 )
+from app.services.stripe_provider import build_default_stripe_provider
 
 router = APIRouter(include_in_schema=False)
 
@@ -388,6 +400,10 @@ def creator_reports_page(
         creator_id=current_user.creator_id,
         db=db,
     )
+    blocked_billing_count = count_open_blocked_billing_cases(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
     if not field_errors:
         try:
             summary = get_creator_reports_summary(
@@ -404,10 +420,74 @@ def creator_reports_page(
             current_user=current_user,
             content_items=content_items,
             summary=summary,
+            blocked_billing_count=blocked_billing_count,
             filter_values=filter_values,
             field_errors=field_errors,
         )
     )
+
+
+@router.get("/app/attention")
+def creator_attention_page(
+    request: Request,
+    status_value: str | None = Query(default=None, alias="status"),
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    blocked_cases = list_open_blocked_billing_cases(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    unmatched_events = list_current_unmatched_payment_events(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    return _html_response(
+        _render_attention_page(
+            current_user=current_user,
+            blocked_cases=blocked_cases,
+            unmatched_events=unmatched_events,
+            status_value=status_value,
+        )
+    )
+
+
+@router.post("/app/attention/blocked-billing/{case_id}/retry")
+def creator_attention_retry_blocked_billing_case(
+    case_id: uuid.UUID,
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    retry_service = BlockedBillingRetryService(
+        session_factory=SessionLocal,
+        provider=_ui_stripe_provider(request),
+    )
+    retry_result = retry_service.retry_case(
+        case_id=case_id,
+        creator_id=current_user.creator_id,
+    )
+    if retry_result.outcome == "missing":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="blocked billing case not found",
+        )
+
+    status_value = {
+        "created": "recovered",
+        "existing": "already-recovered",
+        "still_blocked": "still-blocked",
+        "already_resolved": "already-handled",
+        "closed": "closed",
+    }[retry_result.outcome]
+    return _redirect(f"/app/attention?status={status_value}")
 
 
 @router.get("/app/reports/explanations/paid/{tid}")
@@ -535,6 +615,10 @@ def _html_response(content: str) -> HTMLResponse:
     response = HTMLResponse(content=content)
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+def _ui_stripe_provider(request: Request):
+    return getattr(request.app.state, "stripe_provider", build_default_stripe_provider())
 
 
 def _empty_booking_link_form_values() -> dict[str, str]:
@@ -840,6 +924,7 @@ def _render_shell_nav(*, current_path: str) -> str:
         ("/app/booking-links", "Booking Links"),
         ("/app/content", "Content"),
         ("/app/bookings", "Bookings"),
+        ("/app/attention", "Attention"),
         ("/app/reports", "Reports"),
     ]
     items = []
@@ -1317,6 +1402,7 @@ def _render_reports_page(
     current_user: AuthUser,
     content_items: list[ContentResponse],
     summary: CreatorReportsSummary,
+    blocked_billing_count: int,
     filter_values: dict[str, str],
     field_errors: dict[str, str],
 ) -> str:
@@ -1417,7 +1503,8 @@ def _render_reports_page(
             summary=summary,
             filter_values=filter_values,
         )}
-        <p><strong>Blocked billing cases</strong>: some booking attempts may still be blocked before invoicing, but this page does not show a numeric blocked count yet.</p>
+        <p><strong>Blocked billing cases</strong>: {html.escape(_reports_blocked_case_copy(blocked_billing_count))}</p>
+        <p><a href="/app/attention" class="inline-link">Review blocked billing and unresolved payment details</a></p>
       </article>
     </section>
     <section class="card stack">
@@ -1437,6 +1524,72 @@ def _render_reports_page(
     </section>
     """
     return _page_layout(title="Reports", body=body)
+
+
+def _render_attention_page(
+    *,
+    current_user: AuthUser,
+    blocked_cases: list[BlockedBillingCaseSummary],
+    unmatched_events: list[UnmatchedPaymentEventSummary],
+    status_value: str | None,
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    blocked_count = len(blocked_cases)
+    unmatched_count = len(unmatched_events)
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Attention</h1>
+        <p class="lede">Review bookings that are blocked before invoicing and payment events still waiting on attribution repair.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/attention")}
+    {_render_attention_notice(status_value=status_value)}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Blocked billing</p>
+          <h2>Bookings waiting for invoice recovery</h2>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+        </div>
+        <p>{html.escape(_count_copy(blocked_count, "booking"))} currently waiting on invoice creation or retry.</p>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">Unresolved payments</p>
+          <h2>Payment events still outside paid totals</h2>
+        </div>
+        <p>{html.escape(_count_copy(unmatched_count, "event"))} still waiting on canonical attribution links before they can be counted.</p>
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Blocked billing</p>
+          <h2>Current blocked invoice cases</h2>
+        </div>
+        <p>{html.escape(_count_copy(blocked_count, "open case"))}</p>
+      </div>
+      {_render_blocked_billing_case_list(blocked_cases)}
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Unresolved payments</p>
+          <h2>Current unmatched payment events</h2>
+        </div>
+        <p>{html.escape(_count_copy(unmatched_count, "event"))}</p>
+      </div>
+      {_render_unmatched_payment_event_list(unmatched_events)}
+    </section>
+    """
+    return _page_layout(title="Attention", body=body)
 
 
 def _render_booking_activity_list(
@@ -1548,8 +1701,139 @@ def _render_reports_empty_state(*, has_tracked_content: bool, filters_active: bo
       <p class="eyebrow">No paid results yet</p>
       <h2>No paid results yet</h2>
       <p>You already have tracked content, but nothing is counted here until a matching invoice is marked paid.</p>
-      <a href="/app/content" class="inline-link">Review tracked content</a>
+    <a href="/app/content" class="inline-link">Review tracked content</a>
     </section>
+    """
+
+
+def _render_blocked_billing_case_list(
+    blocked_cases: list[BlockedBillingCaseSummary],
+) -> str:
+    if not blocked_cases:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">Clear</p>
+          <h2>No blocked billing cases are waiting right now</h2>
+          <p>When invoice creation is deferred for a tracked booking, it will appear here with the frozen billing inputs and the latest retry-safe reason.</p>
+        </section>
+        """
+
+    items = "".join(
+        _render_blocked_billing_case_card(blocked_case=blocked_case)
+        for blocked_case in blocked_cases
+    )
+    return f'<div class="content-list">{items}</div>'
+
+
+def _render_blocked_billing_case_card(*, blocked_case: BlockedBillingCaseSummary) -> str:
+    invoice_copy = "Not created yet"
+    if blocked_case.invoice_id is not None or blocked_case.stripe_invoice_id is not None:
+        invoice_copy = (
+            f'{html.escape(str(blocked_case.invoice_id or ""))} / '
+            f'{html.escape(blocked_case.stripe_invoice_id or "missing provider id")}'
+        ).strip(" /")
+
+    provider_details = ""
+    if blocked_case.provider_operation or blocked_case.provider_http_status or blocked_case.provider_error_code:
+        provider_details = f"""
+        <p><strong>Provider context</strong>: operation <code>{html.escape(blocked_case.provider_operation or "unknown")}</code>, HTTP {html.escape(str(blocked_case.provider_http_status or "unknown"))}, code <code>{html.escape(blocked_case.provider_error_code or "unknown")}</code>.</p>
+        """
+
+    last_retry_copy = (
+        _format_timestamp_in_utc(blocked_case.last_retry_at)
+        if blocked_case.last_retry_at is not None
+        else "Not retried yet"
+    )
+
+    return f"""
+    <article class="content-card stack">
+      <div class="content-card-header">
+        <div>
+          <p class="eyebrow">Blocked billing</p>
+          <h2>{html.escape(blocked_case.calendly_booking_uuid)}</h2>
+        </div>
+        <span class="status-pill pending">Blocked</span>
+      </div>
+      <p><strong>Reason</strong>: {html.escape(_blocked_billing_reason_label(blocked_case.reason_code))} (<code>{html.escape(blocked_case.reason_code)}</code>)</p>
+      <p>{html.escape(_blocked_billing_reason_explanation(blocked_case.reason_code))}</p>
+      <p><strong>Booking</strong>: <code>{html.escape(str(blocked_case.booking_id))}</code> ({html.escape(blocked_case.booking_status)})</p>
+      <p><strong>TID</strong>: <code>{html.escape(blocked_case.tid)}</code></p>
+      <p><strong>Invoice</strong>: {invoice_copy}</p>
+      <p><strong>Frozen billing</strong>: {html.escape(_reports_currency_amount_copy(blocked_case.frozen_currency, blocked_case.frozen_amount_cents))}</p>
+      <p><strong>Stripe account</strong>: <code>{html.escape(blocked_case.stripe_account_id or "not_connected")}</code></p>
+      <p><strong>First blocked</strong>: {_format_timestamp_in_utc(blocked_case.first_blocked_at)}</p>
+      <p><strong>Last blocked</strong>: {_format_timestamp_in_utc(blocked_case.last_blocked_at)}</p>
+      <p><strong>Last retry</strong>: {last_retry_copy}</p>
+      {provider_details}
+      <form action="/app/attention/blocked-billing/{html.escape(str(blocked_case.case_id))}/retry" method="post">
+        <button type="submit">Retry invoice creation</button>
+      </form>
+    </article>
+    """
+
+
+def _render_unmatched_payment_event_list(
+    unmatched_events: list[UnmatchedPaymentEventSummary],
+) -> str:
+    if not unmatched_events:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">Clear</p>
+          <h2>No unmatched payment events are waiting right now</h2>
+          <p>When a paid Stripe event cannot be linked back to canonical local booking or invoice state yet, it will appear here with the current reason and lifecycle timestamps.</p>
+        </section>
+        """
+
+    items = "".join(
+        _render_unmatched_payment_event_card(payment_event=payment_event)
+        for payment_event in unmatched_events
+    )
+    return f'<div class="content-list">{items}</div>'
+
+
+def _render_unmatched_payment_event_card(*, payment_event: UnmatchedPaymentEventSummary) -> str:
+    booking_copy = (
+        f'<code>{html.escape(str(payment_event.booking_id))}</code> / '
+        f'<code>{html.escape(payment_event.booking_uuid or "missing")}</code>'
+        if payment_event.booking_id is not None or payment_event.booking_uuid is not None
+        else "Not linked yet"
+    )
+    tid_copy = (
+        f"<code>{html.escape(payment_event.tid)}</code>"
+        if payment_event.tid is not None
+        else "Not linked yet"
+    )
+    processed_copy = (
+        _format_timestamp_in_utc(payment_event.processed_at)
+        if payment_event.processed_at is not None
+        else "Waiting on repair"
+    )
+    paid_at_copy = (
+        _format_timestamp_in_utc(payment_event.paid_at)
+        if payment_event.paid_at is not None
+        else "Unknown"
+    )
+
+    return f"""
+    <article class="content-card stack">
+      <div class="content-card-header">
+        <div>
+          <p class="eyebrow">Unresolved payment</p>
+          <h2>{html.escape(_reports_reason_label(payment_event.unattributed_reason))}</h2>
+        </div>
+        <span class="status-pill pending">{html.escape(_reports_payment_event_status_label(payment_event.status))}</span>
+      </div>
+      <p>{html.escape(_reports_reason_explanation(payment_event.unattributed_reason))}</p>
+      <p><strong>Stripe event</strong>: <code>{html.escape(payment_event.stripe_event_id)}</code></p>
+      <p><strong>Stripe invoice</strong>: <code>{html.escape(payment_event.stripe_invoice_id)}</code></p>
+      <p><strong>Stripe account</strong>: <code>{html.escape(payment_event.stripe_account_id or "unknown")}</code></p>
+      <p><strong>Booking</strong>: {booking_copy}</p>
+      <p><strong>TID</strong>: {tid_copy}</p>
+      <p><strong>Reason code</strong>: <code>{html.escape(payment_event.unattributed_reason or "unknown")}</code></p>
+      <p><strong>Paid at</strong>: {paid_at_copy}</p>
+      <p><strong>Received at</strong>: {_format_timestamp_in_utc(payment_event.received_at)}</p>
+      <p><strong>Processed at</strong>: {processed_copy}</p>
+    </article>
     """
 
 
@@ -1853,6 +2137,40 @@ def _render_reports_unmatched_explainer(summary: CreatorReportsSummary) -> str:
     )
 
 
+def _render_attention_notice(*, status_value: str | None) -> str:
+    if status_value == "recovered":
+        return """
+        <section class="notice success">
+          <p><strong>Invoice recovered.</strong> The blocked case was retried successfully and no longer needs attention.</p>
+        </section>
+        """
+    if status_value == "already-recovered":
+        return """
+        <section class="notice success">
+          <p><strong>Already recovered.</strong> That booking already had a canonical invoice, so the blocked case was cleared without creating a duplicate.</p>
+        </section>
+        """
+    if status_value == "still-blocked":
+        return """
+        <section class="notice error">
+          <p><strong>Still blocked.</strong> The retry was safe, but the current Stripe readiness or provider state still prevented invoice creation.</p>
+        </section>
+        """
+    if status_value == "already-handled":
+        return """
+        <section class="notice">
+          <p><strong>No action needed.</strong> That blocked case was already resolved before this retry attempt landed.</p>
+        </section>
+        """
+    if status_value == "closed":
+        return """
+        <section class="notice">
+          <p><strong>Case closed.</strong> The booking is no longer invoice-eligible, so the blocked case was closed without creating a new invoice.</p>
+        </section>
+        """
+    return ""
+
+
 def _render_content_field_error(message: str | None) -> str:
     if not message:
         return ""
@@ -2102,6 +2420,34 @@ def _reports_payment_event_status_label(status_value: str | None) -> str:
 
 def _reports_currency_amount_copy(currency: str, amount_cents: int) -> str:
     return f"{currency} {_format_billing_amount(amount_cents)}"
+
+
+def _reports_blocked_case_copy(blocked_billing_count: int) -> str:
+    if blocked_billing_count == 0:
+        return "no tracked bookings are blocked before invoicing right now."
+    return f"{_count_copy(blocked_billing_count, 'booking')} waiting on invoice recovery or retry."
+
+
+def _blocked_billing_reason_label(reason_code: str) -> str:
+    if reason_code == BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE:
+        return "Creator not billable"
+    if reason_code == BLOCKED_BILLING_REASON_PROVIDER_ERROR:
+        return "Provider error"
+    return reason_code.replace("_", " ").title()
+
+
+def _blocked_billing_reason_explanation(reason_code: str) -> str:
+    if reason_code == BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE:
+        return (
+            "Stripe was not ready to create an invoice for this creator account yet, "
+            "so the booking was kept without guessing or dropping the invoice inputs."
+        )
+    if reason_code == BLOCKED_BILLING_REASON_PROVIDER_ERROR:
+        return (
+            "The provider failed during readiness or invoice creation, so the booking "
+            "stayed blocked with the latest provider context and frozen billing inputs."
+        )
+    return "This booking is blocked until the stored billing condition is repaired."
 
 
 def _page_layout(*, title: str, body: str) -> str:

@@ -10,6 +10,14 @@ from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
 from app.models.invoice import Invoice
+from app.services.blocked_billing import (
+    BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
+    BLOCKED_BILLING_REASON_PROVIDER_ERROR,
+    BLOCKED_BILLING_RESOLUTION_INVOICE_CREATED,
+    BLOCKED_BILLING_RESOLUTION_INVOICE_EXISTING,
+    record_blocked_billing_case,
+    resolve_blocked_billing_case_for_invoice,
+)
 from app.services.stripe_account_readiness import creator_has_billable_stripe_account
 from app.services.stripe_provider import StripeProvider, StripeProviderError
 
@@ -22,6 +30,7 @@ CreateInvoiceReason = Literal[
     "missing_billing_defaults",
     "creator_not_billable",
     "booking_not_found",
+    "booking_not_active",
     "provider_error",
 ]
 VoidInvoiceOutcome = Literal["voided", "noop"]
@@ -58,7 +67,13 @@ class BillingOrchestrator:
         self._provider = provider
         self._now_fn = now_fn or _utc_now
 
-    def create_invoice_for_booking(self, *, booking_id: uuid.UUID) -> BillingInvoiceResult:
+    def create_invoice_for_booking(
+        self,
+        *,
+        booking_id: uuid.UUID,
+        amount_cents_override: int | None = None,
+        currency_override: str | None = None,
+    ) -> BillingInvoiceResult:
         with self._session_factory() as session:
             booking = session.get(Booking, booking_id)
             if booking is None:
@@ -67,6 +82,14 @@ class BillingOrchestrator:
 
             existing_invoice = session.scalar(select(Invoice).where(Invoice.booking_id == booking.id))
             if existing_invoice is not None:
+                if resolve_blocked_billing_case_for_invoice(
+                    session,
+                    booking_id=booking.id,
+                    invoice=existing_invoice,
+                    resolved_at=self._now_fn(),
+                    resolution_code=BLOCKED_BILLING_RESOLUTION_INVOICE_EXISTING,
+                ):
+                    session.commit()
                 logger.info(
                     "billing_invoice_create_existing booking_id=%s invoice_id=%s stripe_invoice_id=%s status=%s",
                     booking.id,
@@ -77,8 +100,16 @@ class BillingOrchestrator:
                 return _billing_invoice_result(existing_invoice, outcome="existing")
 
             booking_link = booking.booking_link
-            amount_cents = booking_link.billing_amount_cents
-            currency = booking_link.billing_currency
+            amount_cents = (
+                amount_cents_override
+                if amount_cents_override is not None
+                else booking_link.billing_amount_cents
+            )
+            currency = (
+                currency_override
+                if currency_override is not None
+                else booking_link.billing_currency
+            )
             if amount_cents is None or currency is None:
                 logger.info(
                     "billing_invoice_create_deferred_missing_billing_defaults booking_id=%s creator_id=%s booking_link_id=%s missing_amount=%s missing_currency=%s",
@@ -93,6 +124,15 @@ class BillingOrchestrator:
                     reason="missing_billing_defaults",
                 )
 
+            if booking.status != "created":
+                logger.info(
+                    "billing_invoice_create_deferred_booking_not_active booking_id=%s creator_id=%s status=%s",
+                    booking.id,
+                    booking.creator_id,
+                    booking.status,
+                )
+                return BillingInvoiceResult(outcome="deferred", reason="booking_not_active")
+
             creator = booking.creator
             try:
                 creator_is_billable = creator_has_billable_stripe_account(
@@ -100,6 +140,19 @@ class BillingOrchestrator:
                     provider=self._provider,
                 )
             except StripeProviderError as exc:
+                record_blocked_billing_case(
+                    session,
+                    booking=booking,
+                    frozen_amount_cents=amount_cents,
+                    frozen_currency=currency,
+                    reason_code=BLOCKED_BILLING_REASON_PROVIDER_ERROR,
+                    blocked_at=self._now_fn(),
+                    stripe_account_id=creator.stripe_account_id,
+                    provider_operation=exc.operation,
+                    provider_http_status=exc.http_status,
+                    provider_error_code=exc.error_code,
+                )
+                session.commit()
                 logger.warning(
                     "billing_invoice_create_deferred_provider_error booking_id=%s creator_id=%s stripe_account_id=%s operation=%s http_status=%s error_code=%s",
                     booking.id,
@@ -115,6 +168,16 @@ class BillingOrchestrator:
                 )
 
             if not creator_is_billable:
+                record_blocked_billing_case(
+                    session,
+                    booking=booking,
+                    frozen_amount_cents=amount_cents,
+                    frozen_currency=currency,
+                    reason_code=BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
+                    blocked_at=self._now_fn(),
+                    stripe_account_id=creator.stripe_account_id,
+                )
+                session.commit()
                 logger.info(
                     "billing_invoice_create_deferred_creator_not_billable booking_id=%s creator_id=%s stripe_account_id=%s",
                     booking.id,
@@ -128,6 +191,16 @@ class BillingOrchestrator:
 
             stripe_account_id = creator.stripe_account_id
             if stripe_account_id is None:
+                record_blocked_billing_case(
+                    session,
+                    booking=booking,
+                    frozen_amount_cents=amount_cents,
+                    frozen_currency=currency,
+                    reason_code=BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
+                    blocked_at=self._now_fn(),
+                    stripe_account_id=stripe_account_id,
+                )
+                session.commit()
                 logger.info(
                     "billing_invoice_create_deferred_creator_not_billable booking_id=%s creator_id=%s stripe_account_id=%s",
                     booking.id,
@@ -152,6 +225,19 @@ class BillingOrchestrator:
                     idempotency_key=f"billing:create:{booking.calendly_booking_uuid}",
                 )
             except StripeProviderError as exc:
+                record_blocked_billing_case(
+                    session,
+                    booking=booking,
+                    frozen_amount_cents=amount_cents,
+                    frozen_currency=currency,
+                    reason_code=BLOCKED_BILLING_REASON_PROVIDER_ERROR,
+                    blocked_at=self._now_fn(),
+                    stripe_account_id=stripe_account_id,
+                    provider_operation=exc.operation,
+                    provider_http_status=exc.http_status,
+                    provider_error_code=exc.error_code,
+                )
+                session.commit()
                 logger.warning(
                     "billing_invoice_create_deferred_provider_error booking_id=%s creator_id=%s stripe_account_id=%s operation=%s http_status=%s error_code=%s",
                     booking.id,
@@ -182,12 +268,20 @@ class BillingOrchestrator:
             session.add(invoice)
 
             try:
-                session.commit()
+                session.flush()
             except IntegrityError:
                 session.rollback()
                 existing_invoice = session.scalar(select(Invoice).where(Invoice.booking_id == booking.id))
                 if existing_invoice is None:
                     raise
+                if resolve_blocked_billing_case_for_invoice(
+                    session,
+                    booking_id=booking.id,
+                    invoice=existing_invoice,
+                    resolved_at=self._now_fn(),
+                    resolution_code=BLOCKED_BILLING_RESOLUTION_INVOICE_EXISTING,
+                ):
+                    session.commit()
                 logger.info(
                     "billing_invoice_create_existing booking_id=%s invoice_id=%s stripe_invoice_id=%s status=%s",
                     booking.id,
@@ -197,6 +291,14 @@ class BillingOrchestrator:
                 )
                 return _billing_invoice_result(existing_invoice, outcome="existing")
 
+            resolve_blocked_billing_case_for_invoice(
+                session,
+                booking_id=booking.id,
+                invoice=invoice,
+                resolved_at=issued_at,
+                resolution_code=BLOCKED_BILLING_RESOLUTION_INVOICE_CREATED,
+            )
+            session.commit()
             session.refresh(invoice)
 
             logger.info(

@@ -89,6 +89,24 @@ class CreatorPaidRevenueSummary:
     unattributed_event_count: int
 
 
+@dataclass(frozen=True)
+class UnmatchedPaymentEventSummary:
+    payment_event_id: uuid.UUID
+    stripe_event_id: str
+    stripe_event_type: str
+    stripe_account_id: str | None
+    stripe_invoice_id: str
+    creator_id: uuid.UUID | None
+    booking_id: uuid.UUID | None
+    booking_uuid: str | None
+    tid: str | None
+    status: str
+    unattributed_reason: str | None
+    paid_at: datetime | None
+    received_at: datetime
+    processed_at: datetime | None
+
+
 class InvoicePaymentEventService:
     def __init__(
         self,
@@ -538,6 +556,49 @@ class InvoicePaymentEventService:
             tid=payment_event.tid,
             unattributed_reason=unattributed_reason,
         )
+
+
+def list_current_unmatched_payment_events(
+    *,
+    creator_id: uuid.UUID,
+    db: Session,
+) -> list[UnmatchedPaymentEventSummary]:
+    rows = db.execute(
+        select(
+            InvoicePaymentEvent,
+            Booking.calendly_booking_uuid,
+        )
+        .select_from(InvoicePaymentEvent)
+        .outerjoin(Booking, Booking.id == InvoicePaymentEvent.booking_id)
+        .where(
+            InvoicePaymentEvent.creator_id == creator_id,
+            InvoicePaymentEvent.status == "unmatched",
+        )
+        .order_by(
+            InvoicePaymentEvent.received_at.desc(),
+            InvoicePaymentEvent.stripe_event_id.asc(),
+        )
+    ).all()
+
+    return [
+        UnmatchedPaymentEventSummary(
+            payment_event_id=payment_event.id,
+            stripe_event_id=payment_event.stripe_event_id,
+            stripe_event_type=payment_event.stripe_event_type,
+            stripe_account_id=payment_event.stripe_account_id,
+            stripe_invoice_id=payment_event.stripe_invoice_id,
+            creator_id=payment_event.creator_id,
+            booking_id=payment_event.booking_id,
+            booking_uuid=booking_uuid,
+            tid=payment_event.tid,
+            status=payment_event.status,
+            unattributed_reason=payment_event.unattributed_reason,
+            paid_at=payment_event.paid_at,
+            received_at=payment_event.received_at,
+            processed_at=payment_event.processed_at,
+        )
+        for payment_event, booking_uuid in rows
+    ]
 
 
 def _find_booking_for_account(

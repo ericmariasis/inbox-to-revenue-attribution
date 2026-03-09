@@ -14,11 +14,28 @@ def test_migrations_upgrade_and_downgrade():
     try:
         with engine.connect() as conn:
             inspector = inspect(conn)
+            assert "blocked_billing_cases" in inspector.get_table_names(schema="public")
             assert "invoice_payment_events" in inspector.get_table_names(schema="public")
             assert "invoices" in inspector.get_table_names(schema="public")
             assert "bookings" in inspector.get_table_names(schema="public")
             assert "content" in inspector.get_table_names(schema="public")
             assert "booking_links" in inspector.get_table_names(schema="public")
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            assert "blocked_billing_cases" not in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
             booking_link_columns = {
                 column["name"] for column in inspector.get_columns("booking_links")
             }
@@ -284,6 +301,77 @@ def test_invoices_table_has_expected_columns_fk_indexes_and_unique_constraints()
         assert any(
             constraint["name"] == "uq_invoices_stripe_invoice_id"
             and constraint["column_names"] == ["stripe_invoice_id"]
+            for constraint in unique_constraints
+        )
+
+
+def test_blocked_billing_cases_table_has_expected_columns_fk_indexes_and_unique_constraints():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {column["name"] for column in inspector.get_columns("blocked_billing_cases")}
+        assert columns == {
+            "id",
+            "creator_id",
+            "booking_id",
+            "invoice_id",
+            "tid",
+            "calendly_booking_uuid",
+            "stripe_account_id",
+            "frozen_amount_cents",
+            "frozen_currency",
+            "status",
+            "reason_code",
+            "provider_operation",
+            "provider_http_status",
+            "provider_error_code",
+            "first_blocked_at",
+            "last_blocked_at",
+            "last_retry_at",
+            "resolved_at",
+            "resolution_code",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("blocked_billing_cases")
+        assert any(
+            fk["referred_table"] == "creators"
+            and fk["constrained_columns"] == ["creator_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "bookings"
+            and fk["constrained_columns"] == ["booking_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "invoices"
+            and fk["constrained_columns"] == ["invoice_id"]
+            for fk in foreign_keys
+        )
+
+        indexes = inspector.get_indexes("blocked_billing_cases")
+        assert any(
+            index["name"] == "ix_blocked_billing_cases_creator_id"
+            and index["column_names"] == ["creator_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_blocked_billing_cases_status"
+            and index["column_names"] == ["status"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_blocked_billing_cases_tid"
+            and index["column_names"] == ["tid"]
+            for index in indexes
+        )
+
+        unique_constraints = inspector.get_unique_constraints("blocked_billing_cases")
+        assert any(
+            constraint["name"] == "uq_blocked_billing_cases_booking_id"
+            and constraint["column_names"] == ["booking_id"]
             for constraint in unique_constraints
         )
 

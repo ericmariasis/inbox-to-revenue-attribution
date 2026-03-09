@@ -13,6 +13,11 @@ from app.main import app
 from app.services.email_provider import MagicLinkEmailDeliveryError
 from app.services.email_stub import get_magic_link_outbox
 from app.services.invoice_payment_events import UNATTRIBUTED_REASON_MISSING_TID
+from app.services.stripe_provider import (
+    StripeAccountReadiness,
+    StripeInvoiceCreateResult,
+    StripeProviderError,
+)
 
 HTML_ACCEPT_HEADERS = {"Accept": "text/html,application/xhtml+xml"}
 SESSION_COOKIE_NAME = "ccp_creator_session"
@@ -263,6 +268,68 @@ def _insert_unmatched_payment_event(
     return payment_event_id
 
 
+def _insert_blocked_billing_case(
+    *,
+    creator_id: str,
+    booking_id: str,
+    tid: str,
+    calendly_booking_uuid: str,
+    stripe_account_id: str | None,
+    frozen_amount_cents: int,
+    frozen_currency: str,
+    reason_code: str,
+    first_blocked_at: datetime,
+    last_blocked_at: datetime | None = None,
+    last_retry_at: datetime | None = None,
+    status: str = "open",
+    provider_operation: str | None = None,
+    provider_http_status: int | None = None,
+    provider_error_code: str | None = None,
+    resolved_at: datetime | None = None,
+    resolution_code: str | None = None,
+) -> str:
+    case_id = str(uuid.uuid4())
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO blocked_billing_cases "
+                "(id, creator_id, booking_id, invoice_id, tid, calendly_booking_uuid, stripe_account_id, "
+                "frozen_amount_cents, frozen_currency, status, reason_code, provider_operation, "
+                "provider_http_status, provider_error_code, first_blocked_at, last_blocked_at, "
+                "last_retry_at, resolved_at, resolution_code) "
+                "VALUES "
+                "(:id, :creator_id, :booking_id, :invoice_id, :tid, :calendly_booking_uuid, :stripe_account_id, "
+                ":frozen_amount_cents, :frozen_currency, :status, :reason_code, :provider_operation, "
+                ":provider_http_status, :provider_error_code, :first_blocked_at, :last_blocked_at, "
+                ":last_retry_at, :resolved_at, :resolution_code)"
+            ),
+            {
+                "id": case_id,
+                "creator_id": creator_id,
+                "booking_id": booking_id,
+                "invoice_id": None,
+                "tid": tid,
+                "calendly_booking_uuid": calendly_booking_uuid,
+                "stripe_account_id": stripe_account_id,
+                "frozen_amount_cents": frozen_amount_cents,
+                "frozen_currency": frozen_currency,
+                "status": status,
+                "reason_code": reason_code,
+                "provider_operation": provider_operation,
+                "provider_http_status": provider_http_status,
+                "provider_error_code": provider_error_code,
+                "first_blocked_at": first_blocked_at,
+                "last_blocked_at": last_blocked_at or first_blocked_at,
+                "last_retry_at": last_retry_at,
+                "resolved_at": resolved_at,
+                "resolution_code": resolution_code,
+            },
+        )
+
+    return case_id
+
+
 def _insert_matched_payment_event(
     *,
     creator_id: str,
@@ -329,10 +396,29 @@ def _override_app_state(name, value):
 
 
 class _StubStripeProvider:
-    def __init__(self, *, account_id: str = "acct_ui_story38"):
+    def __init__(
+        self,
+        *,
+        account_id: str = "acct_ui_story38",
+        readiness: StripeAccountReadiness | None = None,
+        created_invoice_id: str = "in_ui_attention_created",
+        created_invoice_status: str = "open",
+        readiness_error: StripeProviderError | None = None,
+        create_error: StripeProviderError | None = None,
+        void_error: StripeProviderError | None = None,
+    ):
         self.account_id = account_id
+        self._readiness = readiness or StripeAccountReadiness(charges_enabled=True)
+        self._created_invoice_id = created_invoice_id
+        self._created_invoice_status = created_invoice_status
+        self._readiness_error = readiness_error
+        self._create_error = create_error
+        self._void_error = void_error
         self.start_calls: list[dict[str, str]] = []
         self.callback_calls: list[dict[str, str]] = []
+        self.readiness_calls: list[str] = []
+        self.create_calls: list[dict[str, object]] = []
+        self.void_calls: list[dict[str, str]] = []
 
     def build_connect_onboarding_url(self, *, creator_id: str, state: str) -> str:
         self.start_calls.append({"creator_id": creator_id, "state": state})
@@ -344,6 +430,47 @@ class _StubStripeProvider:
     def exchange_connect_callback(self, *, code: str, state: str) -> str:
         self.callback_calls.append({"code": code, "state": state})
         return self.account_id
+
+    def get_account_readiness(self, *, stripe_account_id: str) -> StripeAccountReadiness:
+        self.readiness_calls.append(stripe_account_id)
+        if self._readiness_error is not None:
+            raise self._readiness_error
+        return self._readiness
+
+    def create_invoice(
+        self,
+        *,
+        stripe_account_id: str,
+        amount_cents: int,
+        currency: str,
+        metadata: dict[str, str],
+        idempotency_key: str,
+    ) -> StripeInvoiceCreateResult:
+        self.create_calls.append(
+            {
+                "stripe_account_id": stripe_account_id,
+                "amount_cents": amount_cents,
+                "currency": currency,
+                "metadata": metadata,
+                "idempotency_key": idempotency_key,
+            }
+        )
+        if self._create_error is not None:
+            raise self._create_error
+        return StripeInvoiceCreateResult(
+            stripe_invoice_id=self._created_invoice_id,
+            status=self._created_invoice_status,
+        )
+
+    def void_invoice(self, *, stripe_account_id: str, stripe_invoice_id: str) -> None:
+        self.void_calls.append(
+            {
+                "stripe_account_id": stripe_account_id,
+                "stripe_invoice_id": stripe_invoice_id,
+            }
+        )
+        if self._void_error is not None:
+            raise self._void_error
 
 
 class _FailingEmailProvider:
@@ -450,6 +577,18 @@ def test_reports_page_redirects_unauthenticated_browser_requests():
     with TestClient(app) as client:
         response = client.get(
             "/app/reports",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+
+
+def test_attention_page_redirects_unauthenticated_browser_requests():
+    with TestClient(app) as client:
+        response = client.get(
+            "/app/attention",
             headers=HTML_ACCEPT_HEADERS,
             follow_redirects=False,
         )
@@ -1087,7 +1226,189 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
         f'href="/app/reports/explanations/paid/{current_content_tid}?start_date=2026-03-08&amp;end_date=2026-03-08"'
         in response.text
     )
-    assert "does not show a numeric blocked count yet" in response.text
+    assert "no tracked bookings are blocked before invoicing right now." in response.text
+    assert 'href="/app/attention"' in response.text
+
+
+def test_attention_page_renders_blocked_and_unmatched_cases():
+    creator = _insert_creator_user(
+        email=f"ui_attention_{uuid.uuid4().hex}@example.com",
+        name="Attention Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_attention",
+    )
+    access_token = _access_token(
+        user_id=creator["user_id"],
+        creator_id=creator["creator_id"],
+        email=creator["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Attention Strategy",
+        calendly_url="https://calendly.com/example/attention-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    tid = f"uiattention{uuid.uuid4().hex[:8]}"
+    booking_uuid = f"BOOK_UI_ATTENTION_{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/attention",
+        tid=tid,
+    )
+    booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=tid,
+        calendly_booking_uuid=booking_uuid,
+        booked_at=datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc),
+    )
+    case_id = _insert_blocked_billing_case(
+        creator_id=creator["creator_id"],
+        booking_id=booking_id,
+        tid=tid,
+        calendly_booking_uuid=booking_uuid,
+        stripe_account_id="acct_ui_attention",
+        frozen_amount_cents=19500,
+        frozen_currency="USD",
+        reason_code="creator_not_billable",
+        first_blocked_at=datetime(2026, 3, 8, 10, 5, tzinfo=timezone.utc),
+    )
+    stripe_event_id = f"evt_ui_attention_{uuid.uuid4().hex[:8]}"
+    stripe_invoice_id = f"in_ui_attention_{uuid.uuid4().hex[:8]}"
+    _insert_unmatched_payment_event(
+        creator_id=creator["creator_id"],
+        stripe_account_id="acct_ui_attention",
+        stripe_event_id=stripe_event_id,
+        stripe_invoice_id=stripe_invoice_id,
+        reason=UNATTRIBUTED_REASON_MISSING_TID,
+        paid_at=datetime(2026, 3, 8, 11, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/attention", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Attention" in response.text
+    assert '<a href="/app/attention" class="nav-link active">Attention</a>' in response.text
+    assert booking_uuid in response.text
+    assert "Creator not billable" in response.text
+    assert "creator_not_billable" in response.text
+    assert "Retry invoice creation" in response.text
+    assert f'/app/attention/blocked-billing/{case_id}/retry' in response.text
+    assert stripe_event_id in response.text
+    assert stripe_invoice_id in response.text
+    assert "Missing tracking ID" in response.text
+
+
+def test_attention_retry_route_recovers_blocked_case_with_frozen_inputs():
+    creator = _insert_creator_user(
+        email=f"ui_attention_retry_{uuid.uuid4().hex}@example.com",
+        name="Attention Retry Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_attention_retry",
+    )
+    access_token = _access_token(
+        user_id=creator["user_id"],
+        creator_id=creator["creator_id"],
+        email=creator["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Attention Retry Strategy",
+        calendly_url="https://calendly.com/example/attention-retry-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    tid = f"uiattentionretry{uuid.uuid4().hex[:8]}"
+    booking_uuid = f"BOOK_UI_ATTENTION_RETRY_{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/attention-retry",
+        tid=tid,
+    )
+    booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=tid,
+        calendly_booking_uuid=booking_uuid,
+        booked_at=datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc),
+    )
+    case_id = _insert_blocked_billing_case(
+        creator_id=creator["creator_id"],
+        booking_id=booking_id,
+        tid=tid,
+        calendly_booking_uuid=booking_uuid,
+        stripe_account_id="acct_ui_attention_retry",
+        frozen_amount_cents=19500,
+        frozen_currency="USD",
+        reason_code="creator_not_billable",
+        first_blocked_at=datetime(2026, 3, 8, 12, 5, tzinfo=timezone.utc),
+    )
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE booking_links "
+                "SET billing_amount_cents = :billing_amount_cents, billing_currency = :billing_currency "
+                "WHERE id = :id"
+            ),
+            {
+                "id": booking_link_id,
+                "billing_amount_cents": 9900,
+                "billing_currency": "EUR",
+            },
+        )
+
+    provider = _StubStripeProvider(
+        account_id="acct_ui_attention_retry",
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_ui_attention_retry_created",
+    )
+
+    with _override_app_state("stripe_provider", provider):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.post(
+                f"/app/attention/blocked-billing/{case_id}/retry",
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+
+    with _engine().begin() as conn:
+        invoice_row = conn.execute(
+            text(
+                "SELECT amount_cents, currency, stripe_invoice_id, status "
+                "FROM invoices WHERE booking_id = :booking_id"
+            ),
+            {"booking_id": booking_id},
+        ).mappings().one()
+        blocked_case_row = conn.execute(
+            text(
+                "SELECT status, resolution_code, last_retry_at, resolved_at "
+                "FROM blocked_billing_cases WHERE id = :id"
+            ),
+            {"id": case_id},
+        ).mappings().one()
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/app/attention?status=recovered"
+    assert len(provider.create_calls) == 1
+    assert provider.create_calls[0]["amount_cents"] == 19500
+    assert provider.create_calls[0]["currency"] == "USD"
+    assert invoice_row["amount_cents"] == 19500
+    assert invoice_row["currency"] == "USD"
+    assert invoice_row["stripe_invoice_id"] == "in_ui_attention_retry_created"
+    assert invoice_row["status"] == "open"
+    assert blocked_case_row["status"] == "resolved"
+    assert blocked_case_row["resolution_code"] == "invoice_created"
+    assert blocked_case_row["last_retry_at"] is not None
+    assert blocked_case_row["resolved_at"] is not None
 
 
 def test_reports_paid_explanation_page_renders_creator_scoped_canonical_chain():

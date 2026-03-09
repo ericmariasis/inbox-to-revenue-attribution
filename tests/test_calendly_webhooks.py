@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.main import app
 from app.models.booking import Booking
 from app.models.booking_link import BookingLink
+from app.models.blocked_billing_case import BlockedBillingCase
 from app.models.content import Content
 from app.models.creator import Creator
 from app.models.invoice import Invoice
@@ -232,6 +233,19 @@ def _invoices_for_booking_uuid(*, calendly_booking_uuid: str) -> list[Invoice]:
         if booking is None:
             return []
         return session.scalars(select(Invoice).where(Invoice.booking_id == booking.id)).all()
+
+
+def _blocked_cases_for_booking_uuid(*, calendly_booking_uuid: str) -> list[BlockedBillingCase]:
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    with Session(engine) as session:
+        booking = session.scalar(
+            select(Booking).where(Booking.calendly_booking_uuid == calendly_booking_uuid)
+        )
+        if booking is None:
+            return []
+        return session.scalars(
+            select(BlockedBillingCase).where(BlockedBillingCase.booking_id == booking.id)
+        ).all()
 
 
 def _invitee_created_payload(
@@ -761,13 +775,85 @@ def test_calendly_webhook_booking_created_with_non_billable_creator_creates_no_i
 
     bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story45_not_billable")
     invoices = _invoices_for_booking_uuid(calendly_booking_uuid="BOOK_story45_not_billable")
+    blocked_cases = _blocked_cases_for_booking_uuid(
+        calendly_booking_uuid="BOOK_story45_not_billable"
+    )
 
     assert response.status_code == 200
     assert len(bookings) == 1
     assert invoices == []
+    assert len(blocked_cases) == 1
+    assert blocked_cases[0].reason_code == "creator_not_billable"
+    assert blocked_cases[0].status == "open"
     assert provider.readiness_calls == ["acct_story45_not_billable"]
     assert provider.create_calls == []
     assert provider.void_calls == []
+
+
+def test_calendly_webhook_booking_canceled_closes_open_blocked_billing_case():
+    stored = _create_creator_booking_link_and_content(
+        tid="story58_cancel_blocked_tid",
+        stripe_account_id="acct_story58_cancel_blocked",
+        billing_amount_cents=22000,
+        billing_currency="USD",
+    )
+    created_payload = _invitee_created_payload(
+        event_id="EVT_story58_cancel_blocked",
+        calendly_booking_uuid="BOOK_story58_cancel_blocked",
+        tid=stored["tid"],
+        email="story58-cancel-blocked@example.com",
+        created_at="2026-03-09T11:00:00Z",
+    )
+    canceled_payload = _invitee_canceled_payload(
+        event_id="EVT_story58_cancel_blocked",
+        calendly_booking_uuid="BOOK_story58_cancel_blocked",
+        tid=stored["tid"],
+        canceled_at="2026-03-09T11:30:00Z",
+    )
+    created_signature_header = _calendly_signature_header(
+        payload=created_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    canceled_signature_header = _calendly_signature_header(
+        payload=canceled_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    provider = _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=False))
+    router = build_default_calendly_webhook_router(provider=provider)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("calendly_webhook_router", router):
+                created_response = client.post(
+                    "/webhooks/calendly",
+                    content=created_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": created_signature_header,
+                    },
+                )
+                canceled_response = client.post(
+                    "/webhooks/calendly",
+                    content=canceled_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": canceled_signature_header,
+                    },
+                )
+
+    blocked_cases = _blocked_cases_for_booking_uuid(
+        calendly_booking_uuid="BOOK_story58_cancel_blocked"
+    )
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story58_cancel_blocked")
+
+    assert created_response.status_code == 200
+    assert canceled_response.status_code == 200
+    assert len(bookings) == 1
+    assert bookings[0].status == "canceled"
+    assert len(blocked_cases) == 1
+    assert blocked_cases[0].status == "resolved"
+    assert blocked_cases[0].resolution_code == "booking_canceled"
+    assert blocked_cases[0].resolved_at == datetime(2026, 3, 9, 11, 30, tzinfo=timezone.utc)
 
 
 def test_calendly_webhook_booking_canceled_with_provider_void_error_returns_safe_ok_and_leaves_invoice_open():

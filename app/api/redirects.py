@@ -9,7 +9,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.core.config import get_settings, is_local_app_env
 from app.db.session import get_db
 from app.models.booking_link import BookingLink
 from app.models.content import Content
@@ -57,7 +57,7 @@ def _destination_with_canonical_tid(*, destination_url: str, canonical_tid: str)
 
 
 def _redirect_session_cookie_secure(*, app_env: str) -> bool:
-    return app_env.lower() in {"production", "prod", "staging"}
+    return not is_local_app_env(app_env)
 
 
 def _redirect_session_id(*, existing_session_id: str | None) -> str:

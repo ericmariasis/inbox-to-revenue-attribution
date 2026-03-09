@@ -1,6 +1,110 @@
 from functools import lru_cache
+from ipaddress import ip_address
+from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LOCAL_APP_ENVS = frozenset({"local", "test", "manual_test"})
+DEFAULT_DATABASE_URL = "postgresql://localhost/attribution"
+DEFAULT_JWT_SECRET = "replace_me"
+DEFAULT_STRIPE_CONNECT_CLIENT_ID = "ca_test_example"
+DEFAULT_STRIPE_CONNECT_AUTHORIZE_URL = "https://connect.stripe.com/oauth/authorize"
+DEFAULT_STRIPE_CONNECT_REDIRECT_URI = "http://localhost:8000/stripe/connect/callback"
+DEFAULT_STRIPE_WEBHOOK_SECRET = "whsec_test_example"
+DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY = "whsec_calendly_test_example"
+DEFAULT_TRACKED_LINK_BASE_URL = "https://trk.example.com"
+
+
+class SettingsValidationError(ValueError):
+    pass
+
+
+def is_local_app_env(app_env: str) -> bool:
+    return app_env.strip().lower() in LOCAL_APP_ENVS
+
+
+def _cleaned_value(value: str) -> str:
+    return value.strip()
+
+
+def _normalized_host(value: str) -> str | None:
+    parsed = urlsplit(value)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return parsed.hostname
+
+
+def _host_is_local(host: str | None) -> bool:
+    if host is None:
+        return True
+
+    normalized = host.strip().lower()
+    if normalized in {"localhost"} or normalized.endswith(".localhost"):
+        return True
+
+    try:
+        parsed_ip = ip_address(normalized)
+    except ValueError:
+        return False
+
+    return parsed_ip.is_loopback or parsed_ip.is_unspecified
+
+
+def _host_is_example(host: str | None) -> bool:
+    if host is None:
+        return False
+
+    normalized = host.strip().lower()
+    return normalized in {
+        "example.com",
+        "example.org",
+        "example.net",
+    } or normalized.endswith(
+        (
+            ".example.com",
+            ".example.org",
+            ".example.net",
+        )
+    )
+
+
+def _require_non_placeholder(
+    errors: list[str],
+    *,
+    field_name: str,
+    value: str,
+    placeholders: set[str],
+    min_length: int | None = None,
+) -> None:
+    cleaned_value = _cleaned_value(value)
+    lowered_value = cleaned_value.lower()
+    if not cleaned_value or lowered_value in placeholders:
+        errors.append(f"{field_name} must be set to a non-placeholder value")
+        return
+
+    if min_length is not None and len(cleaned_value) < min_length:
+        errors.append(f"{field_name} must be at least {min_length} characters in non-local environments")
+
+
+def _require_https_url(
+    errors: list[str],
+    *,
+    field_name: str,
+    value: str,
+    forbid_local_host: bool = False,
+    forbid_example_host: bool = False,
+) -> None:
+    cleaned_value = _cleaned_value(value)
+    parsed = urlsplit(cleaned_value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        errors.append(f"{field_name} must be an absolute https URL in non-local environments")
+        return
+
+    host = parsed.hostname
+    if forbid_local_host and _host_is_local(host):
+        errors.append(f"{field_name} must not point to localhost or loopback hosts in non-local environments")
+    if forbid_example_host and _host_is_example(host):
+        errors.append(f"{field_name} must not use example placeholder hosts in non-local environments")
 
 
 class Settings(BaseSettings):
@@ -12,20 +116,79 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "local"
-    database_url: str = "postgresql://localhost/attribution"
-    jwt_secret: str = "replace_me"
+    database_url: str = DEFAULT_DATABASE_URL
+    jwt_secret: str = DEFAULT_JWT_SECRET
     jwt_algorithm: str = "HS256"
     jwt_access_token_ttl_hours: int = 24
     magic_link_token_ttl_minutes: int = 15
     stripe_connect_state_ttl_minutes: int = 15
-    stripe_connect_client_id: str = "ca_test_example"
-    stripe_connect_authorize_url: str = "https://connect.stripe.com/oauth/authorize"
-    stripe_connect_redirect_uri: str = "http://localhost:8000/stripe/connect/callback"
-    stripe_webhook_secret: str = "whsec_test_example"
+    stripe_connect_client_id: str = DEFAULT_STRIPE_CONNECT_CLIENT_ID
+    stripe_connect_authorize_url: str = DEFAULT_STRIPE_CONNECT_AUTHORIZE_URL
+    stripe_connect_redirect_uri: str = DEFAULT_STRIPE_CONNECT_REDIRECT_URI
+    stripe_webhook_secret: str = DEFAULT_STRIPE_WEBHOOK_SECRET
     stripe_webhook_tolerance_seconds: int = 300
-    calendly_webhook_signing_key: str = "whsec_calendly_test_example"
+    calendly_webhook_signing_key: str = DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY
     calendly_webhook_tolerance_seconds: int = 300
-    tracked_link_base_url: str = "https://trk.example.com"
+    tracked_link_base_url: str = DEFAULT_TRACKED_LINK_BASE_URL
+
+    def is_local_env(self) -> bool:
+        return is_local_app_env(self.app_env)
+
+    def validate_runtime(self) -> None:
+        if self.is_local_env():
+            return
+
+        errors: list[str] = []
+        _require_non_placeholder(
+            errors,
+            field_name="jwt_secret",
+            value=self.jwt_secret,
+            placeholders={DEFAULT_JWT_SECRET},
+            min_length=32,
+        )
+        _require_non_placeholder(
+            errors,
+            field_name="stripe_webhook_secret",
+            value=self.stripe_webhook_secret,
+            placeholders={DEFAULT_STRIPE_WEBHOOK_SECRET},
+        )
+        _require_non_placeholder(
+            errors,
+            field_name="calendly_webhook_signing_key",
+            value=self.calendly_webhook_signing_key,
+            placeholders={DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY},
+        )
+        _require_non_placeholder(
+            errors,
+            field_name="stripe_connect_client_id",
+            value=self.stripe_connect_client_id,
+            placeholders={DEFAULT_STRIPE_CONNECT_CLIENT_ID},
+        )
+        _require_https_url(
+            errors,
+            field_name="stripe_connect_authorize_url",
+            value=self.stripe_connect_authorize_url,
+        )
+        _require_https_url(
+            errors,
+            field_name="stripe_connect_redirect_uri",
+            value=self.stripe_connect_redirect_uri,
+            forbid_local_host=True,
+            forbid_example_host=True,
+        )
+        _require_https_url(
+            errors,
+            field_name="tracked_link_base_url",
+            value=self.tracked_link_base_url,
+            forbid_local_host=True,
+            forbid_example_host=True,
+        )
+
+        if errors:
+            joined_errors = "\n- ".join(errors)
+            raise SettingsValidationError(
+                f"Non-local startup blocked by unsafe settings for app_env={self.app_env!r}:\n- {joined_errors}"
+            )
 
 
 @lru_cache

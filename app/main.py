@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.settings = get_settings()
+    settings = get_settings()
+    settings.validate_runtime()
+    app.state.settings = settings
     if not hasattr(app.state, "click_event_publisher"):
         app.state.click_event_publisher = DEFAULT_CLICK_EVENT_PUBLISHER
     if not hasattr(app.state, "redirect_rate_limiter"):

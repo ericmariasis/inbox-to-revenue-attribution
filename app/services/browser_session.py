@@ -38,4 +38,4 @@ def clear_browser_session_cookie(response: Response, *, settings: Settings) -> N
 
 
 def _secure_cookie_enabled(settings: Settings) -> bool:
-    return settings.app_env.lower() not in {"local", "test", "manual_test"}
+    return not settings.is_local_env()

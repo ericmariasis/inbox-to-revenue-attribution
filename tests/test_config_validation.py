@@ -4,6 +4,9 @@ from fastapi.testclient import TestClient
 from app.core.config import (
     DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY,
     DEFAULT_JWT_SECRET,
+    DEFAULT_MAGIC_LINK_BASE_URL,
+    DEFAULT_MAGIC_LINK_EMAIL_FROM_EMAIL,
+    DEFAULT_MAGIC_LINK_EMAIL_PROVIDER,
     DEFAULT_STRIPE_CONNECT_AUTHORIZE_URL,
     DEFAULT_STRIPE_CONNECT_CLIENT_ID,
     DEFAULT_STRIPE_CONNECT_REDIRECT_URI,
@@ -24,6 +27,10 @@ SAFE_NON_LOCAL_ENV = {
     "STRIPE_WEBHOOK_SECRET": "whsec_story55_preview_live",
     "CALENDLY_WEBHOOK_SIGNING_KEY": "cal_story55_preview_live",
     "TRACKED_LINK_BASE_URL": "https://trk.creatortrust.test",
+    "MAGIC_LINK_EMAIL_PROVIDER": "smtp",
+    "MAGIC_LINK_BASE_URL": "https://creatortrust.test",
+    "MAGIC_LINK_EMAIL_FROM_EMAIL": "auth@creatortrust.co",
+    "MAGIC_LINK_EMAIL_SMTP_HOST": "smtp.creatortrust.co",
 }
 
 
@@ -44,6 +51,10 @@ def _safe_non_local_settings(**overrides: str) -> Settings:
         "stripe_webhook_secret": SAFE_NON_LOCAL_ENV["STRIPE_WEBHOOK_SECRET"],
         "calendly_webhook_signing_key": SAFE_NON_LOCAL_ENV["CALENDLY_WEBHOOK_SIGNING_KEY"],
         "tracked_link_base_url": SAFE_NON_LOCAL_ENV["TRACKED_LINK_BASE_URL"],
+        "magic_link_email_provider": SAFE_NON_LOCAL_ENV["MAGIC_LINK_EMAIL_PROVIDER"],
+        "magic_link_base_url": SAFE_NON_LOCAL_ENV["MAGIC_LINK_BASE_URL"],
+        "magic_link_email_from_email": SAFE_NON_LOCAL_ENV["MAGIC_LINK_EMAIL_FROM_EMAIL"],
+        "magic_link_email_smtp_host": SAFE_NON_LOCAL_ENV["MAGIC_LINK_EMAIL_SMTP_HOST"],
     }
     data.update(overrides)
     return Settings.model_validate(data)
@@ -75,12 +86,16 @@ def test_non_local_defaults_fail_with_clear_field_names():
     assert "stripe_connect_client_id" in message
     assert "stripe_connect_redirect_uri" in message
     assert "tracked_link_base_url" in message
+    assert "magic_link_email_provider" in message
     assert DEFAULT_JWT_SECRET not in message
     assert DEFAULT_STRIPE_WEBHOOK_SECRET not in message
     assert DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY not in message
     assert DEFAULT_STRIPE_CONNECT_CLIENT_ID not in message
     assert DEFAULT_STRIPE_CONNECT_REDIRECT_URI not in message
     assert DEFAULT_TRACKED_LINK_BASE_URL not in message
+    assert DEFAULT_MAGIC_LINK_EMAIL_PROVIDER not in message
+    assert DEFAULT_MAGIC_LINK_BASE_URL not in message
+    assert DEFAULT_MAGIC_LINK_EMAIL_FROM_EMAIL not in message
 
 
 def test_non_local_safe_settings_pass_runtime_validation():
@@ -105,3 +120,10 @@ def test_app_startup_succeeds_for_non_local_safe_settings(monkeypatch: pytest.Mo
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_non_local_stub_email_provider_fails_runtime_validation():
+    settings = _safe_non_local_settings(magic_link_email_provider="stub")
+
+    with pytest.raises(SettingsValidationError, match="magic_link_email_provider"):
+        settings.validate_runtime()

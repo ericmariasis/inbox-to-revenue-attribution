@@ -3,6 +3,8 @@ import io
 import logging
 import os
 import uuid
+from contextlib import contextmanager
+from urllib.parse import parse_qs, urlparse
 
 from unittest.mock import patch
 import json
@@ -12,6 +14,8 @@ from sqlalchemy import create_engine, text
 
 from app.core.logging import JsonFormatter, RequestContextFilter
 from app.main import app
+from app.services.auth_magic_link import START_RETRY_DETAIL
+from app.services.email_provider import MagicLinkEmailDeliveryError
 
 
 def _engine():
@@ -32,6 +36,44 @@ def _token_count_for_email(conn, email: str) -> int:
         ),
         {"email": email},
     ).scalar_one()
+
+
+@contextmanager
+def _override_app_state(name, value):
+    had_attr = hasattr(app.state, name)
+    previous_value = getattr(app.state, name, None)
+    marker_name = f"_{name}_overridden"
+    had_marker = hasattr(app.state, marker_name)
+    previous_marker = getattr(app.state, marker_name, None)
+    setattr(app.state, name, value)
+    setattr(app.state, marker_name, True)
+    try:
+        yield
+    finally:
+        if had_attr:
+            setattr(app.state, name, previous_value)
+        else:
+            delattr(app.state, name)
+        if had_marker:
+            setattr(app.state, marker_name, previous_marker)
+        else:
+            delattr(app.state, marker_name)
+
+
+class _CaptureEmailProvider:
+    def __init__(self):
+        self.messages = []
+
+    def send_magic_link(self, message) -> None:
+        self.messages.append(message)
+
+
+class _FailingEmailProvider:
+    def __init__(self, *, error_text: str):
+        self.error_text = error_text
+
+    def send_magic_link(self, message) -> None:
+        raise MagicLinkEmailDeliveryError(self.error_text)
 
 
 def test_start_new_email_creates_creator_user_and_token():
@@ -92,6 +134,41 @@ def test_start_existing_email_returns_200_and_creates_new_token():
         assert tokens == 1
 
 
+def test_start_uses_configured_provider_and_generates_magic_link_url():
+    email = f"provider_{uuid.uuid4().hex}@example.com"
+    provider = _CaptureEmailProvider()
+
+    with _override_app_state("email_provider", provider):
+        with TestClient(app) as client:
+            response = client.post("/auth/magic-link/start", json={"email": email})
+
+    assert response.status_code == 200
+    assert len(provider.messages) == 1
+
+    message = provider.messages[0]
+    assert message.email == email
+    parsed_url = urlparse(message.magic_link_url)
+    assert parsed_url.scheme == "http"
+    assert parsed_url.netloc == "localhost:8000"
+    assert parsed_url.path == "/auth/magic-link/verify"
+    assert parse_qs(parsed_url.query) == {"token": [message.raw_token]}
+
+    with _engine().connect() as conn:
+        token_hash = conn.execute(
+            text(
+                "SELECT mlt.token_hash "
+                "FROM magic_link_tokens mlt "
+                "JOIN auth_users au ON au.id = mlt.user_id "
+                "WHERE au.email = :email "
+                "ORDER BY mlt.created_at DESC "
+                "LIMIT 1"
+            ),
+            {"email": email},
+        ).scalar_one()
+
+    assert token_hash == hashlib.sha256(message.raw_token.encode("utf-8")).hexdigest()
+
+
 def test_token_is_hashed_not_plaintext(monkeypatch):
     email = f"token_{uuid.uuid4().hex}@example.com"
     raw_token = "RAW_TOKEN_FOR_TEST_ONLY_123"
@@ -149,6 +226,55 @@ def test_rate_limit_max_5_per_hour_per_email():
         token_count = _token_count_for_email(conn, email)
 
     assert token_count == 5
+
+
+def test_start_provider_failure_returns_generic_retry_guidance(monkeypatch):
+    email = f"provider_fail_{uuid.uuid4().hex}@example.com"
+    raw_token = "RAW_TOKEN_PROVIDER_FAILURE_789"
+    provider_error = "smtp timeout: provider outage"
+    provider = _FailingEmailProvider(error_text=provider_error)
+
+    monkeypatch.setattr(
+        "app.services.auth_magic_link.secrets.token_urlsafe",
+        lambda _: raw_token,
+    )
+
+    with _override_app_state("email_provider", provider), patch(
+        "app.services.auth_magic_link.logger.warning"
+    ) as warning_log:
+        with TestClient(app) as client:
+            response = client.post("/auth/magic-link/start", json={"email": email})
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": START_RETRY_DETAIL}
+    assert provider_error not in response.text
+
+    call_text = "\n".join(str(call) for call in warning_log.call_args_list)
+    assert email in call_text
+    assert raw_token not in call_text
+    assert "token_hash" not in call_text
+
+
+def test_start_provider_failure_does_not_consume_rate_limit():
+    email = f"provider_retry_{uuid.uuid4().hex}@example.com"
+    provider = _FailingEmailProvider(error_text="smtp timeout: provider outage")
+
+    with _override_app_state("email_provider", provider):
+        with TestClient(app) as client:
+            failed_response = client.post("/auth/magic-link/start", json={"email": email})
+
+    assert failed_response.status_code == 503
+
+    with TestClient(app) as client:
+        success_responses = [
+            client.post("/auth/magic-link/start", json={"email": email})
+            for _ in range(5)
+        ]
+
+    assert all(response.status_code == 200 for response in success_responses)
+
+    with _engine().connect() as conn:
+        assert _token_count_for_email(conn, email) == 6
 
 
 def test_logs_do_not_include_token_or_hash(monkeypatch):

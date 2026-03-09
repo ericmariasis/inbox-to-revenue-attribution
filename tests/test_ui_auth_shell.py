@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, text
 
 from app.core.config import get_settings
 from app.main import app
+from app.services.email_provider import MagicLinkEmailDeliveryError
 from app.services.email_stub import get_magic_link_outbox
 from app.services.invoice_payment_events import UNATTRIBUTED_REASON_MISSING_TID
 
@@ -309,7 +310,11 @@ def _insert_matched_payment_event(
 def _override_app_state(name, value):
     had_attr = hasattr(app.state, name)
     previous_value = getattr(app.state, name, None)
+    marker_name = f"_{name}_overridden"
+    had_marker = hasattr(app.state, marker_name)
+    previous_marker = getattr(app.state, marker_name, None)
     setattr(app.state, name, value)
+    setattr(app.state, marker_name, True)
     try:
         yield
     finally:
@@ -317,6 +322,10 @@ def _override_app_state(name, value):
             setattr(app.state, name, previous_value)
         else:
             delattr(app.state, name)
+        if had_marker:
+            setattr(app.state, marker_name, previous_marker)
+        else:
+            delattr(app.state, marker_name)
 
 
 class _StubStripeProvider:
@@ -335,6 +344,14 @@ class _StubStripeProvider:
     def exchange_connect_callback(self, *, code: str, state: str) -> str:
         self.callback_calls.append({"code": code, "state": state})
         return self.account_id
+
+
+class _FailingEmailProvider:
+    def __init__(self, *, error_text: str = "temporary outage"):
+        self.error_text = error_text
+
+    def send_magic_link(self, message) -> None:
+        raise MagicLinkEmailDeliveryError(self.error_text)
 
 
 def test_sign_in_page_is_browser_accessible():
@@ -364,6 +381,25 @@ def test_sign_in_start_redirects_to_confirmation_without_echoing_email():
     assert response.headers["location"] == "/sign-in?status=sent"
     assert email not in response.headers["location"]
     assert _latest_magic_link_token_for_email(email)
+
+
+def test_sign_in_start_provider_failure_redirects_to_retry_without_echoing_provider_details():
+    email = f"ui_sign_in_retry_{uuid.uuid4().hex}@example.com"
+    provider = _FailingEmailProvider(error_text="smtp timeout from sandbox provider")
+
+    with _override_app_state("email_provider", provider):
+        with TestClient(app) as client:
+            response = client.post(
+                "/sign-in",
+                data={"email": email},
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in?status=retry"
+    assert email not in response.headers["location"]
+    assert "smtp timeout" not in response.headers["location"]
 
 
 def test_app_shell_redirects_unauthenticated_browser_requests():

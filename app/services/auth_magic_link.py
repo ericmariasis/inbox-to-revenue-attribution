@@ -2,6 +2,7 @@ import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 from jose import jwt
 from sqlalchemy import select
@@ -11,11 +12,12 @@ from app.core.config import get_settings
 from app.models.auth_user import AuthUser
 from app.models.creator import Creator
 from app.models.magic_link_token import MagicLinkToken
-from app.services.email_stub import send_magic_link_email
-from app.services.rate_limit import allow_magic_link_start
+from app.services.email_provider import EmailProvider, MagicLinkEmailDeliveryError, MagicLinkEmailMessage
+from app.services.rate_limit import allow_magic_link_start, release_magic_link_start
 
 logger = logging.getLogger(__name__)
 VERIFY_FAILURE_DETAIL = "invalid or expired token"
+START_RETRY_DETAIL = "unable to send sign-in email right now; please try again in a few minutes"
 
 
 def _normalize_email(email: str) -> str:
@@ -31,7 +33,7 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def start_magic_link(db: Session, email: str) -> None:
+def start_magic_link(db: Session, email: str, *, provider: EmailProvider) -> None:
     normalized_email = _normalize_email(email)
     settings = get_settings()
 
@@ -66,8 +68,29 @@ def start_magic_link(db: Session, email: str) -> None:
     )
     db.commit()
 
-    send_magic_link_email(email=normalized_email, token=raw_token)
-    logger.info("magic_link_start_issued email=%s", normalized_email)
+    try:
+        provider.send_magic_link(
+            MagicLinkEmailMessage(
+                email=normalized_email,
+                raw_token=raw_token,
+                magic_link_url=_build_magic_link_url(token=raw_token, settings=settings),
+                expires_in_minutes=settings.magic_link_token_ttl_minutes,
+            )
+        )
+    except MagicLinkEmailDeliveryError:
+        release_magic_link_start(normalized_email)
+        logger.warning(
+            "magic_link_start_delivery_failed email=%s provider=%s",
+            normalized_email,
+            type(provider).__name__,
+        )
+        raise
+
+    logger.info(
+        "magic_link_start_issued email=%s provider=%s",
+        normalized_email,
+        type(provider).__name__,
+    )
 
 
 def verify_magic_link_token(db: Session, token: str) -> str:
@@ -109,3 +132,8 @@ def _create_access_token(*, user_id: str, creator_id: str, email: str) -> str:
         "exp": expires_at,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def _build_magic_link_url(*, token: str, settings) -> str:
+    base_url = settings.magic_link_base_url.rstrip("/")
+    return f"{base_url}/auth/magic-link/verify?{urlencode({'token': token})}"

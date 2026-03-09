@@ -85,3 +85,15 @@ def allow_magic_link_start(email: str) -> bool:
     recent.append(now)
     _attempts[email] = recent
     return True
+
+
+def release_magic_link_start(email: str) -> None:
+    recent = _attempts.get(email)
+    if not recent:
+        return
+
+    if len(recent) == 1:
+        _attempts.pop(email, None)
+        return
+
+    _attempts[email] = recent[:-1]

@@ -33,6 +33,7 @@ from app.services.browser_session import (
     clear_browser_session_cookie,
     get_browser_session_token,
 )
+from app.services.email_provider import MagicLinkEmailDeliveryError
 from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_MISSING_TID,
     UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
@@ -62,6 +63,10 @@ STATUS_MESSAGES = {
     "invalid-link": (
         "That link no longer works",
         "Start again to request a new sign-in link.",
+    ),
+    "retry": (
+        "Try again in a moment",
+        "We could not send a sign-in email just now. Try again in a few minutes.",
     ),
 }
 
@@ -125,7 +130,15 @@ async def sign_in_start(
     except ValidationError:
         return _redirect("/sign-in?status=invalid-email")
 
-    start_magic_link(db, payload.email)
+    try:
+        start_magic_link(
+            db,
+            payload.email,
+            provider=request.app.state.email_provider,
+        )
+    except MagicLinkEmailDeliveryError:
+        return _redirect("/sign-in?status=retry")
+
     return _redirect("/sign-in?status=sent")
 
 

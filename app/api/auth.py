@@ -9,12 +9,18 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.auth_user import AuthUser
 from app.schemas.auth import AccessTokenResponse, GenericOkResponse, MeResponse, MagicLinkStartRequest
-from app.services.auth_magic_link import VERIFY_FAILURE_DETAIL, start_magic_link, verify_magic_link_token
+from app.services.auth_magic_link import (
+    START_RETRY_DETAIL,
+    VERIFY_FAILURE_DETAIL,
+    start_magic_link,
+    verify_magic_link_token,
+)
 from app.services.browser_session import (
     clear_browser_session_cookie,
     request_prefers_html,
     set_browser_session_cookie,
 )
+from app.services.email_provider import MagicLinkEmailDeliveryError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 me_router = APIRouter(tags=["auth"])
@@ -22,8 +28,22 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/magic-link/start", response_model=GenericOkResponse)
-def magic_link_start(payload: MagicLinkStartRequest, db: Session = Depends(get_db)) -> GenericOkResponse:
-    start_magic_link(db, payload.email)
+def magic_link_start(
+    request: Request,
+    payload: MagicLinkStartRequest,
+    db: Session = Depends(get_db),
+) -> GenericOkResponse:
+    try:
+        start_magic_link(
+            db,
+            payload.email,
+            provider=request.app.state.email_provider,
+        )
+    except MagicLinkEmailDeliveryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=START_RETRY_DETAIL,
+        ) from exc
     return GenericOkResponse()
 
 

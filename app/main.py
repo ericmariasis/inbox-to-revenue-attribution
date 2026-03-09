@@ -16,6 +16,7 @@ from app.core.logging import configure_logging
 from app.core.middleware.request_id import RequestIDMiddleware
 from app.services.click_events import DEFAULT_CLICK_EVENT_PUBLISHER
 from app.services.calendly_webhooks import build_default_calendly_webhook_router
+from app.services.email_provider import build_default_email_provider
 from app.services.rate_limit import RedirectSoftRateLimiter
 from app.services.stripe_provider import build_default_stripe_provider
 from app.services.stripe_webhooks import DEFAULT_STRIPE_WEBHOOK_ROUTER
@@ -31,6 +32,8 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     if not hasattr(app.state, "click_event_publisher"):
         app.state.click_event_publisher = DEFAULT_CLICK_EVENT_PUBLISHER
+    if not getattr(app.state, "_email_provider_overridden", False):
+        app.state.email_provider = build_default_email_provider(settings=app.state.settings)
     if not hasattr(app.state, "redirect_rate_limiter"):
         app.state.redirect_rate_limiter = RedirectSoftRateLimiter()
     if not hasattr(app.state, "stripe_provider"):

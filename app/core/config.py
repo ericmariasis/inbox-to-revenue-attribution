@@ -2,6 +2,7 @@ from functools import lru_cache
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 
+from pydantic import EmailStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LOCAL_APP_ENVS = frozenset({"local", "test", "manual_test"})
@@ -13,6 +14,11 @@ DEFAULT_STRIPE_CONNECT_REDIRECT_URI = "http://localhost:8000/stripe/connect/call
 DEFAULT_STRIPE_WEBHOOK_SECRET = "whsec_test_example"
 DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY = "whsec_calendly_test_example"
 DEFAULT_TRACKED_LINK_BASE_URL = "https://trk.example.com"
+DEFAULT_MAGIC_LINK_EMAIL_PROVIDER = "stub"
+DEFAULT_MAGIC_LINK_BASE_URL = "http://localhost:8000"
+DEFAULT_MAGIC_LINK_EMAIL_FROM_EMAIL = "no-reply@example.com"
+DEFAULT_MAGIC_LINK_EMAIL_FROM_NAME = "Creator Compass"
+SUPPORTED_MAGIC_LINK_EMAIL_PROVIDERS = frozenset({"stub", "smtp"})
 
 
 class SettingsValidationError(ValueError):
@@ -68,6 +74,13 @@ def _host_is_example(host: str | None) -> bool:
     )
 
 
+def _email_domain_is_example(value: str) -> bool:
+    _, _, domain = value.strip().rpartition("@")
+    if not domain:
+        return False
+    return _host_is_example(domain)
+
+
 def _require_non_placeholder(
     errors: list[str],
     *,
@@ -107,6 +120,30 @@ def _require_https_url(
         errors.append(f"{field_name} must not use example placeholder hosts in non-local environments")
 
 
+def _require_absolute_http_url(
+    errors: list[str],
+    *,
+    field_name: str,
+    value: str,
+    allow_http: bool,
+    forbid_local_host: bool = False,
+    forbid_example_host: bool = False,
+) -> None:
+    cleaned_value = _cleaned_value(value)
+    parsed = urlsplit(cleaned_value)
+    allowed_schemes = {"http", "https"} if allow_http else {"https"}
+    expected_scheme = "an absolute http or https URL" if allow_http else "an absolute https URL"
+    if parsed.scheme not in allowed_schemes or not parsed.netloc:
+        errors.append(f"{field_name} must be {expected_scheme}")
+        return
+
+    host = parsed.hostname
+    if forbid_local_host and _host_is_local(host):
+        errors.append(f"{field_name} must not point to localhost or loopback hosts in non-local environments")
+    if forbid_example_host and _host_is_example(host):
+        errors.append(f"{field_name} must not use example placeholder hosts in non-local environments")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -130,15 +167,68 @@ class Settings(BaseSettings):
     calendly_webhook_signing_key: str = DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY
     calendly_webhook_tolerance_seconds: int = 300
     tracked_link_base_url: str = DEFAULT_TRACKED_LINK_BASE_URL
+    magic_link_email_provider: str = DEFAULT_MAGIC_LINK_EMAIL_PROVIDER
+    magic_link_base_url: str = DEFAULT_MAGIC_LINK_BASE_URL
+    magic_link_email_from_email: EmailStr = DEFAULT_MAGIC_LINK_EMAIL_FROM_EMAIL
+    magic_link_email_from_name: str = DEFAULT_MAGIC_LINK_EMAIL_FROM_NAME
+    magic_link_email_smtp_host: str = ""
+    magic_link_email_smtp_port: int = 587
+    magic_link_email_smtp_username: str = ""
+    magic_link_email_smtp_password: str = ""
+    magic_link_email_smtp_starttls: bool = True
+    magic_link_email_smtp_use_ssl: bool = False
+    magic_link_email_smtp_timeout_seconds: int = 10
 
     def is_local_env(self) -> bool:
         return is_local_app_env(self.app_env)
 
     def validate_runtime(self) -> None:
-        if self.is_local_env():
+        errors: list[str] = []
+        is_local_env = self.is_local_env()
+        normalized_email_provider = _cleaned_value(self.magic_link_email_provider).lower()
+        if normalized_email_provider not in SUPPORTED_MAGIC_LINK_EMAIL_PROVIDERS:
+            errors.append(
+                "magic_link_email_provider must be one of: "
+                + ", ".join(sorted(SUPPORTED_MAGIC_LINK_EMAIL_PROVIDERS))
+            )
+        elif normalized_email_provider == "smtp":
+            _require_non_placeholder(
+                errors,
+                field_name="magic_link_email_smtp_host",
+                value=self.magic_link_email_smtp_host,
+                placeholders=set(),
+            )
+            _require_absolute_http_url(
+                errors,
+                field_name="magic_link_base_url",
+                value=self.magic_link_base_url,
+                allow_http=is_local_env,
+                forbid_local_host=not is_local_env,
+                forbid_example_host=not is_local_env,
+            )
+            if self.magic_link_email_smtp_starttls and self.magic_link_email_smtp_use_ssl:
+                errors.append(
+                    "magic_link_email_smtp_starttls and magic_link_email_smtp_use_ssl cannot both be enabled"
+                )
+            smtp_username = _cleaned_value(self.magic_link_email_smtp_username)
+            smtp_password = _cleaned_value(self.magic_link_email_smtp_password)
+            if bool(smtp_username) != bool(smtp_password):
+                errors.append(
+                    "magic_link_email_smtp_username and magic_link_email_smtp_password must be set together"
+                )
+            if not is_local_env and _email_domain_is_example(str(self.magic_link_email_from_email)):
+                errors.append(
+                    "magic_link_email_from_email must not use example placeholder domains in non-local environments"
+                )
+
+        if is_local_env:
+            if errors:
+                joined_errors = "\n- ".join(errors)
+                raise SettingsValidationError(
+                    f"Runtime blocked by unsafe settings for app_env={self.app_env!r}:\n- {joined_errors}"
+                )
             return
 
-        errors: list[str] = []
         _require_non_placeholder(
             errors,
             field_name="jwt_secret",
@@ -183,6 +273,8 @@ class Settings(BaseSettings):
             forbid_local_host=True,
             forbid_example_host=True,
         )
+        if normalized_email_provider == "stub":
+            errors.append("magic_link_email_provider must be configured to a live provider in non-local environments")
 
         if errors:
             joined_errors = "\n- ".join(errors)

@@ -22,7 +22,11 @@ from app.api.content import (
     list_content_responses_for_creator,
 )
 from app.api.deps import get_optional_browser_auth_user
-from app.api.stripe import build_stripe_connect_start_response
+from app.api.stripe import (
+    STRIPE_CONNECT_FAILED_STATUS,
+    STRIPE_CONNECT_INTERRUPTED_STATUS,
+    build_stripe_connect_start_response,
+)
 from app.core.config import get_settings
 from app.db.session import SessionLocal, get_db
 from app.models.auth_user import AuthUser
@@ -64,22 +68,48 @@ from app.services.stripe_provider import build_default_stripe_provider
 router = APIRouter(include_in_schema=False)
 
 STATUS_MESSAGES = {
-    "sent": (
-        "Check your inbox",
-        "If the address is valid, a fresh magic link is on the way.",
-    ),
-    "invalid-email": (
-        "Enter a valid email",
-        "Use a real email address so the sign-in link can be issued safely.",
-    ),
-    "invalid-link": (
-        "That link no longer works",
-        "Start again to request a new sign-in link.",
-    ),
-    "retry": (
-        "Try again in a moment",
-        "We could not send a sign-in email just now. Try again in a few minutes.",
-    ),
+    "sent": {
+        "title": "Check your inbox",
+        "body": "If the address is valid, we sent a fresh sign-in link. If it expires, request another one here.",
+        "notice_class": "notice success",
+    },
+    "invalid-email": {
+        "title": "Enter a valid email",
+        "body": "Use a real email address so we can send a secure sign-in link.",
+        "notice_class": "notice error",
+    },
+    "invalid-link": {
+        "title": "That sign-in link is invalid or expired",
+        "body": "Enter your email below and we will send a fresh link so you can keep going.",
+        "notice_class": "notice error",
+    },
+    "retry": {
+        "title": "Try again in a moment",
+        "body": "We could not send the sign-in email just now. Try again in a few minutes.",
+        "notice_class": "notice error",
+    },
+    STRIPE_CONNECT_INTERRUPTED_STATUS: {
+        "title": "Stripe setup did not finish",
+        "body": "Sign in again if needed, then restart Stripe from setup home. No changes were applied to this workspace.",
+        "notice_class": "notice error",
+    },
+    STRIPE_CONNECT_FAILED_STATUS: {
+        "title": "Stripe could not finish connecting",
+        "body": "Return to setup home and try the Stripe step again. Your current workspace is still safe to use.",
+        "notice_class": "notice error",
+    },
+}
+SETUP_HOME_STATUS_MESSAGES = {
+    STRIPE_CONNECT_INTERRUPTED_STATUS: {
+        "title": "Stripe setup was interrupted",
+        "body": "No changes were made to this workspace. Start the Stripe step again when you are ready.",
+        "notice_class": "notice error",
+    },
+    STRIPE_CONNECT_FAILED_STATUS: {
+        "title": "Stripe could not finish connecting",
+        "body": "Try the Stripe step again from this page. If the problem repeats, confirm you are using the right Stripe account for this workspace.",
+        "notice_class": "notice error",
+    },
 }
 
 BOOKING_LINK_FORM_FIELDS = (
@@ -157,13 +187,46 @@ async def sign_in_start(
 @router.get("/app")
 def creator_app_shell(
     request: Request,
+    status_value: str | None = Query(default=None, alias="status"),
     current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
 ) -> Response:
     should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
     if current_user is None:
-        return _redirect("/sign-in", clear_session=should_clear_cookie)
+        return _redirect(
+            _sign_in_path(status_value=status_value),
+            clear_session=should_clear_cookie,
+        )
 
-    return _html_response(_render_app_shell(current_user))
+    booking_links = list_booking_link_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    content_items = list_content_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    blocked_billing_count = count_open_blocked_billing_cases(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    unmatched_payment_count = len(
+        list_current_unmatched_payment_events(
+            creator_id=current_user.creator_id,
+            db=db,
+        )
+    )
+
+    return _html_response(
+        _render_app_shell(
+            current_user=current_user,
+            booking_links=booking_links,
+            content_items=content_items,
+            blocked_billing_count=blocked_billing_count,
+            unmatched_payment_count=unmatched_payment_count,
+            status_value=status_value,
+        )
+    )
 
 
 @router.post("/app/stripe/connect/start")
@@ -785,42 +848,59 @@ def _content_field_errors(exc: ValidationError) -> dict[str, str]:
     return errors
 
 
-def _render_sign_in_page(status_value: str | None) -> str:
-    message_title = ""
-    message_body = ""
-    if status_value in STATUS_MESSAGES:
-        message_title, message_body = STATUS_MESSAGES[status_value]
+def _sign_in_path(*, status_value: str | None = None) -> str:
+    if not status_value:
+        return "/sign-in"
+    return f"/sign-in?status={quote(status_value, safe='')}"
 
+
+def _render_sign_in_page(status_value: str | None) -> str:
+    message = STATUS_MESSAGES.get(status_value)
     message_block = ""
-    if message_title and message_body:
+    if message is not None:
         message_block = (
-            f'<section class="notice">'
-            f"<p class=\"eyebrow\">{html.escape(message_title)}</p>"
-            f"<p>{html.escape(message_body)}</p>"
+            f'<section class="{html.escape(message["notice_class"])}">'
+            f"<p class=\"eyebrow\">{html.escape(message['title'])}</p>"
+            f"<p>{html.escape(message['body'])}</p>"
             f"</section>"
         )
 
     body = f"""
     <section class="hero">
-      <p class="eyebrow">Phase 6.5</p>
-      <h1>Creator sign in</h1>
-      <p class="lede">Start with your email, then use the magic link to land in the authenticated app shell.</p>
+      <p class="eyebrow">Self-serve setup</p>
+      <h1>Sign in to your creator workspace</h1>
+      <p class="lede">Use your email to get a secure sign-in link, then finish Stripe, Calendly, and tracked-link setup inside the app.</p>
       {message_block}
       <form action="/sign-in" method="post" class="card">
         <label for="email">Email</label>
         <input id="email" name="email" type="email" autocomplete="email" placeholder="creator@example.com" required />
         <button type="submit">Send magic link</button>
       </form>
-      <p class="footnote">This first browser slice only covers secure sign-in and app bootstrap. Setup and workflow tools land in the next stories.</p>
+      <p class="footnote">If the last link expired or the setup tab was closed, request another email here and continue from setup home.</p>
     </section>
     """
     return _page_layout(title="Creator sign in", body=body)
 
 
-def _render_app_shell(current_user: AuthUser) -> str:
+def _render_app_shell(
+    *,
+    current_user: AuthUser,
+    booking_links: list[BookingLinkResponse],
+    content_items: list[ContentResponse],
+    blocked_billing_count: int,
+    unmatched_payment_count: int,
+    status_value: str | None,
+) -> str:
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
     stripe_status = _stripe_setup_home_state(current_user.creator.stripe_connect_status)
+    setup_progress = _build_setup_home_progress(
+        raw_stripe_status=current_user.creator.stripe_connect_status,
+        booking_links=booking_links,
+        content_items=content_items,
+        blocked_billing_count=blocked_billing_count,
+        unmatched_payment_count=unmatched_payment_count,
+    )
 
     stripe_detail_lines = []
     if current_user.creator.stripe_account_id:
@@ -847,75 +927,369 @@ def _render_app_shell(current_user: AuthUser) -> str:
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Setup Home</h1>
-        <p class="lede">See where setup stands and connect Stripe before the later billing phase starts creating invoices on your account.</p>
+        <p class="lede">See what is done, what still needs attention, and what to finish next before new bookings can turn into attributed revenue.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
       </form>
     </header>
     {_render_shell_nav(current_path="/app")}
+    {_render_setup_home_notice(status_value=status_value)}
     <section class="grid">
       <article class="card">
         <p class="eyebrow">Account</p>
         <h2 class="wrap-anywhere">{creator_name}</h2>
         <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong></p>
-        <p>This is the current creator workspace for the thin Phase 6.5 setup flow.</p>
+        <p>This workspace holds your Stripe connection, booking links, tracked content, and any blocked or unresolved items that still need review.</p>
       </article>
       <article class="card accent">
         <p class="eyebrow">Stripe status</p>
         <div class="status-row">
-          <h2>{html.escape(stripe_status["heading"])}</h2>
-          <span class="status-pill {html.escape(stripe_status["badge_class"])}">{html.escape(stripe_status["label"])}</span>
+          <h2>{html.escape(stripe_status['heading'])}</h2>
+          <span class="status-pill {html.escape(stripe_status['badge_class'])}">{html.escape(stripe_status['label'])}</span>
         </div>
-        <p>{html.escape(stripe_status["description"])}</p>
+        <p>{html.escape(stripe_status['description'])}</p>
         {"".join(stripe_detail_lines)}
         {stripe_action}
       </article>
     </section>
+    {_render_setup_progress_section(setup_progress=setup_progress)}
     <section class="grid">
       <article class="card">
         <p class="eyebrow">Setup checklist</p>
         <h2>What still needs to happen</h2>
         <ul class="checklist">
-          <li class="checklist-item {html.escape(stripe_status["item_class"])}">
-            <div>
-              <strong>Connect Stripe</strong>
-              <p>{html.escape(stripe_status["checklist_copy"])}</p>
-            </div>
-            <span class="list-state">{html.escape(stripe_status["checklist_label"])}</span>
-          </li>
-          <li class="checklist-item next">
-            <div>
-              <strong>Add a booking link</strong>
-              <p>Register the Calendly link and billing defaults that later invoice automation will trust. <a href="/app/booking-links" class="inline-link">Open booking-link manager</a>.</p>
-            </div>
-            <span class="list-state">Next story</span>
-          </li>
-          <li class="checklist-item next">
-            <div>
-              <strong>Create a tracked link</strong>
-              <p>Attach a post URL to one of your saved booking links so future bookings carry the right content identifier. <a href="/app/content" class="inline-link">Open content manager</a>.</p>
-            </div>
-            <span class="list-state">Available now</span>
-          </li>
-          <li class="checklist-item next">
-            <div>
-              <strong>Review booking activity</strong>
-              <p>Once a tracked link is live and Calendly sends the verified webhook, use the browser activity view to confirm bookings are arriving with the right creator-owned context. <a href="/app/bookings" class="inline-link">Open booking activity</a>.</p>
-            </div>
-            <span class="list-state">Available now</span>
-          </li>
+          {_render_setup_checklist_items(setup_progress['steps'])}
         </ul>
       </article>
-      <article class="card">
-        <p class="eyebrow">Why Stripe matters</p>
-        <h2>Connect payouts before billing automation lands</h2>
-        <p>Connect Stripe now so later invoice automation can create invoices on your account.</p>
-        <p>This setup page does not mean payment attribution is complete yet. It only exposes setup status while invoicing and reporting remain later stories.</p>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">Next step</p>
+          <h2>{html.escape(setup_progress['next_action']['title'])}</h2>
+        </div>
+        <p>{setup_progress['next_action']['copy_html']}</p>
+        {_render_setup_next_action_cta(setup_progress['next_action'])}
+        <p class="footnote">{_setup_attention_copy(setup_progress['attention_count'])}</p>
       </article>
     </section>
     """
     return _page_layout(title="Creator Home", body=body)
+
+
+def _render_setup_home_notice(*, status_value: str | None) -> str:
+    message = SETUP_HOME_STATUS_MESSAGES.get(status_value)
+    if message is None:
+        return ""
+
+    return f"""
+    <section class="{html.escape(message['notice_class'])}">
+      <p class="eyebrow">{html.escape(message['title'])}</p>
+      <p>{html.escape(message['body'])}</p>
+    </section>
+    """
+
+
+def _render_setup_progress_section(*, setup_progress: dict[str, object]) -> str:
+    return f"""
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Setup progress</p>
+          <h2>{html.escape(str(setup_progress['completed_count']))} of {html.escape(str(setup_progress['total_steps']))} setup steps done</h2>
+        </div>
+        <p>{html.escape(str(setup_progress['progress_copy']))}</p>
+      </div>
+      <div class="stat-grid">
+        <article class="stat-tile">
+          <p class="eyebrow">Progress</p>
+          <p class="stat-value">{html.escape(str(setup_progress['completed_count']))}/{html.escape(str(setup_progress['total_steps']))}</p>
+          <p>Core setup steps complete.</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Booking links</p>
+          <p class="stat-value">{html.escape(str(setup_progress['booking_links_count']))}</p>
+          <p>Saved Calendly links.</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Billing-ready links</p>
+          <p class="stat-value">{html.escape(str(setup_progress['billing_ready_count']))}</p>
+          <p>Links with amount and currency set.</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Tracked links</p>
+          <p class="stat-value">{html.escape(str(setup_progress['tracked_content_count']))}</p>
+          <p>Links ready to share.</p>
+        </article>
+      </div>
+      <p class="footnote">{_setup_attention_copy(setup_progress['attention_count'])}</p>
+    </section>
+    """
+
+
+def _render_setup_checklist_items(steps: list[dict[str, object]]) -> str:
+    items = []
+    for step in steps:
+        items.append(
+            f"""
+            <li class="checklist-item {html.escape(str(step['item_class']))}">
+              <div>
+                <strong>{html.escape(str(step['title']))}</strong>
+                <p>{step['copy_html']}</p>
+              </div>
+              <span class="status-pill {html.escape(str(step['badge_class']))}">{html.escape(str(step['label']))}</span>
+            </li>
+            """
+        )
+    return "".join(items)
+
+
+def _render_setup_next_action_cta(next_action: dict[str, str]) -> str:
+    if next_action["action_method"] == "post":
+        return f"""
+        <form action="{html.escape(next_action['action_href'])}" method="post">
+          <button type="submit">{html.escape(next_action['action_label'])}</button>
+        </form>
+        """
+
+    return (
+        f'<p><a href="{html.escape(next_action["action_href"])}" class="inline-link">'
+        f"{html.escape(next_action['action_label'])}</a></p>"
+    )
+
+
+def _setup_attention_copy(attention_count: int) -> str:
+    if attention_count == 0:
+        return (
+            "Blocked billing and unresolved payments will appear on "
+            '<a href="/app/attention" class="inline-link">Attention</a> if anything needs repair.'
+        )
+    return (
+        f'<a href="/app/attention" class="inline-link">Review '
+        f"{html.escape(_count_copy(attention_count, 'attention item'))}</a> already waiting in blocked billing or unresolved payments."
+    )
+
+
+def _build_setup_home_progress(
+    *,
+    raw_stripe_status: str,
+    booking_links: list[BookingLinkResponse],
+    content_items: list[ContentResponse],
+    blocked_billing_count: int,
+    unmatched_payment_count: int,
+) -> dict[str, object]:
+    normalized_stripe_status = raw_stripe_status.strip().lower()
+    booking_links_count = len(booking_links)
+    billing_ready_count = sum(
+        1
+        for booking_link in booking_links
+        if booking_link.billing_amount_cents is not None
+        and booking_link.billing_currency is not None
+    )
+    tracked_content_count = len(content_items)
+    attention_count = blocked_billing_count + unmatched_payment_count
+
+    if normalized_stripe_status == "connected":
+        stripe_step = _setup_step(
+            title="Connect Stripe",
+            copy_html="Stripe is connected. New bookings can use this workspace once the rest of setup is finished.",
+            label="Done",
+            badge_class="connected",
+            item_class="done",
+            is_complete=True,
+        )
+        next_action = None
+    elif normalized_stripe_status == "disconnected":
+        stripe_step = _setup_step(
+            title="Connect Stripe",
+            copy_html="Stripe was connected before, but it is disconnected now. Reconnect it before new bookings can move into invoicing.",
+            label="Blocked",
+            badge_class="disconnected",
+            item_class="todo",
+            is_complete=False,
+        )
+        next_action = {
+            "title": "Reconnect Stripe",
+            "copy_html": "Stripe is the first setup blocker. Reconnect it from this page before you rely on new bookings.",
+            "action_label": "Reconnect Stripe",
+            "action_href": "/app/stripe/connect/start",
+            "action_method": "post",
+        }
+    else:
+        stripe_step = _setup_step(
+            title="Connect Stripe",
+            copy_html="Finish Stripe onboarding so this workspace has a payment account ready for invoicing.",
+            label="Needs action",
+            badge_class="pending",
+            item_class="todo",
+            is_complete=False,
+        )
+        next_action = {
+            "title": "Finish Stripe setup",
+            "copy_html": "Start Stripe first so the rest of the setup flow leads to a billable workspace.",
+            "action_label": "Start Stripe setup",
+            "action_href": "/app/stripe/connect/start",
+            "action_method": "post",
+        }
+
+    if booking_links_count > 0:
+        booking_link_step = _setup_step(
+            title="Save a booking link",
+            copy_html=f"{html.escape(_count_copy(booking_links_count, 'booking link'))} saved. Keep the Calendly link here aligned with what you actually share.",
+            label="Done",
+            badge_class="connected",
+            item_class="done",
+            is_complete=True,
+        )
+    else:
+        booking_link_step = _setup_step(
+            title="Save a booking link",
+            copy_html='Add the Calendly link you want this workspace to track. <a href="/app/booking-links" class="inline-link">Open booking links</a>.',
+            label="Needs action",
+            badge_class="pending",
+            item_class="todo",
+            is_complete=False,
+        )
+        if next_action is None:
+            next_action = {
+                "title": "Add your first booking link",
+                "copy_html": "Save the Calendly URL you actually use so tracked content has a real booking destination.",
+                "action_label": "Open booking links",
+                "action_href": "/app/booking-links",
+                "action_method": "get",
+            }
+
+    if billing_ready_count > 0:
+        billing_defaults_step = _setup_step(
+            title="Add billing defaults",
+            copy_html=f"{html.escape(_count_copy(billing_ready_count, 'billing-ready link'))} already has amount and currency saved for invoicing.",
+            label="Done",
+            badge_class="connected",
+            item_class="done",
+            is_complete=True,
+        )
+    elif booking_links_count > 0:
+        billing_defaults_step = _setup_step(
+            title="Add billing defaults",
+            copy_html='At least one saved booking link still needs both amount and currency before invoicing can run safely. <a href="/app/booking-links" class="inline-link">Add billing defaults</a>.',
+            label="Blocked",
+            badge_class="disconnected",
+            item_class="todo",
+            is_complete=False,
+        )
+        if next_action is None:
+            next_action = {
+                "title": "Add billing defaults",
+                "copy_html": "This setup is blocked until at least one booking link has both amount and currency saved.",
+                "action_label": "Add billing defaults",
+                "action_href": "/app/booking-links",
+                "action_method": "get",
+            }
+    else:
+        billing_defaults_step = _setup_step(
+            title="Add billing defaults",
+            copy_html="Save a booking link first, then return here to add the amount and currency you want invoices to use.",
+            label="Waiting",
+            badge_class="pending",
+            item_class="next",
+            is_complete=False,
+        )
+
+    if tracked_content_count > 0:
+        tracked_link_step = _setup_step(
+            title="Create a tracked link",
+            copy_html=f"{html.escape(_count_copy(tracked_content_count, 'tracked link'))} ready to copy into the content you share.",
+            label="Done",
+            badge_class="connected",
+            item_class="done",
+            is_complete=True,
+        )
+    elif booking_links_count > 0:
+        tracked_link_step = _setup_step(
+            title="Create a tracked link",
+            copy_html='Create one tracked link so bookings can be tied back to the content that sent them. <a href="/app/content" class="inline-link">Open content</a>.',
+            label="Needs action",
+            badge_class="pending",
+            item_class="todo",
+            is_complete=False,
+        )
+        if next_action is None:
+            next_action = {
+                "title": "Create your first tracked link",
+                "copy_html": "Save a source URL and copy the generated tracked link into the post, page, or CTA you share.",
+                "action_label": "Open content",
+                "action_href": "/app/content",
+                "action_method": "get",
+            }
+    else:
+        tracked_link_step = _setup_step(
+            title="Create a tracked link",
+            copy_html="Booking links come first. After that, create a tracked link from a real source URL you plan to share.",
+            label="Waiting",
+            badge_class="pending",
+            item_class="next",
+            is_complete=False,
+        )
+
+    steps = [
+        stripe_step,
+        booking_link_step,
+        billing_defaults_step,
+        tracked_link_step,
+    ]
+    completed_count = sum(1 for step in steps if step["is_complete"])
+
+    if next_action is None:
+        if attention_count > 0:
+            next_action = {
+                "title": "Review attention items",
+                "copy_html": "Core setup is complete, but some blocked billing or unresolved payment work still needs review before everything can be trusted end to end.",
+                "action_label": "Open Attention",
+                "action_href": "/app/attention",
+                "action_method": "get",
+            }
+        else:
+            next_action = {
+                "title": "Start using your tracked link",
+                "copy_html": "Core setup is ready. Copy the tracked link you want to share, then watch bookings and reports as real activity arrives.",
+                "action_label": "Open content",
+                "action_href": "/app/content",
+                "action_method": "get",
+            }
+
+    progress_copy = "Finish the next highlighted step to move this workspace forward."
+    if completed_count == len(steps):
+        progress_copy = "Core setup is ready for real activity."
+
+    return {
+        "steps": steps,
+        "completed_count": completed_count,
+        "total_steps": len(steps),
+        "booking_links_count": booking_links_count,
+        "billing_ready_count": billing_ready_count,
+        "tracked_content_count": tracked_content_count,
+        "attention_count": attention_count,
+        "next_action": next_action,
+        "progress_copy": progress_copy,
+    }
+
+
+def _setup_step(
+    *,
+    title: str,
+    copy_html: str,
+    label: str,
+    badge_class: str,
+    item_class: str,
+    is_complete: bool,
+) -> dict[str, object]:
+    return {
+        "title": title,
+        "copy_html": copy_html,
+        "label": label,
+        "badge_class": badge_class,
+        "item_class": item_class,
+        "is_complete": is_complete,
+    }
 
 
 def _render_shell_nav(*, current_path: str) -> str:
@@ -2254,35 +2628,35 @@ def _stripe_setup_home_state(raw_status: str) -> dict[str, str]:
         return {
             "label": "Connected",
             "heading": "Stripe is connected",
-            "description": "This account is ready for the later billing phase to create invoices once the remaining setup steps ship.",
+            "description": "This workspace already has a connected Stripe account. Keep going with booking links, billing defaults, and tracked links.",
             "button_label": "",
             "badge_class": "connected",
             "item_class": "done",
             "checklist_label": "Done",
-            "checklist_copy": "Your Stripe account is connected. The next setup work is booking links and tracked content.",
+            "checklist_copy": "Your Stripe account is connected. The next setup work is booking links, billing defaults, and tracked links.",
         }
 
     if normalized_status == "disconnected":
         return {
             "label": "Disconnected",
             "heading": "Stripe is disconnected",
-            "description": "This creator account is not currently connected to Stripe. Reconnect it before later invoice automation can run.",
+            "description": "This workspace was connected before, but it is disconnected now. Reconnect it before new bookings can move into invoicing.",
             "button_label": "Reconnect Stripe",
             "badge_class": "disconnected",
             "item_class": "todo",
-            "checklist_label": "Needs action",
-            "checklist_copy": "Reconnect Stripe before later invoice automation can create invoices for this creator.",
+            "checklist_label": "Blocked",
+            "checklist_copy": "Reconnect Stripe before new bookings can move into invoicing for this workspace.",
         }
 
     return {
         "label": "Pending",
         "heading": "Stripe setup is still pending",
-        "description": "Stripe is required before the later billing phase can create invoices on your account. Start or resume onboarding from this page.",
+        "description": "Stripe is required before this workspace can turn new bookings into invoices. Start or resume the connection from this page.",
         "button_label": "Start Stripe setup",
         "badge_class": "pending",
         "item_class": "todo",
         "checklist_label": "Needs action",
-        "checklist_copy": "Finish Stripe onboarding so the later billing phase has an account it can invoice through.",
+        "checklist_copy": "Finish Stripe onboarding so this workspace has a payment account ready for invoicing.",
     }
 
 

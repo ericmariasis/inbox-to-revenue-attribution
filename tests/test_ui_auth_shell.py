@@ -404,6 +404,7 @@ class _StubStripeProvider:
         created_invoice_id: str = "in_ui_attention_created",
         created_invoice_status: str = "open",
         readiness_error: StripeProviderError | None = None,
+        callback_error: StripeProviderError | None = None,
         create_error: StripeProviderError | None = None,
         void_error: StripeProviderError | None = None,
     ):
@@ -412,6 +413,7 @@ class _StubStripeProvider:
         self._created_invoice_id = created_invoice_id
         self._created_invoice_status = created_invoice_status
         self._readiness_error = readiness_error
+        self._callback_error = callback_error
         self._create_error = create_error
         self._void_error = void_error
         self.start_calls: list[dict[str, str]] = []
@@ -429,6 +431,8 @@ class _StubStripeProvider:
 
     def exchange_connect_callback(self, *, code: str, state: str) -> str:
         self.callback_calls.append({"code": code, "state": state})
+        if self._callback_error is not None:
+            raise self._callback_error
         return self.account_id
 
     def get_account_readiness(self, *, stripe_account_id: str) -> StripeAccountReadiness:
@@ -490,7 +494,21 @@ def test_sign_in_page_is_browser_accessible():
     assert "<form" in response.text
     assert 'action="/sign-in"' in response.text
     assert 'name="email"' in response.text
-    assert "Creator sign in" in response.text
+    assert "Sign in to your creator workspace" in response.text
+
+
+def test_sign_in_page_invalid_link_notice_explains_how_to_recover():
+    with TestClient(app) as client:
+        response = client.get(
+            "/sign-in",
+            params={"status": "invalid-link"},
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert "That sign-in link is invalid or expired" in response.text
+    assert "Enter your email below and we will send a fresh link so you can keep going." in response.text
+    assert 'action="/sign-in"' in response.text
 
 
 def test_sign_in_start_redirects_to_confirmation_without_echoing_email():
@@ -669,18 +687,50 @@ def test_setup_home_pending_stripe_state_shows_connect_cta_and_checklist():
 
     assert response.status_code == 200
     assert "Setup Home" in response.text
+    assert "0 of 4 setup steps done" in response.text
     assert "Stripe setup is still pending" in response.text
     assert "Start Stripe setup" in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
-    assert "Add a booking link" in response.text
+    assert "Save a booking link" in response.text
     assert 'href="/app/booking-links"' in response.text
+    assert "Add billing defaults" in response.text
     assert "Create a tracked link" in response.text
     assert 'href="/app/content"' in response.text
-    assert "Review booking activity" in response.text
-    assert 'href="/app/bookings"' in response.text
+    assert "Finish Stripe setup" in response.text
     assert 'href="/app/reports"' in response.text
     assert 'class="wrap-anywhere"' in response.text
-    assert "later invoice automation can create invoices on your account" in response.text
+    assert "Blocked billing and unresolved payments will appear on" in response.text
+
+
+def test_setup_home_missing_billing_defaults_state_shows_blocked_next_action():
+    inserted = _insert_creator_user(
+        email=f"ui_missing_defaults_{uuid.uuid4().hex}@example.com",
+        name="Missing Defaults Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_missing_defaults",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Missing Defaults Call",
+        calendly_url="https://calendly.com/example/missing-defaults",
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "2 of 4 setup steps done" in response.text
+    assert "Billing-ready links" in response.text
+    assert "At least one saved booking link still needs both amount and currency before invoicing can run safely." in response.text
+    assert "Add billing defaults" in response.text
+    assert 'href="/app/booking-links"' in response.text
 
 
 def test_booking_links_page_empty_state_renders_form_and_next_step_copy():
@@ -1818,6 +1868,7 @@ def test_setup_home_disconnected_stripe_state_shows_reconnect_cta():
     assert response.status_code == 200
     assert "Stripe is disconnected" in response.text
     assert "Reconnect Stripe" in response.text
+    assert "Reconnect it before new bookings can move into invoicing." in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
 
 
@@ -1905,6 +1956,107 @@ def test_setup_home_connect_cta_redirects_to_stripe_and_callback_returns_to_app(
     assert app_response.status_code == 200
     assert "Stripe is connected" in app_response.text
     assert "acct_story38_browser" in app_response.text
+
+
+def test_browser_stripe_connect_callback_interrupted_redirects_to_setup_recovery():
+    inserted = _insert_creator_user(
+        email=f"ui_stripe_interrupted_{uuid.uuid4().hex}@example.com",
+        name="Interrupted Stripe Creator",
+        stripe_connect_status="pending",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubStripeProvider(account_id="acct_story59_interrupted")
+
+    with _override_app_state("stripe_provider", provider):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            start_response = client.post(
+                "/app/stripe/connect/start",
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+            start_location = start_response.headers["location"]
+            start_query = parse_qs(urlparse(start_location).query)
+            callback_response = client.get(
+                "/stripe/connect/callback",
+                params={
+                    "error": "access_denied",
+                    "state": start_query["state"][0],
+                },
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+            recovery_response = client.get(
+                callback_response.headers["location"],
+                headers=HTML_ACCEPT_HEADERS,
+            )
+
+    assert start_response.status_code == 303
+    assert callback_response.status_code == 303
+    assert callback_response.headers["location"] == "/app?status=stripe-connect-interrupted"
+    assert recovery_response.status_code == 200
+    assert "Stripe setup was interrupted" in recovery_response.text
+    assert "Start the Stripe step again when you are ready." in recovery_response.text
+    assert "Start Stripe setup" in recovery_response.text
+
+
+def test_browser_stripe_connect_callback_provider_failure_redirects_to_setup_recovery():
+    inserted = _insert_creator_user(
+        email=f"ui_stripe_failed_{uuid.uuid4().hex}@example.com",
+        name="Failed Stripe Creator",
+        stripe_connect_status="pending",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubStripeProvider(
+        callback_error=StripeProviderError(
+            "stripe callback exchange failed",
+            operation="stripe_connect_callback_exchange",
+            http_status=400,
+            error_code="invalid_grant",
+        )
+    )
+
+    with _override_app_state("stripe_provider", provider):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            start_response = client.post(
+                "/app/stripe/connect/start",
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+            start_location = start_response.headers["location"]
+            start_query = parse_qs(urlparse(start_location).query)
+            callback_response = client.get(
+                "/stripe/connect/callback",
+                params={
+                    "code": "auth_code_story59_failed",
+                    "state": start_query["state"][0],
+                },
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+            recovery_response = client.get(
+                callback_response.headers["location"],
+                headers=HTML_ACCEPT_HEADERS,
+            )
+
+    assert start_response.status_code == 303
+    assert callback_response.status_code == 303
+    assert callback_response.headers["location"] == "/app?status=stripe-connect-failed"
+    assert recovery_response.status_code == 200
+    assert "Stripe could not finish connecting" in recovery_response.text
+    assert "Try the Stripe step again from this page." in recovery_response.text
+    assert "Start Stripe setup" in recovery_response.text
 
 
 def test_app_shell_clears_expired_session_cookie():

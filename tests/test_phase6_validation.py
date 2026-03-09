@@ -391,9 +391,12 @@ def test_phase65_creator_browser_workflow_end_to_end():
     assert home_response.status_code == 200
     assert "Setup Home" in home_response.text
     assert creator_email in home_response.text
-    assert "Add a booking link" in home_response.text
+    assert "0 of 4 setup steps done" in home_response.text
+    assert "Save a booking link" in home_response.text
+    assert "Add billing defaults" in home_response.text
     assert "Create a tracked link" in home_response.text
-    assert "Review booking activity" in home_response.text
+    assert 'href="/app/booking-links"' in home_response.text
+    assert 'href="/app/content"' in home_response.text
     assert 'href="/app/bookings"' in home_response.text
 
     assert create_booking_link_response.status_code == 303

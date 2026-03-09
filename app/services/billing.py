@@ -11,16 +11,21 @@ from sqlalchemy.orm import Session
 from app.models.booking import Booking
 from app.models.invoice import Invoice
 from app.services.stripe_account_readiness import creator_has_billable_stripe_account
-from app.services.stripe_provider import StripeProvider
+from app.services.stripe_provider import StripeProvider, StripeProviderError
 
 
 logger = logging.getLogger(__name__)
 
 
 CreateInvoiceOutcome = Literal["created", "existing", "deferred"]
-CreateInvoiceReason = Literal["missing_billing_defaults", "creator_not_billable", "booking_not_found"]
+CreateInvoiceReason = Literal[
+    "missing_billing_defaults",
+    "creator_not_billable",
+    "booking_not_found",
+    "provider_error",
+]
 VoidInvoiceOutcome = Literal["voided", "noop"]
-VoidInvoiceReason = Literal["invoice_missing", "invoice_not_open", "invoice_already_void"]
+VoidInvoiceReason = Literal["invoice_missing", "invoice_not_open", "invoice_already_void", "provider_error"]
 
 
 @dataclass(frozen=True)
@@ -89,7 +94,27 @@ class BillingOrchestrator:
                 )
 
             creator = booking.creator
-            if not creator_has_billable_stripe_account(creator=creator, provider=self._provider):
+            try:
+                creator_is_billable = creator_has_billable_stripe_account(
+                    creator=creator,
+                    provider=self._provider,
+                )
+            except StripeProviderError as exc:
+                logger.warning(
+                    "billing_invoice_create_deferred_provider_error booking_id=%s creator_id=%s stripe_account_id=%s operation=%s http_status=%s error_code=%s",
+                    booking.id,
+                    creator.id,
+                    creator.stripe_account_id,
+                    exc.operation,
+                    exc.http_status,
+                    exc.error_code,
+                )
+                return BillingInvoiceResult(
+                    outcome="deferred",
+                    reason="provider_error",
+                )
+
+            if not creator_is_billable:
                 logger.info(
                     "billing_invoice_create_deferred_creator_not_billable booking_id=%s creator_id=%s stripe_account_id=%s",
                     booking.id,
@@ -114,18 +139,34 @@ class BillingOrchestrator:
                     reason="creator_not_billable",
                 )
 
-            created_invoice = self._provider.create_invoice(
-                stripe_account_id=stripe_account_id,
-                amount_cents=amount_cents,
-                currency=currency.upper(),
-                metadata={
-                    "creator_id": str(creator.id),
-                    "booking_uuid": booking.calendly_booking_uuid,
-                    "tid": booking.tid,
-                },
-                idempotency_key=f"billing:create:{booking.calendly_booking_uuid}",
-            )
+            try:
+                created_invoice = self._provider.create_invoice(
+                    stripe_account_id=stripe_account_id,
+                    amount_cents=amount_cents,
+                    currency=currency.upper(),
+                    metadata={
+                        "creator_id": str(creator.id),
+                        "booking_uuid": booking.calendly_booking_uuid,
+                        "tid": booking.tid,
+                    },
+                    idempotency_key=f"billing:create:{booking.calendly_booking_uuid}",
+                )
+            except StripeProviderError as exc:
+                logger.warning(
+                    "billing_invoice_create_deferred_provider_error booking_id=%s creator_id=%s stripe_account_id=%s operation=%s http_status=%s error_code=%s",
+                    booking.id,
+                    creator.id,
+                    stripe_account_id,
+                    exc.operation,
+                    exc.http_status,
+                    exc.error_code,
+                )
+                return BillingInvoiceResult(
+                    outcome="deferred",
+                    reason="provider_error",
+                )
 
+            issued_at = self._now_fn()
             invoice = Invoice(
                 creator_id=creator.id,
                 booking_id=booking.id,
@@ -134,8 +175,9 @@ class BillingOrchestrator:
                 stripe_invoice_id=created_invoice.stripe_invoice_id,
                 amount_cents=amount_cents,
                 currency=currency.upper(),
-                status="open",
-                issued_at=self._now_fn(),
+                status=created_invoice.status,
+                issued_at=issued_at,
+                paid_at=issued_at if created_invoice.status == "paid" else None,
             )
             session.add(invoice)
 
@@ -195,10 +237,27 @@ class BillingOrchestrator:
                 )
                 return _billing_invoice_void_result(invoice, outcome="noop", reason="invoice_not_open")
 
-            self._provider.void_invoice(
-                stripe_account_id=invoice.stripe_account_id,
-                stripe_invoice_id=invoice.stripe_invoice_id,
-            )
+            try:
+                self._provider.void_invoice(
+                    stripe_account_id=invoice.stripe_account_id,
+                    stripe_invoice_id=invoice.stripe_invoice_id,
+                )
+            except StripeProviderError as exc:
+                logger.warning(
+                    "billing_invoice_void_noop_provider_error booking_id=%s invoice_id=%s stripe_invoice_id=%s stripe_account_id=%s operation=%s http_status=%s error_code=%s",
+                    booking_id,
+                    invoice.id,
+                    invoice.stripe_invoice_id,
+                    invoice.stripe_account_id,
+                    exc.operation,
+                    exc.http_status,
+                    exc.error_code,
+                )
+                return _billing_invoice_void_result(
+                    invoice,
+                    outcome="noop",
+                    reason="provider_error",
+                )
             invoice.status = "void"
             invoice.voided_at = self._now_fn()
             session.commit()

@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, text
 
 from app.core.config import get_settings
 from app.main import app
+from app.services.stripe_provider import StripeProviderError
 
 
 def _engine():
@@ -96,6 +97,17 @@ class _StubStripeProvider:
         return self.account_id
 
 
+class _FailingStripeProvider(_StubStripeProvider):
+    def exchange_connect_callback(self, *, code: str, state: str) -> str:
+        self.exchange_calls.append({"code": code, "state": state})
+        raise StripeProviderError(
+            "stripe callback exchange failed",
+            operation="stripe_connect_callback_exchange",
+            http_status=400,
+            error_code="invalid_grant",
+        )
+
+
 def test_stripe_connect_callback_persists_connected_fields_and_me_reflects_them():
     inserted = _insert_creator_user(email=f"stripe_callback_{uuid.uuid4().hex}@example.com")
     access_token = _access_token(
@@ -177,6 +189,54 @@ def test_stripe_connect_callback_rejects_invalid_state_without_mutating_creator(
     assert callback_response.headers.get("X-Request-Id")
     assert callback_response.json() == {"detail": "invalid stripe connect state"}
     assert provider.exchange_calls == []
+
+    with _engine().connect() as conn:
+        creator_row = conn.execute(
+            text(
+                "SELECT stripe_connect_status, stripe_account_id, stripe_connected_at "
+                "FROM creators WHERE id = :creator_id"
+            ),
+            {"creator_id": inserted["creator_id"]},
+        ).mappings().one()
+
+    assert creator_row["stripe_connect_status"] == "pending"
+    assert creator_row["stripe_account_id"] is None
+    assert creator_row["stripe_connected_at"] is None
+
+    assert me_response.status_code == 200
+    assert me_response.json()["stripe_connect_status"] == "pending"
+    assert me_response.json()["stripe_account_id"] is None
+    assert me_response.json()["stripe_connected_at"] is None
+
+
+def test_stripe_connect_callback_returns_generic_error_when_provider_exchange_fails():
+    inserted = _insert_creator_user(email=f"stripe_callback_failure_{uuid.uuid4().hex}@example.com")
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _FailingStripeProvider(account_id="acct_should_not_persist")
+
+    with _override_app_state("stripe_provider", provider):
+        with TestClient(app) as client:
+            start_response = client.post(
+                "/stripe/connect/start",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            state = start_response.json()["state"]
+            callback_response = client.get(
+                "/stripe/connect/callback",
+                params={"code": "auth_code_provider_failure", "state": state},
+            )
+            me_response = client.get("/me", headers={"Authorization": f"Bearer {access_token}"})
+
+    assert start_response.status_code == 200
+    assert callback_response.status_code == 400
+    assert callback_response.headers.get("X-Request-Id")
+    assert callback_response.json() == {"detail": "invalid stripe connect callback"}
+    assert provider.exchange_calls == [{"code": "auth_code_provider_failure", "state": state}]
 
     with _engine().connect() as conn:
         creator_row = conn.execute(

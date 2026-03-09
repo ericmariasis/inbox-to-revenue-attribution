@@ -371,7 +371,8 @@ def test_phase9_reporting_flow_end_to_end():
     assert "Why some payments are not counted yet" in reports_response.text
     assert "Unknown booking" in reports_response.text
     assert "Blocked billing cases" in reports_response.text
-    assert "does not show a numeric blocked count yet" in reports_response.text
+    assert "no tracked bookings are blocked before invoicing right now." in reports_response.text
+    assert 'href="/app/attention"' in reports_response.text
     assert (
         f'href="/app/reports/explanations/paid/{content["tid"]}?start_date=2026-03-08&amp;end_date=2026-03-08"'
         in reports_response.text

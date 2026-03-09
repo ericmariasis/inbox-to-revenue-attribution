@@ -42,6 +42,10 @@ class Creator(Base):
         back_populates="creator",
         cascade="all, delete-orphan",
     )
+    blocked_billing_cases = relationship(
+        "BlockedBillingCase",
+        back_populates="creator",
+    )
     invoice_payment_events = relationship("InvoicePaymentEvent", back_populates="creator")
     content_items = relationship(
         "Content",

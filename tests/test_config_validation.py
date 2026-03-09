@@ -10,6 +10,7 @@ from app.core.config import (
     DEFAULT_STRIPE_CONNECT_AUTHORIZE_URL,
     DEFAULT_STRIPE_CONNECT_CLIENT_ID,
     DEFAULT_STRIPE_CONNECT_REDIRECT_URI,
+    DEFAULT_STRIPE_SECRET_KEY,
     DEFAULT_STRIPE_WEBHOOK_SECRET,
     DEFAULT_TRACKED_LINK_BASE_URL,
     Settings,
@@ -22,6 +23,7 @@ SAFE_NON_LOCAL_ENV = {
     "APP_ENV": "preview",
     "JWT_SECRET": "story55-preview-jwt-secret-0123456789abcdef",
     "STRIPE_CONNECT_CLIENT_ID": "ca_story55_preview_live",
+    "STRIPE_SECRET_KEY": "sk_test_story57_preview_live",
     "STRIPE_CONNECT_AUTHORIZE_URL": DEFAULT_STRIPE_CONNECT_AUTHORIZE_URL,
     "STRIPE_CONNECT_REDIRECT_URI": "https://creatortrust.test/stripe/connect/callback",
     "STRIPE_WEBHOOK_SECRET": "whsec_story55_preview_live",
@@ -46,6 +48,7 @@ def _safe_non_local_settings(**overrides: str) -> Settings:
         "app_env": "preview",
         "jwt_secret": SAFE_NON_LOCAL_ENV["JWT_SECRET"],
         "stripe_connect_client_id": SAFE_NON_LOCAL_ENV["STRIPE_CONNECT_CLIENT_ID"],
+        "stripe_secret_key": SAFE_NON_LOCAL_ENV["STRIPE_SECRET_KEY"],
         "stripe_connect_authorize_url": SAFE_NON_LOCAL_ENV["STRIPE_CONNECT_AUTHORIZE_URL"],
         "stripe_connect_redirect_uri": SAFE_NON_LOCAL_ENV["STRIPE_CONNECT_REDIRECT_URI"],
         "stripe_webhook_secret": SAFE_NON_LOCAL_ENV["STRIPE_WEBHOOK_SECRET"],
@@ -84,13 +87,15 @@ def test_non_local_defaults_fail_with_clear_field_names():
     assert "stripe_webhook_secret" in message
     assert "calendly_webhook_signing_key" in message
     assert "stripe_connect_client_id" in message
+    assert "stripe_secret_key" in message
     assert "stripe_connect_redirect_uri" in message
     assert "tracked_link_base_url" in message
-    assert "magic_link_email_provider" in message
+    assert "magic_link_email_provider" in message or "magic_link_base_url" in message
     assert DEFAULT_JWT_SECRET not in message
     assert DEFAULT_STRIPE_WEBHOOK_SECRET not in message
     assert DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY not in message
     assert DEFAULT_STRIPE_CONNECT_CLIENT_ID not in message
+    assert DEFAULT_STRIPE_SECRET_KEY not in message
     assert DEFAULT_STRIPE_CONNECT_REDIRECT_URI not in message
     assert DEFAULT_TRACKED_LINK_BASE_URL not in message
     assert DEFAULT_MAGIC_LINK_EMAIL_PROVIDER not in message

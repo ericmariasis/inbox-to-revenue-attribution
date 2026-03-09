@@ -89,6 +89,13 @@ def stripe_connect_callback(
             state=state,
         )
     except StripeProviderError as exc:
+        logger.warning(
+            "stripe_connect_callback_provider_error creator_id=%s operation=%s http_status=%s error_code=%s",
+            creator.id,
+            exc.operation,
+            exc.http_status,
+            exc.error_code,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=INVALID_STRIPE_CONNECT_CALLBACK_DETAIL,

@@ -13,6 +13,7 @@ from app.services.billing import BillingOrchestrator
 from app.services.stripe_provider import (
     StripeAccountReadiness,
     StripeInvoiceCreateResult,
+    StripeProviderError,
 )
 
 
@@ -22,9 +23,17 @@ class _StubStripeProvider:
         *,
         readiness: StripeAccountReadiness,
         created_invoice_id: str = "in_story44_created",
+        created_invoice_status: str = "open",
+        readiness_error: StripeProviderError | None = None,
+        create_error: StripeProviderError | None = None,
+        void_error: StripeProviderError | None = None,
     ):
         self._readiness = readiness
         self._created_invoice_id = created_invoice_id
+        self._created_invoice_status = created_invoice_status
+        self._readiness_error = readiness_error
+        self._create_error = create_error
+        self._void_error = void_error
         self.readiness_calls: list[str] = []
         self.create_calls: list[dict[str, object]] = []
         self.void_calls: list[dict[str, str]] = []
@@ -37,6 +46,8 @@ class _StubStripeProvider:
 
     def get_account_readiness(self, *, stripe_account_id: str) -> StripeAccountReadiness:
         self.readiness_calls.append(stripe_account_id)
+        if self._readiness_error is not None:
+            raise self._readiness_error
         return self._readiness
 
     def create_invoice(
@@ -57,7 +68,12 @@ class _StubStripeProvider:
                 "idempotency_key": idempotency_key,
             }
         )
-        return StripeInvoiceCreateResult(stripe_invoice_id=self._created_invoice_id)
+        if self._create_error is not None:
+            raise self._create_error
+        return StripeInvoiceCreateResult(
+            stripe_invoice_id=self._created_invoice_id,
+            status=self._created_invoice_status,
+        )
 
     def void_invoice(self, *, stripe_account_id: str, stripe_invoice_id: str) -> None:
         self.void_calls.append(
@@ -66,6 +82,8 @@ class _StubStripeProvider:
                 "stripe_invoice_id": stripe_invoice_id,
             }
         )
+        if self._void_error is not None:
+            raise self._void_error
 
 
 def _persist_booking_graph(
@@ -220,6 +238,43 @@ def test_billing_orchestrator_create_is_idempotent_for_same_booking():
     assert invoices[0].stripe_invoice_id == "in_story44_idempotent"
 
 
+def test_billing_orchestrator_persists_paid_invoice_when_provider_returns_paid_status():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    issued_at = datetime(2026, 3, 8, 18, 12, tzinfo=UTC)
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_story57_paid",
+        created_invoice_status="paid",
+    )
+
+    with Session(engine) as session:
+        _, _, _, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story57_paid",
+            tid="story57_paid_tid",
+        )
+        booking_id = booking.id
+        session.commit()
+
+    orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        provider=provider,
+        now_fn=lambda: issued_at,
+    )
+
+    result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
+    invoices = _invoice_rows()
+
+    assert result.outcome == "created"
+    assert result.reason is None
+    assert result.stripe_invoice_id == "in_story57_paid"
+    assert result.invoice_status == "paid"
+    assert len(invoices) == 1
+    assert invoices[0].status == "paid"
+    assert invoices[0].issued_at == issued_at
+    assert invoices[0].paid_at == issued_at
+
+
 def test_billing_orchestrator_defers_when_billing_defaults_are_missing():
     engine = create_engine(os.environ["TEST_DATABASE_URL"])
     provider = _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=True))
@@ -279,6 +334,80 @@ def test_billing_orchestrator_defers_when_creator_is_not_billable():
     assert _invoice_rows() == []
 
 
+def test_billing_orchestrator_defers_when_readiness_lookup_raises_provider_error():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        readiness_error=StripeProviderError(
+            "stripe account readiness lookup failed",
+            operation="stripe_account_readiness",
+            http_status=503,
+            error_code="api_connection_error",
+        ),
+    )
+
+    with Session(engine) as session:
+        _, _, _, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story57_readiness_failure",
+            tid="story57_readiness_failure_tid",
+            stripe_account_id="acct_story57_readiness_failure",
+        )
+        booking_id = booking.id
+        session.commit()
+
+    orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        provider=provider,
+    )
+
+    result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
+
+    assert result.outcome == "deferred"
+    assert result.reason == "provider_error"
+    assert result.invoice_id is None
+    assert provider.readiness_calls == ["acct_story57_readiness_failure"]
+    assert provider.create_calls == []
+    assert _invoice_rows() == []
+
+
+def test_billing_orchestrator_defers_when_invoice_create_raises_provider_error():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        create_error=StripeProviderError(
+            "stripe invoice creation failed",
+            operation="stripe_invoice_create",
+            http_status=502,
+            error_code="api_error",
+        ),
+    )
+
+    with Session(engine) as session:
+        _, _, _, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story57_create_failure",
+            tid="story57_create_failure_tid",
+            stripe_account_id="acct_story57_create_failure",
+        )
+        booking_id = booking.id
+        session.commit()
+
+    orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        provider=provider,
+    )
+
+    result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
+
+    assert result.outcome == "deferred"
+    assert result.reason == "provider_error"
+    assert result.invoice_id is None
+    assert provider.readiness_calls == ["acct_story57_create_failure"]
+    assert len(provider.create_calls) == 1
+    assert _invoice_rows() == []
+
+
 def test_billing_orchestrator_voids_open_invoice_and_is_idempotent():
     engine = create_engine(os.environ["TEST_DATABASE_URL"])
     voided_at = datetime(2026, 3, 8, 18, 20, tzinfo=UTC)
@@ -334,3 +463,60 @@ def test_billing_orchestrator_voids_open_invoice_and_is_idempotent():
     assert len(invoices) == 1
     assert invoices[0].status == "void"
     assert invoices[0].voided_at == voided_at
+
+
+def test_billing_orchestrator_void_returns_noop_when_provider_void_raises_error():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        void_error=StripeProviderError(
+            "stripe invoice void failed",
+            operation="stripe_invoice_void",
+            http_status=409,
+            error_code="invoice_invalid_state",
+        ),
+    )
+
+    with Session(engine) as session:
+        creator, _, content, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story57_void_failure",
+            tid="story57_void_failure_tid",
+        )
+        booking_id = booking.id
+        session.add(
+            Invoice(
+                creator_id=creator.id,
+                booking_id=booking_id,
+                tid=content.tid,
+                stripe_account_id="acct_story44_billable",
+                stripe_invoice_id="in_story57_void_failure",
+                amount_cents=15000,
+                currency="USD",
+                status="open",
+                issued_at=datetime(2026, 3, 8, 18, 25, tzinfo=UTC),
+            )
+        )
+        session.commit()
+
+    orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        provider=provider,
+        now_fn=lambda: datetime(2026, 3, 8, 18, 30, tzinfo=UTC),
+    )
+
+    result = orchestrator.void_open_invoice_for_booking(booking_id=booking_id)
+    invoices = _invoice_rows()
+
+    assert result.outcome == "noop"
+    assert result.reason == "provider_error"
+    assert result.invoice_status == "open"
+    assert provider.void_calls == [
+        {
+            "stripe_account_id": "acct_story44_billable",
+            "stripe_invoice_id": "in_story57_void_failure",
+        }
+    ]
+    assert len(invoices) == 1
+    assert invoices[0].status == "open"
+    assert invoices[0].voided_at is None

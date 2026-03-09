@@ -9,6 +9,7 @@ LOCAL_APP_ENVS = frozenset({"local", "test", "manual_test"})
 DEFAULT_DATABASE_URL = "postgresql://localhost/attribution"
 DEFAULT_JWT_SECRET = "replace_me"
 DEFAULT_STRIPE_CONNECT_CLIENT_ID = "ca_test_example"
+DEFAULT_STRIPE_SECRET_KEY = "sk_test_example"
 DEFAULT_STRIPE_CONNECT_AUTHORIZE_URL = "https://connect.stripe.com/oauth/authorize"
 DEFAULT_STRIPE_CONNECT_REDIRECT_URI = "http://localhost:8000/stripe/connect/callback"
 DEFAULT_STRIPE_WEBHOOK_SECRET = "whsec_test_example"
@@ -160,6 +161,7 @@ class Settings(BaseSettings):
     magic_link_token_ttl_minutes: int = 15
     stripe_connect_state_ttl_minutes: int = 15
     stripe_connect_client_id: str = DEFAULT_STRIPE_CONNECT_CLIENT_ID
+    stripe_secret_key: str = DEFAULT_STRIPE_SECRET_KEY
     stripe_connect_authorize_url: str = DEFAULT_STRIPE_CONNECT_AUTHORIZE_URL
     stripe_connect_redirect_uri: str = DEFAULT_STRIPE_CONNECT_REDIRECT_URI
     stripe_webhook_secret: str = DEFAULT_STRIPE_WEBHOOK_SECRET
@@ -253,6 +255,12 @@ class Settings(BaseSettings):
             field_name="stripe_connect_client_id",
             value=self.stripe_connect_client_id,
             placeholders={DEFAULT_STRIPE_CONNECT_CLIENT_ID},
+        )
+        _require_non_placeholder(
+            errors,
+            field_name="stripe_secret_key",
+            value=self.stripe_secret_key,
+            placeholders={DEFAULT_STRIPE_SECRET_KEY},
         )
         _require_https_url(
             errors,

@@ -62,3 +62,13 @@ class Creator(Base):
         back_populates="creator",
         cascade="all, delete-orphan",
     )
+    content_confirmed_topics = relationship(
+        "ContentConfirmedTopic",
+        back_populates="creator",
+        cascade="all, delete-orphan",
+    )
+    content_topic_candidates = relationship(
+        "ContentTopicCandidate",
+        back_populates="creator",
+        cascade="all, delete-orphan",
+    )

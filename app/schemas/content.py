@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, BaseModel
+from pydantic import AnyHttpUrl, BaseModel, field_validator
 
 
 class ContentCreateRequest(BaseModel):
@@ -50,3 +50,57 @@ class ContentExtractionArtifactResponse(BaseModel):
     extracted_text_word_count: int
     extracted_text: str | None
     created_at: datetime
+
+
+class ContentTopicCandidateResponse(BaseModel):
+    id: str
+    content_id: str
+    content_tid: str
+    extraction_artifact_id: str
+    confirmed_topic_id: str | None
+    suggested_label: str
+    normalized_label: str
+    suggestion_method: str
+    candidate_rank: int
+    review_status: str
+    reviewed_at: datetime | None
+    created_at: datetime
+
+
+class ContentConfirmedTopicResponse(BaseModel):
+    id: str
+    content_id: str
+    content_tid: str
+    canonical_label: str
+    normalized_label: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContentTopicReviewResponse(BaseModel):
+    content_id: str
+    content_tid: str
+    source_url: str
+    tracked_url: str
+    extraction_artifact_id: str
+    extraction_status: str
+    extraction_method: str | None
+    extraction_title: str | None
+    candidate_topics: list[ContentTopicCandidateResponse]
+    confirmed_topics: list[ContentConfirmedTopicResponse]
+
+
+class ContentTopicCandidateConfirmRequest(BaseModel):
+    confirmed_label: str | None = None
+
+    @field_validator("confirmed_label")
+    @classmethod
+    def _normalize_confirmed_label(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("confirmed_label cannot be blank")
+        if len(normalized) > 255:
+            raise ValueError("confirmed_label must be 255 characters or fewer")
+        return normalized

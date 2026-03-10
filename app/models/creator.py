@@ -57,3 +57,8 @@ class Creator(Base):
         back_populates="creator",
         cascade="all, delete-orphan",
     )
+    content_extraction_artifacts = relationship(
+        "ContentExtractionArtifact",
+        back_populates="creator",
+        cascade="all, delete-orphan",
+    )

@@ -64,4 +64,9 @@ class Content(Base):
         back_populates="content",
         cascade="all, delete-orphan",
     )
+    extraction_artifacts = relationship(
+        "ContentExtractionArtifact",
+        back_populates="content",
+        cascade="all, delete-orphan",
+    )
     booking_link = relationship("BookingLink", back_populates="content_items")

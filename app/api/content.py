@@ -2,7 +2,7 @@ import logging
 import uuid
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
@@ -12,8 +12,15 @@ from app.db.session import get_db
 from app.models.auth_user import AuthUser
 from app.models.booking_link import BookingLink
 from app.models.content import Content
+from app.models.content_extraction_artifact import ContentExtractionArtifact
 from app.models.content_fetch_snapshot import ContentFetchSnapshot
-from app.schemas.content import ContentCreateRequest, ContentFetchSnapshotResponse, ContentResponse
+from app.schemas.content import (
+    ContentCreateRequest,
+    ContentExtractionArtifactResponse,
+    ContentFetchSnapshotResponse,
+    ContentResponse,
+)
+from app.services.content_extraction import extract_content_from_snapshot
 from app.services.content_fetch import (
     ContentFetchProvider,
     ContentFetchSuccess,
@@ -85,8 +92,55 @@ def _build_content_fetch_snapshot_response(
     )
 
 
+def _build_content_extraction_artifact_response(
+    artifact: ContentExtractionArtifact,
+) -> ContentExtractionArtifactResponse:
+    return ContentExtractionArtifactResponse(
+        id=str(artifact.id),
+        content_id=str(artifact.content_id),
+        content_tid=artifact.content.tid,
+        fetch_snapshot_id=str(artifact.fetch_snapshot_id),
+        extraction_status=artifact.extraction_status,
+        extraction_reason_code=artifact.extraction_reason_code,
+        extraction_detail=artifact.extraction_detail,
+        extraction_method=artifact.extraction_method,
+        title=artifact.title,
+        published_at=artifact.published_at,
+        published_at_raw=artifact.published_at_raw,
+        source_text_char_count=artifact.source_text_char_count or 0,
+        extracted_text_char_count=artifact.extracted_text_char_count or 0,
+        extracted_text_word_count=artifact.extracted_text_word_count or 0,
+        extracted_text=artifact.extracted_text,
+        created_at=artifact.created_at,
+    )
+
+
 def _content_fetch_provider(request: Request) -> ContentFetchProvider:
     return getattr(request.app.state, "content_fetch_provider", build_default_content_fetch_provider())
+
+
+def _latest_content_fetch_snapshot_query(
+    *,
+    content_id: UUID,
+    creator_id: UUID,
+) -> Select[tuple[ContentFetchSnapshot]]:
+    return (
+        select(ContentFetchSnapshot)
+        .where(
+            ContentFetchSnapshot.content_id == content_id,
+            ContentFetchSnapshot.creator_id == creator_id,
+        )
+        .order_by(ContentFetchSnapshot.fetched_at.desc(), ContentFetchSnapshot.id.desc())
+    )
+
+
+def _content_extraction_artifact_by_fetch_snapshot_query(
+    *,
+    fetch_snapshot_id: UUID,
+) -> Select[tuple[ContentExtractionArtifact]]:
+    return select(ContentExtractionArtifact).where(
+        ContentExtractionArtifact.fetch_snapshot_id == fetch_snapshot_id
+    )
 
 
 def create_content_response_for_creator(
@@ -172,6 +226,73 @@ def create_content_fetch_snapshot_response_for_creator(
     return _build_content_fetch_snapshot_response(snapshot)
 
 
+def create_content_extraction_artifact_response_for_creator(
+    *,
+    tid: str,
+    creator_id: UUID,
+    db: Session,
+    response: Response,
+) -> ContentExtractionArtifactResponse:
+    content = db.execute(
+        _creator_owned_content_by_tid_query(
+            tid=tid,
+            creator_id=creator_id,
+        )
+    ).scalar_one_or_none()
+    if content is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="content not found",
+        )
+
+    latest_snapshot = db.execute(
+        _latest_content_fetch_snapshot_query(
+            content_id=content.id,
+            creator_id=creator_id,
+        )
+    ).scalars().first()
+    if latest_snapshot is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="content fetch snapshot required",
+        )
+
+    artifact = db.execute(
+        _content_extraction_artifact_by_fetch_snapshot_query(
+            fetch_snapshot_id=latest_snapshot.id,
+        )
+    ).scalar_one_or_none()
+    if artifact is not None:
+        response.status_code = status.HTTP_200_OK
+        logger.info("content_extraction_artifact_reused status=%s", artifact.extraction_status)
+        return _build_content_extraction_artifact_response(artifact)
+
+    extraction_result = extract_content_from_snapshot(latest_snapshot)
+    artifact = ContentExtractionArtifact(
+        content_id=content.id,
+        creator_id=creator_id,
+        fetch_snapshot_id=latest_snapshot.id,
+        extraction_status=extraction_result.extraction_status,
+        extraction_reason_code=extraction_result.extraction_reason_code,
+        extraction_detail=extraction_result.extraction_detail,
+        extraction_method=extraction_result.extraction_method,
+        title=extraction_result.title,
+        published_at=extraction_result.published_at,
+        published_at_raw=extraction_result.published_at_raw,
+        source_text_char_count=extraction_result.source_text_char_count,
+        extracted_text_char_count=extraction_result.extracted_text_char_count,
+        extracted_text_word_count=extraction_result.extracted_text_word_count,
+        extracted_text=extraction_result.extracted_text,
+    )
+    db.add(artifact)
+    db.commit()
+    db.refresh(artifact)
+
+    logger.info("content_extraction_artifact_created status=%s", artifact.extraction_status)
+
+    return _build_content_extraction_artifact_response(artifact)
+
+
 def list_content_responses_for_creator(
     *,
     creator_id: UUID,
@@ -246,6 +367,25 @@ def fetch_content_snapshot(
         creator_id=current_user.creator_id,
         db=db,
         provider=_content_fetch_provider(request),
+    )
+
+
+@router.post(
+    "/{tid}/extract",
+    response_model=ContentExtractionArtifactResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def extract_content_artifact(
+    tid: str,
+    response: Response,
+    current_user: AuthUser = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+) -> ContentExtractionArtifactResponse:
+    return create_content_extraction_artifact_response_for_creator(
+        tid=tid,
+        creator_id=current_user.creator_id,
+        db=db,
+        response=response,
     )
 
 

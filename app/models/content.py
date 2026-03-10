@@ -59,4 +59,9 @@ class Content(Base):
         back_populates="content",
         foreign_keys="InvoicePaymentEvent.tid",
     )
+    fetch_snapshots = relationship(
+        "ContentFetchSnapshot",
+        back_populates="content",
+        cascade="all, delete-orphan",
+    )
     booking_link = relationship("BookingLink", back_populates="content_items")

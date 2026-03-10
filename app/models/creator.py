@@ -52,3 +52,8 @@ class Creator(Base):
         back_populates="creator",
         cascade="all, delete-orphan",
     )
+    content_fetch_snapshots = relationship(
+        "ContentFetchSnapshot",
+        back_populates="creator",
+        cascade="all, delete-orphan",
+    )

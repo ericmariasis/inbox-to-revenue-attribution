@@ -17,9 +17,13 @@ from app.api.booking_links import (
     list_booking_link_responses_for_creator,
 )
 from app.api.content import (
+    confirm_content_topic_candidate_response_for_creator,
+    create_content_topic_candidates_response_for_creator,
     create_content_response_for_creator,
     get_content_response_for_creator_by_tid,
+    get_content_topic_review_response_for_creator,
     list_content_responses_for_creator,
+    reject_content_topic_candidate_response_for_creator,
 )
 from app.api.deps import get_optional_browser_auth_user
 from app.api.stripe import (
@@ -32,7 +36,12 @@ from app.db.session import SessionLocal, get_db
 from app.models.auth_user import AuthUser
 from app.schemas.booking_link import BookingLinkCreateRequest, BookingLinkResponse
 from app.schemas.auth import MagicLinkStartRequest
-from app.schemas.content import ContentCreateRequest, ContentResponse
+from app.schemas.content import (
+    ContentCreateRequest,
+    ContentResponse,
+    ContentTopicCandidateConfirmRequest,
+    ContentTopicReviewResponse,
+)
 from app.services.auth_magic_link import start_magic_link
 from app.services.blocked_billing import (
     BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
@@ -418,6 +427,162 @@ async def creator_content_create(
         raise
 
     return _redirect(f"/app/content?status=created&tid={created_content.tid}")
+
+
+@router.get("/app/content/{tid}/topics")
+def creator_content_topic_review_page(
+    tid: str,
+    request: Request,
+    status_value: str | None = Query(default=None, alias="status"),
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    return _content_topic_review_page_response(
+        current_user=current_user,
+        tid=tid,
+        db=db,
+        status_value=status_value,
+        candidate_field_errors={},
+        candidate_form_values={},
+    )
+
+
+@router.post("/app/content/{tid}/topics/candidates")
+def creator_content_topic_candidates_create(
+    tid: str,
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    try:
+        create_content_topic_candidates_response_for_creator(
+            tid=tid,
+            creator_id=current_user.creator_id,
+            db=db,
+            response=Response(),
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            return _content_topic_review_page_response(
+                current_user=current_user,
+                tid=tid,
+                db=db,
+                status_value="unavailable",
+                candidate_field_errors={},
+                candidate_form_values={},
+            )
+        raise
+
+    return _redirect(f"/app/content/{quote(tid, safe='')}/topics?status=generated")
+
+
+@router.post("/app/content/{tid}/topics/{candidate_id}/confirm")
+async def creator_content_topic_candidate_confirm(
+    tid: str,
+    candidate_id: uuid.UUID,
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    form_values = await _parse_form_values(request)
+    confirmed_label = form_values.get("confirmed_label", "").strip()
+    if not confirmed_label:
+        return _content_topic_review_page_response(
+            current_user=current_user,
+            tid=tid,
+            db=db,
+            status_value=None,
+            candidate_field_errors={str(candidate_id): "Enter a topic label before saving."},
+            candidate_form_values={str(candidate_id): confirmed_label},
+        )
+
+    try:
+        payload = ContentTopicCandidateConfirmRequest(confirmed_label=confirmed_label)
+        confirm_content_topic_candidate_response_for_creator(
+            tid=tid,
+            candidate_id=candidate_id,
+            creator_id=current_user.creator_id,
+            payload=payload,
+            db=db,
+        )
+    except ValidationError as exc:
+        error_text = exc.errors()[0]["msg"].removeprefix("Value error, ")
+        return _content_topic_review_page_response(
+            current_user=current_user,
+            tid=tid,
+            db=db,
+            status_value=None,
+            candidate_field_errors={str(candidate_id): error_text},
+            candidate_form_values={str(candidate_id): confirmed_label},
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
+            return _content_topic_review_page_response(
+                current_user=current_user,
+                tid=tid,
+                db=db,
+                status_value=None,
+                candidate_field_errors={str(candidate_id): str(exc.detail)},
+                candidate_form_values={str(candidate_id): confirmed_label},
+            )
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            return _content_topic_review_page_response(
+                current_user=current_user,
+                tid=tid,
+                db=db,
+                status_value="unavailable",
+                candidate_field_errors={},
+                candidate_form_values={},
+            )
+        raise
+
+    return _redirect(f"/app/content/{quote(tid, safe='')}/topics?status=saved")
+
+
+@router.post("/app/content/{tid}/topics/{candidate_id}/reject")
+def creator_content_topic_candidate_reject(
+    tid: str,
+    candidate_id: uuid.UUID,
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    try:
+        reject_content_topic_candidate_response_for_creator(
+            tid=tid,
+            candidate_id=candidate_id,
+            creator_id=current_user.creator_id,
+            db=db,
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            return _content_topic_review_page_response(
+                current_user=current_user,
+                tid=tid,
+                db=db,
+                status_value="unavailable",
+                candidate_field_errors={},
+                candidate_form_values={},
+            )
+        raise
+
+    return _redirect(f"/app/content/{quote(tid, safe='')}/topics?status=rejected")
 
 
 @router.get("/app/bookings")
@@ -846,6 +1011,71 @@ def _content_field_errors(exc: ValidationError) -> dict[str, str]:
         elif field_name == "booking_link_id" and field_name not in errors:
             errors[field_name] = "Choose one of your saved booking links."
     return errors
+
+
+def _content_topic_prerequisite_copy(detail: str) -> str:
+    if detail == "content extraction artifact required":
+        return (
+            "Run fetch and extract for this tracked content first so topic review starts from "
+            "the canonical extraction artifact instead of a second ingestion path."
+        )
+    if detail == "usable content extraction artifact required":
+        return (
+            "The latest extraction artifact does not contain usable text yet. Re-run fetch and "
+            "extract before reviewing or confirming topics for this content item."
+        )
+    if detail == "topic candidates unavailable for this extraction artifact":
+        return (
+            "This extraction artifact did not produce candidate topics yet. Update the source "
+            "content or extraction quality, then try again."
+        )
+    return str(detail)
+
+
+def _content_topic_review_page_response(
+    *,
+    current_user: AuthUser,
+    tid: str,
+    db: Session,
+    status_value: str | None,
+    candidate_field_errors: dict[str, str],
+    candidate_form_values: dict[str, str],
+) -> HTMLResponse:
+    content = get_content_response_for_creator_by_tid(
+        tid=tid,
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    if content is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="content not found",
+        )
+
+    review: ContentTopicReviewResponse | None = None
+    prerequisite_detail: str | None = None
+    try:
+        review = get_content_topic_review_response_for_creator(
+            tid=tid,
+            creator_id=current_user.creator_id,
+            db=db,
+        )
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_409_CONFLICT:
+            raise
+        prerequisite_detail = _content_topic_prerequisite_copy(str(exc.detail))
+
+    return _html_response(
+        _render_content_topic_review_page(
+            current_user=current_user,
+            content=content,
+            review=review,
+            status_value=status_value,
+            candidate_field_errors=candidate_field_errors,
+            candidate_form_values=candidate_form_values,
+            prerequisite_detail=prerequisite_detail,
+        )
+    )
 
 
 def _sign_in_path(*, status_value: str | None = None) -> str:
@@ -1679,6 +1909,7 @@ def _render_content_card(
           label="Tracked link",
           value=content.tracked_url,
       )}
+      <a href="/app/content/{quote(content.tid, safe='')}/topics" class="inline-link">Review topics for this content</a>
     </article>
     """
 
@@ -1714,6 +1945,340 @@ def _render_content_notice(
         """
 
     return ""
+
+
+def _render_content_topic_review_page(
+    *,
+    current_user: AuthUser,
+    content: ContentResponse,
+    review: ContentTopicReviewResponse | None,
+    status_value: str | None,
+    candidate_field_errors: dict[str, str],
+    candidate_form_values: dict[str, str],
+    prerequisite_detail: str | None,
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    confirmed_topics = review.confirmed_topics if review is not None else []
+    candidate_topics = review.candidate_topics if review is not None else []
+    notice = _render_content_topic_review_notice(
+        status_value=status_value,
+        candidate_field_errors=candidate_field_errors,
+    )
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Topic Review</h1>
+        <p class="lede">Confirm, edit, or reject lightweight topic suggestions for one tracked content item at a time before those labels become canonical metadata.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/content")}
+    {notice}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Tracked content context</p>
+          <h2>{html.escape(_content_card_title(content.source_url))}</h2>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+        </div>
+        <p><strong>Source URL</strong>: <a href="{html.escape(content.source_url)}" class="inline-link wrap-anywhere">{html.escape(content.source_url)}</a></p>
+        <p><strong>Tracking ID</strong>: <code>{html.escape(content.tid)}</code></p>
+        {_render_copy_field(
+            input_id=f"topic-review-tracked-url-{content.id}",
+            label="Tracked link",
+            value=content.tracked_url,
+        )}
+        {_render_content_topic_extraction_summary(review=review, prerequisite_detail=prerequisite_detail)}
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">Canonical topics</p>
+          <h2>{len(confirmed_topics)} confirmed</h2>
+        </div>
+        <p>Confirmed topics become the canonical free-text metadata for this content item. Original suggested labels stay preserved on the candidate rows for later eval and lineage work.</p>
+        {_render_confirmed_topics_list(confirmed_topics)}
+      </article>
+    </section>
+    {_render_content_topic_review_body(
+        content=content,
+        review=review,
+        candidate_field_errors=candidate_field_errors,
+        candidate_form_values=candidate_form_values,
+        prerequisite_detail=prerequisite_detail,
+    )}
+    """
+    return _page_layout(title="Topic Review", body=body)
+
+
+def _render_content_topic_extraction_summary(
+    *,
+    review: ContentTopicReviewResponse | None,
+    prerequisite_detail: str | None,
+) -> str:
+    if review is None:
+        return f"""
+        <section class="empty-state">
+          <p class="eyebrow">Review prerequisite</p>
+          <h2>Fetch and extract first</h2>
+          <p>{html.escape(prerequisite_detail or "A canonical extraction artifact is required before topic review can begin.")}</p>
+        </section>
+        """
+
+    extraction_title = (
+        html.escape(review.extraction_title)
+        if review.extraction_title
+        else "No extracted title stored"
+    )
+    return f"""
+    <section class="topic-summary stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Latest extraction artifact</p>
+          <h2>{extraction_title}</h2>
+        </div>
+        <span class="status-pill {_content_topic_review_status_badge(review.extraction_status)}">{html.escape(_content_topic_review_status_label(review.extraction_status))}</span>
+      </div>
+      <p><strong>Method</strong>: {html.escape(review.extraction_method or "Unknown extraction method")}</p>
+      <p><strong>Candidate count</strong>: {len(review.candidate_topics)} suggested right now.</p>
+    </section>
+    """
+
+
+def _render_confirmed_topics_list(confirmed_topics) -> str:
+    if not confirmed_topics:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">No confirmed topics yet</p>
+          <p>Generate candidates below, then save only the labels you trust.</p>
+        </section>
+        """
+
+    topic_chips = "".join(
+        f'<span class="topic-chip">{html.escape(topic.canonical_label)}</span>'
+        for topic in confirmed_topics
+    )
+    return f'<div class="topic-chip-list">{topic_chips}</div>'
+
+
+def _render_content_topic_review_body(
+    *,
+    content: ContentResponse,
+    review: ContentTopicReviewResponse | None,
+    candidate_field_errors: dict[str, str],
+    candidate_form_values: dict[str, str],
+    prerequisite_detail: str | None,
+) -> str:
+    if review is None:
+        return f"""
+        <section class="card stack">
+          <div>
+            <p class="eyebrow">Topic review prerequisite</p>
+            <h2>Review waits on the canonical extraction artifact</h2>
+          </div>
+          <p>{html.escape(prerequisite_detail or "Generate a fetch snapshot and extraction artifact first.")}</p>
+          <p>This story intentionally builds on the shipped fetch and extraction contracts instead of widening the app with another ingestion or parsing path.</p>
+        </section>
+        """
+
+    if not review.candidate_topics:
+        return f"""
+        <section class="card stack">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Candidate topics</p>
+              <h2>No suggestions yet</h2>
+            </div>
+            <p>{len(review.confirmed_topics)} confirmed</p>
+          </div>
+          <p>Generate a lightweight candidate set from the latest extraction artifact, then confirm, edit, or reject each suggestion one content item at a time.</p>
+          <form action="/app/content/{quote(content.tid, safe='')}/topics/candidates" method="post">
+            <button type="submit">Generate topic candidates</button>
+          </form>
+        </section>
+        """
+
+    confirmed_label_by_id = {
+        topic.id: topic.canonical_label
+        for topic in review.confirmed_topics
+    }
+    candidate_cards = "".join(
+        _render_content_topic_candidate_card(
+            content_tid=content.tid,
+            candidate=candidate,
+            current_confirmed_label=confirmed_label_by_id.get(candidate.confirmed_topic_id),
+            field_error=candidate_field_errors.get(candidate.id),
+            form_value=candidate_form_values.get(candidate.id),
+        )
+        for candidate in review.candidate_topics
+    )
+    return f"""
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Candidate topics</p>
+          <h2>Review {len(review.candidate_topics)} suggestion{"s" if len(review.candidate_topics) != 1 else ""}</h2>
+        </div>
+        <form action="/app/content/{quote(content.tid, safe='')}/topics/candidates" method="post">
+          <button type="submit" class="secondary">Reuse latest candidates</button>
+        </form>
+      </div>
+      <p>Confirm the labels you trust, edit the ones that need cleanup, and reject weak suggestions before they become canonical metadata.</p>
+      <div class="content-list">{candidate_cards}</div>
+    </section>
+    """
+
+
+def _render_content_topic_candidate_card(
+    *,
+    content_tid: str,
+    candidate,
+    current_confirmed_label: str | None,
+    field_error: str | None,
+    form_value: str | None,
+) -> str:
+    input_value = form_value if form_value is not None else current_confirmed_label or candidate.suggested_label
+    status_label = _content_topic_candidate_status_label(candidate.review_status)
+    status_copy = _content_topic_candidate_status_copy(
+        review_status=candidate.review_status,
+        current_confirmed_label=current_confirmed_label,
+    )
+    return f"""
+    <article class="content-card stack">
+      <div class="content-card-header">
+        <div>
+          <p class="eyebrow">Candidate topic #{candidate.candidate_rank}</p>
+          <h2>{html.escape(candidate.suggested_label)}</h2>
+        </div>
+        <span class="status-pill {_content_topic_candidate_status_badge(candidate.review_status)}">{html.escape(status_label)}</span>
+      </div>
+      <p><strong>Suggestion source</strong>: {html.escape(_content_topic_suggestion_method_label(candidate.suggestion_method))}</p>
+      <p>{html.escape(status_copy)}</p>
+      <form action="/app/content/{quote(content_tid, safe='')}/topics/{candidate.id}/confirm" method="post" class="stack">
+        <label for="confirmed_label_{candidate.id}">Confirmed topic</label>
+        <input
+          id="confirmed_label_{candidate.id}"
+          name="confirmed_label"
+          type="text"
+          value="{html.escape(input_value)}"
+          aria-invalid="{str(field_error is not None).lower()}"
+        />
+        {_render_content_field_error(field_error)}
+        <button type="submit">Save confirmed topic</button>
+      </form>
+      <form action="/app/content/{quote(content_tid, safe='')}/topics/{candidate.id}/reject" method="post">
+        <button type="submit" class="secondary">Reject candidate</button>
+      </form>
+    </article>
+    """
+
+
+def _render_content_topic_review_notice(
+    *,
+    status_value: str | None,
+    candidate_field_errors: dict[str, str],
+) -> str:
+    if candidate_field_errors:
+        return """
+        <section class="notice error">
+          <p class="eyebrow">Fix the highlighted topic label</p>
+          <p>Enter the confirmed topic you want to keep, then submit again.</p>
+        </section>
+        """
+
+    if status_value == "generated":
+        return """
+        <section class="notice success">
+          <p class="eyebrow">Topic candidates ready</p>
+          <p>Review the suggested labels below, then confirm, edit, or reject them one content item at a time.</p>
+        </section>
+        """
+
+    if status_value == "saved":
+        return """
+        <section class="notice success">
+          <p class="eyebrow">Confirmed topic saved</p>
+          <p>The canonical topic set for this content item now reflects your latest confirmed label.</p>
+        </section>
+        """
+
+    if status_value == "rejected":
+        return """
+        <section class="notice success">
+          <p class="eyebrow">Candidate rejected</p>
+          <p>The rejected suggestion remains in lineage for this extraction artifact, but it no longer counts as canonical metadata.</p>
+        </section>
+        """
+
+    if status_value == "unavailable":
+        return """
+        <section class="notice error">
+          <p class="eyebrow">Topic review is not ready yet</p>
+          <p>The latest extraction artifact is missing or does not contain usable text for candidate generation yet.</p>
+        </section>
+        """
+
+    return ""
+
+
+def _content_topic_review_status_label(status_value: str) -> str:
+    return status_value.replace("_", " ").title()
+
+
+def _content_topic_review_status_badge(status_value: str) -> str:
+    normalized = status_value.strip().lower()
+    if normalized == "succeeded":
+        return "confirmed"
+    if normalized == "low_confidence":
+        return "pending"
+    return "rejected"
+
+
+def _content_topic_candidate_status_label(status_value: str) -> str:
+    normalized = status_value.strip().lower()
+    if normalized == "confirmed":
+        return "Confirmed"
+    if normalized == "rejected":
+        return "Rejected"
+    return "Pending review"
+
+
+def _content_topic_candidate_status_badge(status_value: str) -> str:
+    normalized = status_value.strip().lower()
+    if normalized == "confirmed":
+        return "confirmed"
+    if normalized == "rejected":
+        return "rejected"
+    return "pending"
+
+
+def _content_topic_candidate_status_copy(
+    *,
+    review_status: str,
+    current_confirmed_label: str | None,
+) -> str:
+    normalized = review_status.strip().lower()
+    if normalized == "confirmed" and current_confirmed_label:
+        return f"Currently confirmed as {current_confirmed_label}."
+    if normalized == "rejected":
+        return "This candidate is currently rejected for canonical metadata."
+    return "This candidate is still waiting on creator review."
+
+
+def _content_topic_suggestion_method_label(method: str) -> str:
+    if method == "title_full":
+        return "Suggested from the extracted title"
+    if method == "title_segment":
+        return "Suggested from a title segment"
+    if method == "title_keywords":
+        return "Suggested from title keywords"
+    if method == "text_keywords":
+        return "Suggested from extracted text keywords"
+    return method.replace("_", " ").title()
 
 
 def _render_booking_activity_page(
@@ -3045,6 +3610,16 @@ def _page_layout(*, title: str, body: str) -> str:
         color: #972f17;
       }}
 
+      .status-pill.confirmed {{
+        background: #d9ede8;
+        color: #1f5e58;
+      }}
+
+      .status-pill.rejected {{
+        background: #f6d7d0;
+        color: #972f17;
+      }}
+
       .checklist {{
         list-style: none;
         padding: 0;
@@ -3258,6 +3833,30 @@ def _page_layout(*, title: str, body: str) -> str:
         border-radius: 999px;
         background: rgba(163, 74, 40, 0.1);
         font-size: 0.88rem;
+        font-weight: 700;
+      }}
+
+      .topic-summary {{
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px solid var(--line);
+        background: rgba(255, 249, 239, 0.74);
+      }}
+
+      .topic-chip-list {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }}
+
+      .topic-chip {{
+        display: inline-flex;
+        align-items: center;
+        padding: 9px 14px;
+        border-radius: 999px;
+        background: rgba(47, 95, 91, 0.12);
+        border: 1px solid rgba(47, 95, 91, 0.18);
+        color: var(--ink);
         font-weight: 700;
       }}
 

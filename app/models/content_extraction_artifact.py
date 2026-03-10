@@ -53,3 +53,8 @@ class ContentExtractionArtifact(Base):
     creator = relationship("Creator", back_populates="content_extraction_artifacts")
     content = relationship("Content", back_populates="extraction_artifacts")
     fetch_snapshot = relationship("ContentFetchSnapshot", back_populates="extraction_artifact")
+    topic_candidates = relationship(
+        "ContentTopicCandidate",
+        back_populates="extraction_artifact",
+        cascade="all, delete-orphan",
+    )

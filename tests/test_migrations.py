@@ -14,6 +14,8 @@ def test_migrations_upgrade_and_downgrade():
     try:
         with engine.connect() as conn:
             inspector = inspect(conn)
+            assert "content_topic_candidates" in inspector.get_table_names(schema="public")
+            assert "content_confirmed_topics" in inspector.get_table_names(schema="public")
             assert "content_extraction_artifacts" in inspector.get_table_names(schema="public")
             assert "content_fetch_snapshots" in inspector.get_table_names(schema="public")
             assert "blocked_billing_cases" in inspector.get_table_names(schema="public")
@@ -22,6 +24,26 @@ def test_migrations_upgrade_and_downgrade():
             assert "bookings" in inspector.get_table_names(schema="public")
             assert "content" in inspector.get_table_names(schema="public")
             assert "booking_links" in inspector.get_table_names(schema="public")
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            assert "content_topic_candidates" not in table_names
+            assert "content_confirmed_topics" not in table_names
+            assert "content_extraction_artifacts" in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
             booking_link_columns = {
                 column["name"] for column in inspector.get_columns("booking_links")
             }
@@ -332,6 +354,129 @@ def test_content_extraction_artifacts_table_has_expected_columns_fk_indexes_and_
         assert any(
             constraint["name"] == "uq_content_extraction_artifacts_fetch_snapshot_id"
             and constraint["column_names"] == ["fetch_snapshot_id"]
+            for constraint in unique_constraints
+        )
+
+
+def test_content_confirmed_topics_table_has_expected_columns_fk_indexes_and_unique_normalized_label():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {column["name"] for column in inspector.get_columns("content_confirmed_topics")}
+        assert columns == {
+            "id",
+            "content_id",
+            "creator_id",
+            "canonical_label",
+            "normalized_label",
+            "created_at",
+            "updated_at",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("content_confirmed_topics")
+        assert any(
+            fk["referred_table"] == "content"
+            and fk["constrained_columns"] == ["content_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "creators"
+            and fk["constrained_columns"] == ["creator_id"]
+            for fk in foreign_keys
+        )
+
+        indexes = inspector.get_indexes("content_confirmed_topics")
+        assert any(
+            index["name"] == "ix_content_confirmed_topics_content_id"
+            and index["column_names"] == ["content_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_content_confirmed_topics_creator_id"
+            and index["column_names"] == ["creator_id"]
+            for index in indexes
+        )
+
+        unique_constraints = inspector.get_unique_constraints("content_confirmed_topics")
+        assert any(
+            constraint["name"] == "uq_content_confirmed_topics_content_id_normalized_label"
+            and constraint["column_names"] == ["content_id", "normalized_label"]
+            for constraint in unique_constraints
+        )
+
+
+def test_content_topic_candidates_table_has_expected_columns_fk_indexes_and_unique_normalized_label():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {column["name"] for column in inspector.get_columns("content_topic_candidates")}
+        assert columns == {
+            "id",
+            "content_id",
+            "creator_id",
+            "extraction_artifact_id",
+            "confirmed_topic_id",
+            "suggested_label",
+            "normalized_label",
+            "suggestion_method",
+            "candidate_rank",
+            "review_status",
+            "reviewed_at",
+            "created_at",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("content_topic_candidates")
+        assert any(
+            fk["referred_table"] == "content"
+            and fk["constrained_columns"] == ["content_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "creators"
+            and fk["constrained_columns"] == ["creator_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "content_extraction_artifacts"
+            and fk["constrained_columns"] == ["extraction_artifact_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "content_confirmed_topics"
+            and fk["constrained_columns"] == ["confirmed_topic_id"]
+            for fk in foreign_keys
+        )
+
+        indexes = inspector.get_indexes("content_topic_candidates")
+        assert any(
+            index["name"] == "ix_content_topic_candidates_content_id"
+            and index["column_names"] == ["content_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_content_topic_candidates_creator_id"
+            and index["column_names"] == ["creator_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_content_topic_candidates_extraction_artifact_id"
+            and index["column_names"] == ["extraction_artifact_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_content_topic_candidates_review_status"
+            and index["column_names"] == ["review_status"]
+            for index in indexes
+        )
+
+        unique_constraints = inspector.get_unique_constraints("content_topic_candidates")
+        assert any(
+            constraint["name"] == "uq_content_topic_candidates_artifact_id_normalized_label"
+            and constraint["column_names"] == ["extraction_artifact_id", "normalized_label"]
             for constraint in unique_constraints
         )
 

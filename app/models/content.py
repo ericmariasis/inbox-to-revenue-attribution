@@ -69,4 +69,14 @@ class Content(Base):
         back_populates="content",
         cascade="all, delete-orphan",
     )
+    confirmed_topics = relationship(
+        "ContentConfirmedTopic",
+        back_populates="content",
+        cascade="all, delete-orphan",
+    )
+    topic_candidates = relationship(
+        "ContentTopicCandidate",
+        back_populates="content",
+        cascade="all, delete-orphan",
+    )
     booking_link = relationship("BookingLink", back_populates="content_items")

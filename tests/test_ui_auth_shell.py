@@ -150,6 +150,124 @@ def _insert_content(
     return content_id
 
 
+def _insert_fetch_snapshot(
+    *,
+    content_id: str,
+    creator_id: str,
+    requested_url: str,
+    fetched_url: str | None,
+    fetch_status: str,
+    http_status: int | None,
+    snapshot_text: str | None,
+    fetched_at: datetime,
+    response_content_type: str = "text/html",
+) -> str:
+    snapshot_id = str(uuid.uuid4())
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO content_fetch_snapshots "
+                "("
+                "id, content_id, creator_id, requested_url, fetched_url, fetch_status, http_status, "
+                "failure_reason_code, failure_detail, response_content_type, response_content_charset, "
+                "snapshot_text, fetched_at"
+                ") "
+                "VALUES "
+                "("
+                ":id, :content_id, :creator_id, :requested_url, :fetched_url, :fetch_status, :http_status, "
+                ":failure_reason_code, :failure_detail, :response_content_type, :response_content_charset, "
+                ":snapshot_text, :fetched_at"
+                ")"
+            ),
+            {
+                "id": snapshot_id,
+                "content_id": content_id,
+                "creator_id": creator_id,
+                "requested_url": requested_url,
+                "fetched_url": fetched_url,
+                "fetch_status": fetch_status,
+                "http_status": http_status,
+                "failure_reason_code": None,
+                "failure_detail": None,
+                "response_content_type": response_content_type,
+                "response_content_charset": "utf-8",
+                "snapshot_text": snapshot_text,
+                "fetched_at": fetched_at,
+            },
+        )
+
+    return snapshot_id
+
+
+def _insert_extraction_artifact(
+    *,
+    content_id: str,
+    creator_id: str,
+    fetch_snapshot_id: str,
+    extraction_status: str,
+    title: str | None,
+    extracted_text: str | None,
+    created_at: datetime,
+    extraction_method: str = "html_article",
+) -> str:
+    artifact_id = str(uuid.uuid4())
+    extracted_text = extracted_text or ""
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO content_extraction_artifacts "
+                "("
+                "id, content_id, creator_id, fetch_snapshot_id, extraction_status, extraction_reason_code, "
+                "extraction_detail, extraction_method, title, published_at, published_at_raw, "
+                "source_text_char_count, extracted_text_char_count, extracted_text_word_count, extracted_text, created_at"
+                ") "
+                "VALUES "
+                "("
+                ":id, :content_id, :creator_id, :fetch_snapshot_id, :extraction_status, :extraction_reason_code, "
+                ":extraction_detail, :extraction_method, :title, :published_at, :published_at_raw, "
+                ":source_text_char_count, :extracted_text_char_count, :extracted_text_word_count, :extracted_text, :created_at"
+                ")"
+            ),
+            {
+                "id": artifact_id,
+                "content_id": content_id,
+                "creator_id": creator_id,
+                "fetch_snapshot_id": fetch_snapshot_id,
+                "extraction_status": extraction_status,
+                "extraction_reason_code": None,
+                "extraction_detail": None,
+                "extraction_method": extraction_method,
+                "title": title,
+                "published_at": None,
+                "published_at_raw": None,
+                "source_text_char_count": len(extracted_text),
+                "extracted_text_char_count": len(extracted_text),
+                "extracted_text_word_count": len(extracted_text.split()),
+                "extracted_text": extracted_text or None,
+                "created_at": created_at,
+            },
+        )
+
+    return artifact_id
+
+
+def _fetch_topic_candidate_rows(*, content_id: str) -> list[dict[str, object]]:
+    with _engine().connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT id, suggested_label, review_status "
+                "FROM content_topic_candidates "
+                "WHERE content_id = :content_id "
+                "ORDER BY candidate_rank ASC, created_at ASC, id ASC"
+            ),
+            {"content_id": content_id},
+        ).mappings().all()
+
+    return [dict(row) for row in rows]
+
+
 def _insert_booking(
     *,
     creator_id: str,
@@ -1026,6 +1144,140 @@ def test_content_page_lists_only_current_creators_content():
     assert "creator-b-content" not in response.text
     assert f"{tracked_base_url}/r/uibcontenttid" not in response.text
     assert "Creator B Strategy" not in response.text
+
+
+def test_content_topic_review_page_without_extraction_artifact_explains_prerequisite():
+    inserted = _insert_creator_user(
+        email=f"ui_topic_review_missing_{uuid.uuid4().hex}@example.com",
+        name="Missing Topic Review Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Topic Review Strategy",
+        calendly_url="https://calendly.com/example/topic-review-strategy",
+    )
+    tid = uuid.uuid4().hex
+    _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/topic-review-prerequisite",
+        tid=tid,
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get(f"/app/content/{tid}/topics", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Topic Review" in response.text
+    assert "Fetch and extract first" in response.text
+    assert "Run fetch and extract for this tracked content first" in response.text
+    assert f'action="/app/content/{tid}/topics/candidates"' not in response.text
+
+
+def test_content_topic_review_page_generates_candidates_and_supports_confirm_and_reject():
+    inserted = _insert_creator_user(
+        email=f"ui_topic_review_{uuid.uuid4().hex}@example.com",
+        name="Topic Review Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Topic Review Strategy",
+        calendly_url="https://calendly.com/example/topic-review-browser",
+    )
+    tid = uuid.uuid4().hex
+    content_id = _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/topic-review-browser",
+        tid=tid,
+    )
+    snapshot_id = _insert_fetch_snapshot(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        requested_url="https://example.com/posts/topic-review-browser",
+        fetched_url="https://example.com/posts/topic-review-browser",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Topic review browser text.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 10, 15, 0, tzinfo=timezone.utc),
+    )
+    _insert_extraction_artifact(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        fetch_snapshot_id=snapshot_id,
+        extraction_status="succeeded",
+        title="Launch Pricing Breakdown",
+        extracted_text=(
+            "Discovery calls for new leads close faster with pricing upfront.\n"
+            "Retainer onboarding steps keep active students moving without confusion.\n"
+            "Boilerplate welcome copy should stay out of the canonical set."
+        ),
+        created_at=datetime(2026, 3, 10, 15, 1, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+
+        start_response = client.get(f"/app/content/{tid}/topics", headers=HTML_ACCEPT_HEADERS)
+        generate_response = client.post(
+            f"/app/content/{tid}/topics/candidates",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+        candidate_rows = _fetch_topic_candidate_rows(content_id=content_id)
+        first_candidate_id = candidate_rows[0]["id"]
+        second_candidate_id = candidate_rows[1]["id"]
+
+        generated_page = client.get(generate_response.headers["location"], headers=HTML_ACCEPT_HEADERS)
+        confirm_response = client.post(
+            f"/app/content/{tid}/topics/{first_candidate_id}/confirm",
+            data={"confirmed_label": "Discovery Call Pricing"},
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        confirmed_page = client.get(confirm_response.headers["location"], headers=HTML_ACCEPT_HEADERS)
+        reject_response = client.post(
+            f"/app/content/{tid}/topics/{second_candidate_id}/reject",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        rejected_page = client.get(reject_response.headers["location"], headers=HTML_ACCEPT_HEADERS)
+
+    assert start_response.status_code == 200
+    assert "No suggestions yet" in start_response.text
+    assert f'action="/app/content/{tid}/topics/candidates"' in start_response.text
+
+    assert generate_response.status_code == 303
+    assert generate_response.headers["location"] == f"/app/content/{tid}/topics?status=generated"
+    assert len(candidate_rows) >= 2
+    assert "Topic candidates ready" in generated_page.text
+    assert candidate_rows[0]["suggested_label"] in generated_page.text
+    assert candidate_rows[1]["suggested_label"] in generated_page.text
+
+    assert confirm_response.status_code == 303
+    assert confirm_response.headers["location"] == f"/app/content/{tid}/topics?status=saved"
+    assert "Confirmed topic saved" in confirmed_page.text
+    assert "Discovery Call Pricing" in confirmed_page.text
+
+    assert reject_response.status_code == 303
+    assert reject_response.headers["location"] == f"/app/content/{tid}/topics?status=rejected"
+    assert "Candidate rejected" in rejected_page.text
+    assert "Discovery Call Pricing" in rejected_page.text
+    assert "Rejected" in rejected_page.text
 
 
 def test_booking_activity_page_lists_only_current_creators_bookings_with_context_and_status():

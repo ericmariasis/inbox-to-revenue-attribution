@@ -26,6 +26,7 @@ def isolate_test_data():
     with engine.begin() as conn:
         existing = set(inspect(conn).get_table_names(schema="public"))
         ordered_tables = [
+            "content_fetch_snapshots",
             "blocked_billing_cases",
             "invoice_payment_events",
             "invoices",

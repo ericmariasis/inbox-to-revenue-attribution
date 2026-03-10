@@ -14,12 +14,30 @@ def test_migrations_upgrade_and_downgrade():
     try:
         with engine.connect() as conn:
             inspector = inspect(conn)
+            assert "content_fetch_snapshots" in inspector.get_table_names(schema="public")
             assert "blocked_billing_cases" in inspector.get_table_names(schema="public")
             assert "invoice_payment_events" in inspector.get_table_names(schema="public")
             assert "invoices" in inspector.get_table_names(schema="public")
             assert "bookings" in inspector.get_table_names(schema="public")
             assert "content" in inspector.get_table_names(schema="public")
             assert "booking_links" in inspector.get_table_names(schema="public")
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            assert "content_fetch_snapshots" not in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
             booking_link_columns = {
                 column["name"] for column in inspector.get_columns("booking_links")
             }
@@ -175,6 +193,59 @@ def test_content_table_has_expected_columns_fk_indexes_and_unique_tid():
             constraint["name"] == "uq_content_tid"
             and constraint["column_names"] == ["tid"]
             for constraint in unique_constraints
+        )
+
+
+def test_content_fetch_snapshots_table_has_expected_columns_fk_and_indexes():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {column["name"] for column in inspector.get_columns("content_fetch_snapshots")}
+        assert columns == {
+            "id",
+            "content_id",
+            "creator_id",
+            "requested_url",
+            "fetched_url",
+            "fetch_status",
+            "http_status",
+            "failure_reason_code",
+            "failure_detail",
+            "response_content_type",
+            "response_content_charset",
+            "snapshot_text",
+            "fetched_at",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("content_fetch_snapshots")
+        assert any(
+            fk["referred_table"] == "content"
+            and fk["constrained_columns"] == ["content_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "creators"
+            and fk["constrained_columns"] == ["creator_id"]
+            for fk in foreign_keys
+        )
+
+        indexes = inspector.get_indexes("content_fetch_snapshots")
+        assert any(
+            index["name"] == "ix_content_fetch_snapshots_content_id"
+            and index["column_names"] == ["content_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_content_fetch_snapshots_creator_id"
+            and index["column_names"] == ["creator_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_content_fetch_snapshots_fetch_status"
+            and index["column_names"] == ["fetch_status"]
+            for index in indexes
         )
 
 

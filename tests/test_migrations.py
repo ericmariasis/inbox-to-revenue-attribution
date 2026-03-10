@@ -14,6 +14,7 @@ def test_migrations_upgrade_and_downgrade():
     try:
         with engine.connect() as conn:
             inspector = inspect(conn)
+            assert "content_extraction_artifacts" in inspector.get_table_names(schema="public")
             assert "content_fetch_snapshots" in inspector.get_table_names(schema="public")
             assert "blocked_billing_cases" in inspector.get_table_names(schema="public")
             assert "invoice_payment_events" in inspector.get_table_names(schema="public")
@@ -21,6 +22,24 @@ def test_migrations_upgrade_and_downgrade():
             assert "bookings" in inspector.get_table_names(schema="public")
             assert "content" in inspector.get_table_names(schema="public")
             assert "booking_links" in inspector.get_table_names(schema="public")
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            assert "content_extraction_artifacts" not in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
             booking_link_columns = {
                 column["name"] for column in inspector.get_columns("booking_links")
             }
@@ -246,6 +265,74 @@ def test_content_fetch_snapshots_table_has_expected_columns_fk_and_indexes():
             index["name"] == "ix_content_fetch_snapshots_fetch_status"
             and index["column_names"] == ["fetch_status"]
             for index in indexes
+        )
+
+
+def test_content_extraction_artifacts_table_has_expected_columns_fk_indexes_and_unique_snapshot():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {column["name"] for column in inspector.get_columns("content_extraction_artifacts")}
+        assert columns == {
+            "id",
+            "content_id",
+            "creator_id",
+            "fetch_snapshot_id",
+            "extraction_status",
+            "extraction_reason_code",
+            "extraction_detail",
+            "extraction_method",
+            "title",
+            "published_at",
+            "published_at_raw",
+            "source_text_char_count",
+            "extracted_text_char_count",
+            "extracted_text_word_count",
+            "extracted_text",
+            "created_at",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("content_extraction_artifacts")
+        assert any(
+            fk["referred_table"] == "content"
+            and fk["constrained_columns"] == ["content_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "creators"
+            and fk["constrained_columns"] == ["creator_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "content_fetch_snapshots"
+            and fk["constrained_columns"] == ["fetch_snapshot_id"]
+            for fk in foreign_keys
+        )
+
+        indexes = inspector.get_indexes("content_extraction_artifacts")
+        assert any(
+            index["name"] == "ix_content_extraction_artifacts_content_id"
+            and index["column_names"] == ["content_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_content_extraction_artifacts_creator_id"
+            and index["column_names"] == ["creator_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_content_extraction_artifacts_extraction_status"
+            and index["column_names"] == ["extraction_status"]
+            for index in indexes
+        )
+
+        unique_constraints = inspector.get_unique_constraints("content_extraction_artifacts")
+        assert any(
+            constraint["name"] == "uq_content_extraction_artifacts_fetch_snapshot_id"
+            and constraint["column_names"] == ["fetch_snapshot_id"]
+            for constraint in unique_constraints
         )
 
 

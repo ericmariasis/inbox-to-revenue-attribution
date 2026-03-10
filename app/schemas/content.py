@@ -31,3 +31,22 @@ class ContentFetchSnapshotResponse(BaseModel):
     response_content_charset: str | None
     snapshot_text: str | None
     fetched_at: datetime
+
+
+class ContentExtractionArtifactResponse(BaseModel):
+    id: str
+    content_id: str
+    content_tid: str
+    fetch_snapshot_id: str
+    extraction_status: str
+    extraction_reason_code: str | None
+    extraction_detail: str | None
+    extraction_method: str | None
+    title: str | None
+    published_at: datetime | None
+    published_at_raw: str | None
+    source_text_char_count: int
+    extracted_text_char_count: int
+    extracted_text_word_count: int
+    extracted_text: str | None
+    created_at: datetime

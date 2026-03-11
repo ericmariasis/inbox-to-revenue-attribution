@@ -225,3 +225,30 @@ def test_generate_epic_review_artifacts_can_ignore_mismatched_scratchpad_with_al
 
     assert artifacts.warnings
     assert "does not match requested epic" in artifacts.warnings[0]
+
+
+def test_generate_epic_review_artifacts_ignores_follow_on_story_mentions_outside_ordered_list(tmp_path: Path):
+    repo_root = _build_minimal_repo(tmp_path)
+    epic_doc_path = repo_root / "north-star" / "phase1-epic-sample.md"
+    epic_doc_path.write_text(
+        epic_doc_path.read_text(encoding="utf-8")
+        + textwrap.dedent(
+            """
+
+            Immediate follow-on after this epic:
+
+            - Story 99 — Future helper
+              - depends on Stories 1-2 landing cleanly
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    artifacts = generate_epic_review_artifacts(
+        repo_root=repo_root,
+        epic_doc_path="north-star/phase1-epic-sample.md",
+        output_dir="north-star/epic-reviews",
+    )
+
+    assert artifacts.closeout_story_number == 2
+    assert artifacts.packet_path.exists()

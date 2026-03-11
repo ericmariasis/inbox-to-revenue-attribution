@@ -77,6 +77,14 @@ class ContentConfirmedTopicResponse(BaseModel):
     updated_at: datetime
 
 
+class ContentAuthoritativeStateResponse(BaseModel):
+    authoritative_extraction_artifact_id: str | None
+    authoritative_fetch_snapshot_id: str | None
+    is_current_artifact_authoritative: bool
+    promotion_allowed: bool
+    promotion_block_reason: str | None
+
+
 class ContentTopicReviewResponse(BaseModel):
     content_id: str
     content_tid: str
@@ -86,8 +94,10 @@ class ContentTopicReviewResponse(BaseModel):
     extraction_status: str
     extraction_method: str | None
     extraction_title: str | None
+    authoritative_state: ContentAuthoritativeStateResponse
     candidate_topics: list[ContentTopicCandidateResponse]
-    confirmed_topics: list[ContentConfirmedTopicResponse]
+    review_confirmed_topics: list[ContentConfirmedTopicResponse]
+    authoritative_confirmed_topics: list[ContentConfirmedTopicResponse]
 
 
 class ContentTopicCandidateConfirmRequest(BaseModel):

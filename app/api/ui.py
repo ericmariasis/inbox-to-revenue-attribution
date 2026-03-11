@@ -23,6 +23,7 @@ from app.api.content import (
     get_content_response_for_creator_by_tid,
     get_content_topic_review_response_for_creator,
     list_content_responses_for_creator,
+    promote_content_authoritative_evidence_response_for_creator,
     reject_content_topic_candidate_response_for_creator,
 )
 from app.api.deps import get_optional_browser_auth_user
@@ -583,6 +584,38 @@ def creator_content_topic_candidate_reject(
         raise
 
     return _redirect(f"/app/content/{quote(tid, safe='')}/topics?status=rejected")
+
+
+@router.post("/app/content/{tid}/topics/promote")
+def creator_content_authoritative_evidence_promote(
+    tid: str,
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    try:
+        promote_content_authoritative_evidence_response_for_creator(
+            tid=tid,
+            creator_id=current_user.creator_id,
+            db=db,
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            return _content_topic_review_page_response(
+                current_user=current_user,
+                tid=tid,
+                db=db,
+                status_value="promotion-unavailable",
+                candidate_field_errors={},
+                candidate_form_values={},
+            )
+        raise
+
+    return _redirect(f"/app/content/{quote(tid, safe='')}/topics?status=promoted")
 
 
 @router.get("/app/bookings")
@@ -1954,7 +1987,9 @@ def _render_content_topic_review_page(
 ) -> str:
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
-    confirmed_topics = review.confirmed_topics if review is not None else []
+    authoritative_confirmed_topics = (
+        review.authoritative_confirmed_topics if review is not None else []
+    )
     candidate_topics = review.candidate_topics if review is not None else []
     notice = _render_content_topic_review_notice(
         status_value=status_value,
@@ -1992,11 +2027,15 @@ def _render_content_topic_review_page(
       </article>
       <article class="card accent stack">
         <div>
-          <p class="eyebrow">Canonical topics</p>
-          <h2>{len(confirmed_topics)} confirmed</h2>
+          <p class="eyebrow">Current authority</p>
+          <h2>{len(authoritative_confirmed_topics)} authoritative</h2>
         </div>
-        <p>Confirmed topics become the canonical free-text metadata for this content item. Original suggested labels stay preserved on the candidate rows for later eval and lineage work.</p>
-        {_render_confirmed_topics_list(confirmed_topics)}
+        <p>Only confirmed topics linked from the authoritative artifact count as current truth. Saved labels in the in-progress review below stay inspectable, but they do not become authoritative until you promote that review.</p>
+        {_render_confirmed_topics_list(
+            authoritative_confirmed_topics,
+            empty_eyebrow="No authoritative topics yet",
+            empty_body="Finish the current review and promote it to create the first authoritative topic set for this content.",
+        )}
       </article>
     </section>
     {_render_content_topic_review_body(
@@ -2029,6 +2068,7 @@ def _render_content_topic_extraction_summary(
         if review.extraction_title
         else "No extracted title stored"
     )
+    authority_heading, authority_copy = _content_authority_status_copy(review)
     return f"""
     <section class="topic-summary stack">
       <div class="status-row">
@@ -2040,16 +2080,23 @@ def _render_content_topic_extraction_summary(
       </div>
       <p><strong>Method</strong>: {html.escape(review.extraction_method or "Unknown extraction method")}</p>
       <p><strong>Candidate count</strong>: {len(review.candidate_topics)} suggested right now.</p>
+      <p><strong>Authority</strong>: {html.escape(authority_heading)}</p>
+      <p>{html.escape(authority_copy)}</p>
     </section>
     """
 
 
-def _render_confirmed_topics_list(confirmed_topics) -> str:
+def _render_confirmed_topics_list(
+    confirmed_topics,
+    *,
+    empty_eyebrow: str,
+    empty_body: str,
+) -> str:
     if not confirmed_topics:
-        return """
+        return f"""
         <section class="empty-state">
-          <p class="eyebrow">No confirmed topics yet</p>
-          <p>Generate candidates below, then save only the labels you trust.</p>
+          <p class="eyebrow">{html.escape(empty_eyebrow)}</p>
+          <p>{html.escape(empty_body)}</p>
         </section>
         """
 
@@ -2088,7 +2135,7 @@ def _render_content_topic_review_body(
               <p class="eyebrow">Candidate topics</p>
               <h2>No suggestions yet</h2>
             </div>
-            <p>{len(review.confirmed_topics)} confirmed</p>
+            <p>{len(review.review_confirmed_topics)} confirmed in this review</p>
           </div>
           <p>Generate a lightweight candidate set from the latest extraction artifact, then confirm, edit, or reject each suggestion one content item at a time.</p>
           <form action="/app/content/{quote(content.tid, safe='')}/topics/candidates" method="post">
@@ -2099,7 +2146,7 @@ def _render_content_topic_review_body(
 
     confirmed_label_by_id = {
         topic.id: topic.canonical_label
-        for topic in review.confirmed_topics
+        for topic in review.review_confirmed_topics
     }
     candidate_cards = "".join(
         _render_content_topic_candidate_card(
@@ -2112,7 +2159,7 @@ def _render_content_topic_review_body(
         for candidate in review.candidate_topics
     )
     return f"""
-    <section class="card stack">
+        <section class="card stack">
       <div class="section-heading">
         <div>
           <p class="eyebrow">Candidate topics</p>
@@ -2123,7 +2170,52 @@ def _render_content_topic_review_body(
         </form>
       </div>
       <p>Confirm the labels you trust, edit the ones that need cleanup, and reject weak suggestions before they become canonical metadata.</p>
+      {_render_content_authoritative_promotion_controls(content=content, review=review)}
       <div class="content-list">{candidate_cards}</div>
+    </section>
+    """
+
+
+def _render_content_authoritative_promotion_controls(
+    *,
+    content: ContentResponse,
+    review: ContentTopicReviewResponse,
+) -> str:
+    authority_state = review.authoritative_state
+    if authority_state.is_current_artifact_authoritative:
+        return """
+        <section class="notice success">
+          <p class="eyebrow">Current authoritative evidence</p>
+          <p>This latest reviewed artifact already supplies the current canonical content evidence and citation path.</p>
+        </section>
+        """
+
+    if authority_state.promotion_allowed:
+        replacement_copy = (
+            "Promoting this review will replace the previous authoritative artifact."
+            if authority_state.authoritative_extraction_artifact_id is not None
+            else "Promoting this review will create the first authoritative evidence state for this content."
+        )
+        return f"""
+        <section class="notice success">
+          <p class="eyebrow">Review complete</p>
+          <p>{html.escape(replacement_copy)}</p>
+          <form action="/app/content/{quote(content.tid, safe='')}/topics/promote" method="post">
+            <button type="submit">Promote as current evidence</button>
+          </form>
+        </section>
+        """
+
+    pending_copy = (
+        "The previous authoritative artifact stays current until you promote a fully reviewed replacement."
+        if authority_state.authoritative_extraction_artifact_id is not None
+        else "This content still has no authoritative evidence yet."
+    )
+    return f"""
+    <section class="notice error">
+      <p class="eyebrow">Promotion not ready</p>
+      <p>{html.escape(authority_state.promotion_block_reason or "Promotion is not available yet.")}</p>
+      <p>{html.escape(pending_copy)}</p>
     </section>
     """
 
@@ -2209,6 +2301,14 @@ def _render_content_topic_review_notice(
         </section>
         """
 
+    if status_value == "promoted":
+        return """
+        <section class="notice success">
+          <p class="eyebrow">Authoritative evidence updated</p>
+          <p>The latest reviewed artifact is now the current canonical content evidence state for this content item.</p>
+        </section>
+        """
+
     if status_value == "unavailable":
         return """
         <section class="notice error">
@@ -2217,7 +2317,33 @@ def _render_content_topic_review_notice(
         </section>
         """
 
+    if status_value == "promotion-unavailable":
+        return """
+        <section class="notice error">
+          <p class="eyebrow">Promotion is not ready yet</p>
+          <p>Finish reviewing the latest topic candidate set before promoting it as the current authoritative evidence state.</p>
+        </section>
+        """
+
     return ""
+
+
+def _content_authority_status_copy(review: ContentTopicReviewResponse) -> tuple[str, str]:
+    authority_state = review.authoritative_state
+    if authority_state.is_current_artifact_authoritative:
+        return (
+            "Current authoritative evidence",
+            "This latest reviewed artifact already supplies the canonical content evidence and citation path.",
+        )
+    if authority_state.authoritative_extraction_artifact_id is not None:
+        return (
+            "Previous authority remains current",
+            "A previously promoted artifact still supplies canonical evidence while this latest artifact is under review.",
+        )
+    return (
+        "No authoritative evidence yet",
+        "Finish the current review and promote it to create the first canonical content evidence state for this content.",
+    )
 
 
 def _content_topic_review_status_label(status_value: str) -> str:

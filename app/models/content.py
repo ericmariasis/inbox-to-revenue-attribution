@@ -27,6 +27,11 @@ class Content(Base):
         ForeignKey("booking_links.id", ondelete="CASCADE"),
         nullable=False,
     )
+    authoritative_extraction_artifact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("content_extraction_artifacts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     tid: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -68,6 +73,13 @@ class Content(Base):
         "ContentExtractionArtifact",
         back_populates="content",
         cascade="all, delete-orphan",
+        foreign_keys="ContentExtractionArtifact.content_id",
+    )
+    authoritative_extraction_artifact = relationship(
+        "ContentExtractionArtifact",
+        back_populates="authoritative_for_content",
+        foreign_keys=[authoritative_extraction_artifact_id],
+        uselist=False,
     )
     confirmed_topics = relationship(
         "ContentConfirmedTopic",

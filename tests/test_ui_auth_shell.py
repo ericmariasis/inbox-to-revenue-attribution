@@ -268,6 +268,20 @@ def _fetch_topic_candidate_rows(*, content_id: str) -> list[dict[str, object]]:
     return [dict(row) for row in rows]
 
 
+def _fetch_content_authority_row(*, content_id: str) -> dict[str, object]:
+    with _engine().connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT authoritative_extraction_artifact_id "
+                "FROM content "
+                "WHERE id = :content_id"
+            ),
+            {"content_id": content_id},
+        ).mappings().one()
+
+    return dict(row)
+
+
 def _insert_booking(
     *,
     creator_id: str,
@@ -1241,6 +1255,7 @@ def test_content_topic_review_page_generates_candidates_and_supports_confirm_and
         candidate_rows = _fetch_topic_candidate_rows(content_id=content_id)
         first_candidate_id = candidate_rows[0]["id"]
         second_candidate_id = candidate_rows[1]["id"]
+        remaining_candidate_ids = [row["id"] for row in candidate_rows[2:]]
 
         generated_page = client.get(generate_response.headers["location"], headers=HTML_ACCEPT_HEADERS)
         confirm_response = client.post(
@@ -1256,9 +1271,32 @@ def test_content_topic_review_page_generates_candidates_and_supports_confirm_and
             follow_redirects=False,
         )
         rejected_page = client.get(reject_response.headers["location"], headers=HTML_ACCEPT_HEADERS)
+        blocked_promote_response = client.post(
+            f"/app/content/{tid}/topics/promote",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        final_review_page = rejected_page
+        for candidate_id in remaining_candidate_ids:
+            resolve_response = client.post(
+                f"/app/content/{tid}/topics/{candidate_id}/reject",
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+            final_review_page = client.get(
+                resolve_response.headers["location"],
+                headers=HTML_ACCEPT_HEADERS,
+            )
+        promote_response = client.post(
+            f"/app/content/{tid}/topics/promote",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        promoted_page = client.get(promote_response.headers["location"], headers=HTML_ACCEPT_HEADERS)
 
     assert start_response.status_code == 200
     assert "No suggestions yet" in start_response.text
+    assert "No authoritative topics yet" in start_response.text
     assert f'action="/app/content/{tid}/topics/candidates"' in start_response.text
 
     assert generate_response.status_code == 303
@@ -1267,17 +1305,36 @@ def test_content_topic_review_page_generates_candidates_and_supports_confirm_and
     assert "Topic candidates ready" in generated_page.text
     assert candidate_rows[0]["suggested_label"] in generated_page.text
     assert candidate_rows[1]["suggested_label"] in generated_page.text
+    assert "Promotion not ready" in generated_page.text
 
     assert confirm_response.status_code == 303
     assert confirm_response.headers["location"] == f"/app/content/{tid}/topics?status=saved"
     assert "Confirmed topic saved" in confirmed_page.text
     assert "Discovery Call Pricing" in confirmed_page.text
+    assert "Promotion not ready" in confirmed_page.text
 
     assert reject_response.status_code == 303
     assert reject_response.headers["location"] == f"/app/content/{tid}/topics?status=rejected"
     assert "Candidate rejected" in rejected_page.text
     assert "Discovery Call Pricing" in rejected_page.text
     assert "Rejected" in rejected_page.text
+    assert "Promotion not ready" in rejected_page.text
+    assert "Promote as current evidence" not in rejected_page.text
+
+    assert blocked_promote_response.status_code == 200
+    assert "Promotion is not ready yet" in blocked_promote_response.text
+    assert "Promote as current evidence" not in blocked_promote_response.text
+
+    assert "Promote as current evidence" in final_review_page.text
+
+    assert promote_response.status_code == 303
+    assert promote_response.headers["location"] == f"/app/content/{tid}/topics?status=promoted"
+    assert "Authoritative evidence updated" in promoted_page.text
+    assert "Current authoritative evidence" in promoted_page.text
+    assert "Discovery Call Pricing" in promoted_page.text
+
+    authority_row = _fetch_content_authority_row(content_id=content_id)
+    assert authority_row["authoritative_extraction_artifact_id"] is not None
 
 
 def test_booking_activity_page_lists_only_current_creators_bookings_with_context_and_status():

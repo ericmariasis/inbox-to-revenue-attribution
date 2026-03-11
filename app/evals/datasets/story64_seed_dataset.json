@@ -1,0 +1,102 @@
+{
+  "dataset_name": "story64_phase11_content_pipeline_seed",
+  "dataset_version": "2026-03-10",
+  "description": "Small Phase 11 seed dataset for evaluating canonical extraction quality and topic suggestion quality on representative content snapshots.",
+  "cases": [
+    {
+      "case_id": "launch_pricing_breakdown",
+      "title": "Launch Pricing Breakdown",
+      "source_url": "https://example.com/posts/launch-pricing-breakdown",
+      "snapshot": {
+        "requested_url": "https://example.com/posts/launch-pricing-breakdown",
+        "fetched_url": "https://example.com/posts/launch-pricing-breakdown",
+        "fetch_status": "succeeded",
+        "http_status": 200,
+        "response_content_type": "text/html",
+        "response_content_charset": "utf-8",
+        "snapshot_text": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <title>Fallback Pricing Story</title>\n    <meta property=\"og:title\" content=\"Launch Pricing Breakdown\" />\n    <meta property=\"article:published_time\" content=\"2026-02-14T09:30:00Z\" />\n  </head>\n  <body>\n    <header>\n      <nav>\n        <a href=\"/archive\">Archive</a>\n        <a href=\"/subscribe\">Subscribe for weekly archive notes</a>\n      </nav>\n    </header>\n    <article>\n      <h1>Launch Pricing Breakdown</h1>\n      <p>Discovery call pricing expectations close new leads faster because the price conversation is already clear.</p>\n      <p>Retainer onboarding checklist keeps active students moving after the sale without extra confusion.</p>\n      <p>Launch pricing breakdown gives tutors one concrete way to explain the offer before the first call.</p>\n    </article>\n    <footer>\n      <p>Subscribe for weekly archive notes.</p>\n    </footer>\n  </body>\n</html>\n"
+      },
+      "expected_extraction": {
+        "status": "succeeded",
+        "title": "Launch Pricing Breakdown",
+        "published_at_raw": "2026-02-14T09:30:00Z",
+        "min_word_count": 30,
+        "required_phrases": [
+          "Discovery call pricing expectations close new leads faster",
+          "Retainer onboarding checklist keeps active students moving after the sale"
+        ],
+        "forbidden_phrases": [
+          "Subscribe for weekly archive notes"
+        ]
+      },
+      "expected_topics": {
+        "confirmed_topics": [
+          "Launch Pricing Breakdown",
+          "Discovery Call Pricing",
+          "Retainer Onboarding Checklist"
+        ],
+        "forbidden_suggestions": [
+          "Subscribe For Weekly Archive Notes"
+        ]
+      }
+    },
+    {
+      "case_id": "student_retention_playbook",
+      "title": "Student Retention Playbook",
+      "source_url": "https://example.com/posts/student-retention-playbook",
+      "snapshot": {
+        "requested_url": "https://example.com/posts/student-retention-playbook",
+        "fetched_url": "https://example.com/posts/student-retention-playbook?ref=manual",
+        "fetch_status": "succeeded",
+        "http_status": 200,
+        "response_content_type": "text/html",
+        "response_content_charset": "utf-8",
+        "snapshot_text": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <title>Student Retention Playbook | Office Hours Follow Up</title>\n  </head>\n  <body>\n    <aside>\n      <p>Cookie preferences</p>\n    </aside>\n    <main>\n      <h1>Student Retention Playbook</h1>\n      <p>Office hours follow up emails rescue quiet students before they drift away from the program.</p>\n      <p>Re activation checklist gives returning students a simple next step after a missed week.</p>\n      <p>Student retention playbook keeps the support promise concrete instead of vague.</p>\n    </main>\n    <footer>\n      <p>Cookie preferences</p>\n    </footer>\n  </body>\n</html>\n"
+      },
+      "expected_extraction": {
+        "status": "succeeded",
+        "title": "Student Retention Playbook | Office Hours Follow Up",
+        "min_word_count": 30,
+        "required_phrases": [
+          "Office hours follow up emails rescue quiet students",
+          "Re activation checklist gives returning students a simple next step"
+        ],
+        "forbidden_phrases": [
+          "Cookie preferences"
+        ]
+      },
+      "expected_topics": {
+        "confirmed_topics": [
+          "Student Retention Playbook",
+          "Office Hours Follow Up",
+          "Re Activation Checklist"
+        ],
+        "forbidden_suggestions": [
+          "Cookie Preferences"
+        ]
+      }
+    },
+    {
+      "case_id": "micro_update_low_confidence",
+      "title": "Micro Update",
+      "source_url": "https://example.com/posts/micro-update",
+      "snapshot": {
+        "requested_url": "https://example.com/posts/micro-update",
+        "fetched_url": "https://example.com/posts/micro-update",
+        "fetch_status": "succeeded",
+        "http_status": 200,
+        "response_content_type": "text/html",
+        "response_content_charset": "utf-8",
+        "snapshot_text": "<html>\n  <head>\n    <title>Micro Update</title>\n  </head>\n  <body>\n    <article>\n      <h1>Micro Update</h1>\n      <p>Tiny proof only.</p>\n    </article>\n  </body>\n</html>\n"
+      },
+      "expected_extraction": {
+        "status": "low_confidence",
+        "reason_code": "TEXT_TOO_SHORT",
+        "title": "Micro Update",
+        "required_phrases": [
+          "Tiny proof only."
+        ]
+      }
+    }
+  ]
+}

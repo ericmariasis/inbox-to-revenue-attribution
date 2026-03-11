@@ -251,7 +251,20 @@ def _extract_story_numbers(epic_text: str) -> tuple[int, ...]:
     if "Recommended story order:" not in epic_text:
         raise EpicReviewArtifactsError("Epic doc is missing 'Recommended story order:'")
     story_order_block = epic_text.split("Recommended story order:", 1)[1]
-    story_numbers = [int(number) for number in re.findall(r"Story\s+(\d+)", story_order_block)]
+    ordered_lines: list[str] = []
+    for line in story_order_block.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if ordered_lines:
+                break
+            continue
+        if re.match(r"^\d+\.\s+Story\s+\d+\b", stripped):
+            ordered_lines.append(stripped)
+            continue
+        if ordered_lines:
+            break
+
+    story_numbers = [int(number) for number in re.findall(r"Story\s+(\d+)", "\n".join(ordered_lines))]
     if not story_numbers:
         raise EpicReviewArtifactsError("No story numbers found under 'Recommended story order:'")
     ordered_unique_numbers: list[int] = []

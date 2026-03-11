@@ -628,10 +628,6 @@ def creator_reports_page(
         creator_id=current_user.creator_id,
         db=db,
     )
-    blocked_billing_count = count_open_blocked_billing_cases(
-        creator_id=current_user.creator_id,
-        db=db,
-    )
     if not field_errors:
         try:
             summary = get_creator_reports_summary(
@@ -648,7 +644,6 @@ def creator_reports_page(
             current_user=current_user,
             content_items=content_items,
             summary=summary,
-            blocked_billing_count=blocked_billing_count,
             filter_values=filter_values,
             field_errors=field_errors,
         )
@@ -2341,7 +2336,6 @@ def _render_reports_page(
     current_user: AuthUser,
     content_items: list[ContentResponse],
     summary: CreatorReportsSummary,
-    blocked_billing_count: int,
     filter_values: dict[str, str],
     field_errors: dict[str, str],
 ) -> str:
@@ -2442,7 +2436,7 @@ def _render_reports_page(
             summary=summary,
             filter_values=filter_values,
         )}
-        <p><strong>Blocked billing cases</strong>: {html.escape(_reports_blocked_case_copy(blocked_billing_count))}</p>
+        <p><strong>Blocked billing cases</strong>: {html.escape(_reports_blocked_case_copy(summary.blocked_summary.open_case_count))}</p>
         <p><a href="/app/attention" class="inline-link">Review blocked billing and unresolved payment details</a></p>
       </article>
     </section>
@@ -2887,8 +2881,8 @@ def _render_reports_paid_explanation_page(
           <p class="eyebrow">How attribution works here</p>
           <h2>The stored chain decides what counts</h2>
         </div>
-        <p>This row stays in paid totals only when the stored content, booking, invoice, and payment-event records all point back to the same creator-scoped tracking ID.</p>
-        <p>If any part of that chain is missing, the payment is explained separately and kept out of paid totals until the missing link is repaired.</p>
+        <p>This row stays in paid totals when the stored content, booking, and invoice records all point back to the same creator-scoped tracking ID.</p>
+        <p>A linked payment event, when present, is supporting provider evidence rather than the settlement gate. If the content, booking, or invoice link is missing, the payment is explained separately and kept out of paid totals until the missing link is repaired.</p>
       </article>
     </section>
     <section class="card stack">
@@ -2932,10 +2926,15 @@ def _render_reports_paid_evidence_card(
     index: int,
     evidence: PaidAttributionEvidence,
 ) -> str:
+    payment_event_status_label = (
+        _reports_payment_event_status_label(evidence.payment_event_status)
+        if evidence.payment_event_status is not None
+        else "Invoice-settled"
+    )
     payment_event_line = (
         f"<p><strong>Payment event</strong>: "
         f"<code>{html.escape(evidence.stripe_event_id or '')}</code> "
-        f"stored as {html.escape(_reports_payment_event_status_label(evidence.payment_event_status))} "
+        f"stored as {html.escape(payment_event_status_label)} "
         f"and received {_format_timestamp_in_utc(evidence.payment_event_received_at)}.</p>"
         if evidence.stripe_event_id is not None and evidence.payment_event_received_at is not None
         else "<p><strong>Payment event</strong>: No linked payment event is stored for this invoice yet.</p>"
@@ -2953,7 +2952,7 @@ def _render_reports_paid_evidence_card(
           <p class="eyebrow">Invoice chain {index}</p>
           <h2>{html.escape(_reports_currency_amount_copy(evidence.invoice_currency, evidence.invoice_amount_cents))}</h2>
         </div>
-        <p class="pill-note">{html.escape(_reports_payment_event_status_label(evidence.payment_event_status))}</p>
+        <p class="pill-note">{html.escape(payment_event_status_label)}</p>
       </div>
       <p><strong>Booking</strong>: <code>{html.escape(evidence.booking_uuid)}</code> captured {_format_timestamp_in_utc(evidence.booked_at)}.</p>
       <p><strong>Invoice</strong>: <code>{html.escape(evidence.stripe_invoice_id)}</code> marked paid {_format_timestamp_in_utc(evidence.invoice_paid_at)}.</p>

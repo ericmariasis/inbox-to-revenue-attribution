@@ -10,18 +10,19 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.main import app
 from app.models.auth_user import AuthUser
+from app.models.blocked_billing_case import BlockedBillingCase
 from app.models.booking import Booking
 from app.models.booking_link import BookingLink
 from app.models.content import Content
 from app.models.creator import Creator
 from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
+from app.services.blocked_billing import BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE
 from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_MISSING_TID,
     UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
 )
 from app.services.reporting import (
-    BLOCKED_REPORTING_UNSUPPORTED_REASON,
     CURRENT_UNATTRIBUTED_BACKLOG_SCOPE,
     get_creator_paid_attribution_explanation,
     get_creator_reports_summary,
@@ -212,6 +213,39 @@ def _create_matched_payment_event(
     return event
 
 
+def _create_blocked_billing_case(
+    session: Session,
+    *,
+    creator: Creator,
+    booking: Booking,
+    reason_code: str,
+    blocked_at: datetime,
+) -> BlockedBillingCase:
+    blocked_case = BlockedBillingCase(
+        creator_id=creator.id,
+        booking_id=booking.id,
+        invoice_id=None,
+        tid=booking.tid,
+        calendly_booking_uuid=booking.calendly_booking_uuid,
+        stripe_account_id=creator.stripe_account_id,
+        frozen_amount_cents=19500,
+        frozen_currency="USD",
+        status="open",
+        reason_code=reason_code,
+        provider_operation=None,
+        provider_http_status=None,
+        provider_error_code=None,
+        first_blocked_at=blocked_at,
+        last_blocked_at=blocked_at,
+        last_retry_at=None,
+        resolved_at=None,
+        resolution_code=None,
+    )
+    session.add(blocked_case)
+    session.flush()
+    return blocked_case
+
+
 def test_creator_reports_summary_groups_paid_revenue_by_content_and_keeps_current_unattributed_backlog():
     engine = _engine()
 
@@ -302,6 +336,28 @@ def test_creator_reports_summary_groups_paid_revenue_by_content_and_keeps_curren
             paid_at=datetime(2026, 3, 8, 21, 0, tzinfo=timezone.utc),
         )
 
+        blocked_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="service_blocked",
+        )
+        blocked_booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=blocked_content,
+            booking_uuid="BOOK_REPORTS_SERVICE_BLOCKED",
+            booked_at=datetime(2026, 3, 8, 22, 0, tzinfo=timezone.utc),
+        )
+        _create_blocked_billing_case(
+            session,
+            creator=creator,
+            booking=blocked_booking,
+            reason_code=BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
+            blocked_at=datetime(2026, 3, 8, 22, 5, tzinfo=timezone.utc),
+        )
+
         other_creator, _ = _create_creator_with_user(
             session,
             suffix="service_other",
@@ -385,8 +441,13 @@ def test_creator_reports_summary_groups_paid_revenue_by_content_and_keeps_curren
         (UNATTRIBUTED_REASON_MISSING_TID, 1),
         (UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID, 1),
     ]
-    assert filtered_summary.blocked_summary.supported is False
-    assert filtered_summary.blocked_summary.reason == BLOCKED_REPORTING_UNSUPPORTED_REASON
+    assert filtered_summary.blocked_summary.supported is True
+    assert filtered_summary.blocked_summary.reason is None
+    assert filtered_summary.blocked_summary.open_case_count == 1
+    assert [
+        (item.reason_code, item.case_count)
+        for item in filtered_summary.blocked_summary.reasons
+    ] == [(BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE, 1)]
 
 
 def test_creator_paid_attribution_explanation_returns_canonical_chain_for_creator_scoped_row():
@@ -483,6 +544,66 @@ def test_creator_paid_attribution_explanation_returns_canonical_chain_for_creato
     assert filtered_out is None
 
 
+def test_creator_paid_attribution_explanation_keeps_settled_invoice_without_payment_event():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, _ = _create_creator_with_user(
+            session,
+            suffix="explanation_no_event",
+            stripe_account_id="acct_reports_explanation_no_event",
+        )
+        booking_link = _create_booking_link(
+            session,
+            creator=creator,
+            suffix="explanation_no_event",
+        )
+        content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="explanation_no_event",
+        )
+        booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_REPORTS_EXPLANATION_NO_EVENT",
+            booked_at=datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=booking,
+            stripe_invoice_id="in_reports_explanation_no_event",
+            amount_cents=19500,
+            paid_at=datetime(2026, 3, 8, 11, 0, tzinfo=timezone.utc),
+        )
+
+        creator_id = creator.id
+        content_tid = content.tid
+        session.commit()
+
+    with Session(engine) as session:
+        explanation = get_creator_paid_attribution_explanation(
+            creator_id=creator_id,
+            tid=content_tid,
+            db=session,
+            start_date=date(2026, 3, 8),
+            end_date=date(2026, 3, 8),
+        )
+
+    assert explanation is not None
+    assert explanation.summary_row.tid == content_tid
+    assert explanation.summary_row.paid_revenue_cents == 19500
+    assert explanation.summary_row.paid_invoice_count == 1
+    assert len(explanation.evidence) == 1
+    assert explanation.evidence[0].stripe_invoice_id == "in_reports_explanation_no_event"
+    assert explanation.evidence[0].stripe_event_id is None
+    assert explanation.evidence[0].payment_event_status is None
+
+
 def test_reports_summary_requires_auth():
     with TestClient(app) as client:
         response = client.get("/reports/summary")
@@ -555,6 +676,28 @@ def test_reports_summary_returns_creator_scoped_filtered_rows_and_current_unattr
             stripe_invoice_id="in_reports_api_missing_tid",
             reason=UNATTRIBUTED_REASON_MISSING_TID,
             paid_at=datetime(2026, 3, 8, 11, 0, tzinfo=timezone.utc),
+        )
+
+        blocked_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="api_blocked",
+        )
+        blocked_booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=blocked_content,
+            booking_uuid="BOOK_REPORTS_API_BLOCKED",
+            booked_at=datetime(2026, 3, 8, 11, 30, tzinfo=timezone.utc),
+        )
+        _create_blocked_billing_case(
+            session,
+            creator=creator,
+            booking=blocked_booking,
+            reason_code=BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
+            blocked_at=datetime(2026, 3, 8, 11, 35, tzinfo=timezone.utc),
         )
 
         other_creator, _ = _create_creator_with_user(
@@ -641,8 +784,15 @@ def test_reports_summary_returns_creator_scoped_filtered_rows_and_current_unattr
             ],
         },
         "blocked_summary": {
-            "supported": False,
-            "reason": BLOCKED_REPORTING_UNSUPPORTED_REASON,
+            "supported": True,
+            "reason": None,
+            "open_case_count": 1,
+            "reasons": [
+                {
+                    "reason_code": BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
+                    "case_count": 1,
+                }
+            ],
         },
     }
 

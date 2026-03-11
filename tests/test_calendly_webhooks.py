@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.main import app
 from app.models.booking import Booking
+from app.models.calendly_webhook_event import CalendlyWebhookEventRecord
 from app.models.booking_link import BookingLink
 from app.models.blocked_billing_case import BlockedBillingCase
 from app.models.content import Content
@@ -167,6 +168,16 @@ def _invoice_count() -> int:
     engine = create_engine(os.environ["TEST_DATABASE_URL"])
     with Session(engine) as session:
         return len(session.scalars(select(Invoice)).all())
+
+
+def _journal_records_for_event_id(*, calendly_event_id: str) -> list[CalendlyWebhookEventRecord]:
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    with Session(engine) as session:
+        return session.scalars(
+            select(CalendlyWebhookEventRecord).where(
+                CalendlyWebhookEventRecord.calendly_event_id == calendly_event_id
+            )
+        ).all()
 
 
 def _create_creator_booking_link_and_content(
@@ -380,6 +391,7 @@ def test_calendly_webhook_persists_booking_created_for_valid_tid():
             )
 
     bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story33_valid")
+    journal_records = _journal_records_for_event_id(calendly_event_id="EVT_story33_valid")
 
     assert response.status_code == 200
     assert response.headers.get("X-Request-Id")
@@ -393,6 +405,11 @@ def test_calendly_webhook_persists_booking_created_for_valid_tid():
     assert bookings[0].status == "created"
     assert bookings[0].booked_at == datetime(2026, 3, 7, 14, 30, tzinfo=timezone.utc)
     assert bookings[0].canceled_at is None
+    assert len(journal_records) == 1
+    assert journal_records[0].processing_status == "applied"
+    assert journal_records[0].delivery_count == 1
+    assert journal_records[0].tid == stored["tid"]
+    assert journal_records[0].processed_at is not None
     assert _invoice_count() == 0
 
 
@@ -430,9 +447,13 @@ def test_calendly_webhook_duplicate_delivery_is_idempotent_by_booking_uuid():
             )
 
     bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story33_duplicate")
+    journal_records = _journal_records_for_event_id(calendly_event_id="EVT_story33_duplicate")
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
+    assert len(journal_records) == 1
+    assert journal_records[0].processing_status == "applied"
+    assert journal_records[0].delivery_count == 2
     assert len(bookings) == 1
     assert bookings[0].creator_id == stored["creator_id"]
     assert bookings[0].booking_link_id == stored["booking_link_id"]
@@ -533,9 +554,13 @@ def test_calendly_webhook_billable_booking_created_persists_invoice_and_duplicat
 
     bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story45_billable")
     invoices = _invoices_for_booking_uuid(calendly_booking_uuid="BOOK_story45_billable")
+    journal_records = _journal_records_for_event_id(calendly_event_id="EVT_story45_billable")
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
+    assert len(journal_records) == 1
+    assert journal_records[0].processing_status == "applied"
+    assert journal_records[0].delivery_count == 2
     assert len(bookings) == 1
     assert bookings[0].frozen_billing_amount_cents == 15000
     assert bookings[0].frozen_billing_currency == "USD"
@@ -1072,6 +1097,97 @@ def test_calendly_webhook_duplicate_cancellation_is_idempotent_and_voids_invoice
     ]
 
 
+def test_calendly_webhook_canceled_before_created_is_deferred_and_replay_applies_it():
+    stored = _create_creator_booking_link_and_content(tid="story69_out_of_order_tid")
+    canceled_payload = _invitee_canceled_payload(
+        event_id="EVT_story69_out_of_order_cancel",
+        calendly_booking_uuid="BOOK_story69_out_of_order",
+        tid=stored["tid"],
+        canceled_at="2026-03-11T18:00:00Z",
+    )
+    created_payload = _invitee_created_payload(
+        event_id="EVT_story69_out_of_order_create",
+        calendly_booking_uuid="BOOK_story69_out_of_order",
+        tid=stored["tid"],
+        email="story69-out-of-order@example.com",
+        created_at="2026-03-11T17:30:00Z",
+    )
+    canceled_signature_header = _calendly_signature_header(
+        payload=canceled_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    created_signature_header = _calendly_signature_header(
+        payload=created_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    capture_voider = _CaptureUnpaidInvoiceVoider()
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    router = DefaultCalendlyWebhookRouter(
+        session_factory=lambda: Session(engine),
+        unpaid_invoice_voider=capture_voider,
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("calendly_webhook_router", router):
+                canceled_response = client.post(
+                    "/webhooks/calendly",
+                    content=canceled_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": canceled_signature_header,
+                    },
+                )
+                deferred_records = _journal_records_for_event_id(
+                    calendly_event_id="EVT_story69_out_of_order_cancel"
+                )
+                created_response = client.post(
+                    "/webhooks/calendly",
+                    content=created_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": created_signature_header,
+                    },
+                )
+                replay_result = router.reprocess_event(
+                    record_id=deferred_records[0].id
+                )
+
+    canceled_records = _journal_records_for_event_id(
+        calendly_event_id="EVT_story69_out_of_order_cancel"
+    )
+    created_records = _journal_records_for_event_id(
+        calendly_event_id="EVT_story69_out_of_order_create"
+    )
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story69_out_of_order")
+
+    assert canceled_response.status_code == 200
+    assert created_response.status_code == 200
+    assert len(deferred_records) == 1
+    assert deferred_records[0].processing_status == "deferred_missing_booking"
+    assert replay_result.outcome == "reprocessed"
+    assert replay_result.processing_status == "applied"
+    assert len(canceled_records) == 1
+    assert canceled_records[0].processing_status == "applied"
+    assert canceled_records[0].tid == stored["tid"]
+    assert canceled_records[0].processed_at is not None
+    assert len(created_records) == 1
+    assert created_records[0].processing_status == "applied"
+    assert len(bookings) == 1
+    assert bookings[0].status == "canceled"
+    assert bookings[0].canceled_at == datetime(2026, 3, 11, 18, 0, tzinfo=timezone.utc)
+    assert capture_voider.bookings == [
+        {
+            "booking_id": bookings[0].id,
+            "creator_id": stored["creator_id"],
+            "booking_link_id": stored["booking_link_id"],
+            "tid": stored["tid"],
+            "calendly_booking_uuid": "BOOK_story69_out_of_order",
+            "canceled_at": datetime(2026, 3, 11, 18, 0, tzinfo=timezone.utc),
+        }
+    ]
+
+
 def test_calendly_webhook_verified_booking_created_without_tid_logs_and_persists_no_booking():
     payload = json.dumps(
         {
@@ -1102,6 +1218,7 @@ def test_calendly_webhook_verified_booking_created_without_tid_logs_and_persists
                         "Calendly-Webhook-Signature": signature_header,
                     },
                 )
+    journal_records = _journal_records_for_event_id(calendly_event_id="EVT_story34_missing_tid")
 
     assert response.status_code == 200
     assert response.headers.get("X-Request-Id")
@@ -1115,6 +1232,10 @@ def test_calendly_webhook_verified_booking_created_without_tid_logs_and_persists
     assert warning_log.call_args.args[1] == "BOOK_story34_missing_tid"
     assert warning_log.call_args.args[2] == "invitee.created"
     assert warning_log.call_args.args[3] == "EVT_story34_missing_tid"
+    assert len(journal_records) == 1
+    assert journal_records[0].processing_status == "ignored_missing_tid"
+    assert journal_records[0].delivery_count == 1
+    assert journal_records[0].processed_at is not None
 
 
 def test_calendly_webhook_verified_booking_created_with_unknown_tid_logs_and_persists_no_booking():
@@ -1143,6 +1264,7 @@ def test_calendly_webhook_verified_booking_created_with_unknown_tid_logs_and_per
                         "Calendly-Webhook-Signature": signature_header,
                     },
                 )
+    journal_records = _journal_records_for_event_id(calendly_event_id="EVT_story34_unknown_tid")
 
     assert response.status_code == 200
     assert response.headers.get("X-Request-Id")
@@ -1156,6 +1278,10 @@ def test_calendly_webhook_verified_booking_created_with_unknown_tid_logs_and_per
     assert warning_log.call_args.args[1] == "BOOK_story34_unknown_tid"
     assert warning_log.call_args.args[2] == "story34_unknown_tid"
     assert warning_log.call_args.args[3] == "EVT_story34_unknown_tid"
+    assert len(journal_records) == 1
+    assert journal_records[0].processing_status == "ignored_unknown_tid"
+    assert journal_records[0].delivery_count == 1
+    assert journal_records[0].processed_at is not None
 
 
 def test_calendly_webhook_rejects_invalid_signature_without_routing_or_persisting_bookings():
@@ -1217,7 +1343,11 @@ def test_calendly_webhook_accepts_verified_unsupported_event_type_as_safe_noop()
                     "Calendly-Webhook-Signature": signature_header,
                 },
             )
+    journal_records = _journal_records_for_event_id(calendly_event_id="EVT_story32_noop")
 
     assert response.status_code == 200
     assert response.headers.get("X-Request-Id")
     assert response.json() == {"status": "ok"}
+    assert len(journal_records) == 1
+    assert journal_records[0].processing_status == "ignored_unsupported_event"
+    assert journal_records[0].delivery_count == 1

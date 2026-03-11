@@ -1,3 +1,4 @@
+from app.models.calendly_webhook_event import CalendlyWebhookEventRecord
 from app.models.booking import Booking
 from app.models.blocked_billing_case import BlockedBillingCase
 from app.models.creator import Creator

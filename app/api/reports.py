@@ -7,6 +7,7 @@ from app.api.deps import get_current_auth_user
 from app.db.session import get_db
 from app.models.auth_user import AuthUser
 from app.schemas.reporting import (
+    ReportsBlockedReasonCountResponse,
     ReportsBlockedSummaryResponse,
     ReportsSummaryResponse,
     ReportsSummaryRowResponse,
@@ -57,6 +58,14 @@ def _build_reports_summary_response(summary: CreatorReportsSummary) -> ReportsSu
         blocked_summary=ReportsBlockedSummaryResponse(
             supported=summary.blocked_summary.supported,
             reason=summary.blocked_summary.reason,
+            open_case_count=summary.blocked_summary.open_case_count,
+            reasons=[
+                ReportsBlockedReasonCountResponse(
+                    reason_code=item.reason_code,
+                    case_count=item.case_count,
+                )
+                for item in summary.blocked_summary.reasons
+            ],
         ),
     )
 

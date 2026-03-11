@@ -26,9 +26,16 @@ class ReportsUnattributedBacklogResponse(BaseModel):
     reasons: list[ReportsUnattributedReasonCountResponse]
 
 
+class ReportsBlockedReasonCountResponse(BaseModel):
+    reason_code: str
+    case_count: int
+
+
 class ReportsBlockedSummaryResponse(BaseModel):
     supported: bool
     reason: str | None = None
+    open_case_count: int = 0
+    reasons: list[ReportsBlockedReasonCountResponse] = []
 
 
 class ReportsSummaryResponse(BaseModel):

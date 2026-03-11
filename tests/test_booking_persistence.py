@@ -66,6 +66,8 @@ def test_booking_row_can_persist_against_creator_owned_content():
         assert fetched.tid == content.tid
         assert fetched.email == "booked@example.com"
         assert fetched.status == "created"
+        assert fetched.frozen_billing_amount_cents is None
+        assert fetched.frozen_billing_currency is None
         assert fetched.booked_at == booked_at
         assert fetched.canceled_at is None
         assert fetched.creator is not None

@@ -1,7 +1,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -40,6 +40,8 @@ class Booking(Base):
         nullable=False,
         server_default="created",
     )
+    frozen_billing_amount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    frozen_billing_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     booked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

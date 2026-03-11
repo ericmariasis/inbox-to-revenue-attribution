@@ -132,8 +132,12 @@ class BlockedBillingRetryService:
 
             blocked_case.last_retry_at = retry_at
             booking_id = blocked_case.booking_id
-            frozen_amount_cents = blocked_case.frozen_amount_cents
-            frozen_currency = blocked_case.frozen_currency
+            if (
+                booking.frozen_billing_amount_cents is None
+                or booking.frozen_billing_currency is None
+            ):
+                booking.frozen_billing_amount_cents = blocked_case.frozen_amount_cents
+                booking.frozen_billing_currency = blocked_case.frozen_currency.upper()
             session.commit()
 
         from app.services.billing import BillingOrchestrator
@@ -143,11 +147,7 @@ class BlockedBillingRetryService:
             provider=self._provider,
             now_fn=self._now_fn,
         )
-        result = orchestrator.create_invoice_for_booking(
-            booking_id=booking_id,
-            amount_cents_override=frozen_amount_cents,
-            currency_override=frozen_currency,
-        )
+        result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
 
         if result.outcome == "created":
             return RetryBlockedBillingResult(
@@ -220,6 +220,8 @@ def record_blocked_billing_case(
         session.add(blocked_case)
 
     blocked_case.invoice_id = None
+    booking.frozen_billing_amount_cents = frozen_amount_cents
+    booking.frozen_billing_currency = frozen_currency.upper()
     blocked_case.tid = booking.tid
     blocked_case.calendly_booking_uuid = booking.calendly_booking_uuid
     blocked_case.stripe_account_id = stripe_account_id

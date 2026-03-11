@@ -78,7 +78,7 @@ def main() -> int:
     for warning in artifacts.warnings:
         print(f"warning={warning}")
     print(
-        "next_step=Paste the .gpt54pro.md file into GPT 5.4 Pro, then paste the response into the .review-response.md file before starting the next epic"
+        "next_step=Paste the .gpt54pro.md file into GPT 5.4 Pro, then paste the response into the .review-response.md file and classify findings into blockers, planned-story adjustments, or post-beta follow-ups before starting the next epic"
     )
     return 0
 

@@ -18,6 +18,7 @@ from app.models.content_extraction_artifact import ContentExtractionArtifact
 from app.models.content_fetch_snapshot import ContentFetchSnapshot
 from app.models.content_topic_candidate import ContentTopicCandidate
 from app.schemas.content import (
+    ContentAuthoritativeStateResponse,
     ContentConfirmedTopicResponse,
     ContentCreateRequest,
     ContentExtractionArtifactResponse,
@@ -27,6 +28,7 @@ from app.schemas.content import (
     ContentTopicCandidateResponse,
     ContentTopicReviewResponse,
 )
+from app.services.authoritative_content_evidence import build_content_authority_state
 from app.services.content_extraction import extract_content_from_snapshot
 from app.services.content_fetch import (
     ContentFetchProvider,
@@ -167,12 +169,43 @@ def _build_content_confirmed_topic_response(
     )
 
 
+def _build_content_authoritative_state_response(
+    *,
+    authoritative_extraction_artifact_id: UUID | None,
+    authoritative_fetch_snapshot_id: UUID | None,
+    is_current_artifact_authoritative: bool,
+    promotion_allowed: bool,
+    promotion_block_reason: str | None,
+) -> ContentAuthoritativeStateResponse:
+    return ContentAuthoritativeStateResponse(
+        authoritative_extraction_artifact_id=(
+            str(authoritative_extraction_artifact_id)
+            if authoritative_extraction_artifact_id is not None
+            else None
+        ),
+        authoritative_fetch_snapshot_id=(
+            str(authoritative_fetch_snapshot_id)
+            if authoritative_fetch_snapshot_id is not None
+            else None
+        ),
+        is_current_artifact_authoritative=is_current_artifact_authoritative,
+        promotion_allowed=promotion_allowed,
+        promotion_block_reason=promotion_block_reason,
+    )
+
+
 def _build_content_topic_review_response(
     *,
     content: Content,
     artifact: ContentExtractionArtifact,
     candidate_topics: list[ContentTopicCandidate],
-    confirmed_topics: list[ContentConfirmedTopic],
+    review_confirmed_topics: list[ContentConfirmedTopic],
+    authoritative_confirmed_topics: list[ContentConfirmedTopic],
+    authoritative_extraction_artifact_id: UUID | None,
+    authoritative_fetch_snapshot_id: UUID | None,
+    is_current_artifact_authoritative: bool,
+    promotion_allowed: bool,
+    promotion_block_reason: str | None,
 ) -> ContentTopicReviewResponse:
     return ContentTopicReviewResponse(
         content_id=str(content.id),
@@ -183,13 +216,24 @@ def _build_content_topic_review_response(
         extraction_status=artifact.extraction_status,
         extraction_method=artifact.extraction_method,
         extraction_title=artifact.title,
+        authoritative_state=_build_content_authoritative_state_response(
+            authoritative_extraction_artifact_id=authoritative_extraction_artifact_id,
+            authoritative_fetch_snapshot_id=authoritative_fetch_snapshot_id,
+            is_current_artifact_authoritative=is_current_artifact_authoritative,
+            promotion_allowed=promotion_allowed,
+            promotion_block_reason=promotion_block_reason,
+        ),
         candidate_topics=[
             _build_content_topic_candidate_response(candidate, content_tid=content.tid)
             for candidate in candidate_topics
         ],
-        confirmed_topics=[
+        review_confirmed_topics=[
             _build_content_confirmed_topic_response(confirmed_topic, content_tid=content.tid)
-            for confirmed_topic in confirmed_topics
+            for confirmed_topic in review_confirmed_topics
+        ],
+        authoritative_confirmed_topics=[
+            _build_content_confirmed_topic_response(confirmed_topic, content_tid=content.tid)
+            for confirmed_topic in authoritative_confirmed_topics
         ],
     )
 
@@ -267,17 +311,6 @@ def _content_topic_candidate_query(
     )
 
 
-def _content_confirmed_topics_for_content_query(
-    *,
-    content_id: UUID,
-) -> Select[tuple[ContentConfirmedTopic]]:
-    return (
-        select(ContentConfirmedTopic)
-        .where(ContentConfirmedTopic.content_id == content_id)
-        .order_by(ContentConfirmedTopic.created_at.asc(), ContentConfirmedTopic.id.asc())
-    )
-
-
 def _content_confirmed_topic_by_normalized_label_query(
     *,
     content_id: UUID,
@@ -340,14 +373,23 @@ def _content_topic_review_response_for_state(
             extraction_artifact_id=artifact.id,
         )
     ).scalars().all()
-    confirmed_topics = db.execute(
-        _content_confirmed_topics_for_content_query(content_id=content.id)
-    ).scalars().all()
+    authority_state = build_content_authority_state(
+        content=content,
+        artifact=artifact,
+        candidate_topics=candidate_topics,
+        db=db,
+    )
     return _build_content_topic_review_response(
         content=content,
         artifact=artifact,
         candidate_topics=candidate_topics,
-        confirmed_topics=confirmed_topics,
+        review_confirmed_topics=authority_state.review_confirmed_topics,
+        authoritative_confirmed_topics=authority_state.authoritative_confirmed_topics,
+        authoritative_extraction_artifact_id=authority_state.authoritative_extraction_artifact_id,
+        authoritative_fetch_snapshot_id=authority_state.authoritative_fetch_snapshot_id,
+        is_current_artifact_authoritative=authority_state.is_current_artifact_authoritative,
+        promotion_allowed=authority_state.promotion_allowed,
+        promotion_block_reason=authority_state.promotion_block_reason,
     )
 
 
@@ -751,6 +793,67 @@ def reject_content_topic_candidate_response_for_creator(
     )
 
 
+def promote_content_authoritative_evidence_response_for_creator(
+    *,
+    tid: str,
+    creator_id: UUID,
+    db: Session,
+) -> ContentTopicReviewResponse:
+    content = _get_creator_owned_content_or_404(
+        tid=tid,
+        creator_id=creator_id,
+        db=db,
+    )
+    artifact = _get_latest_content_extraction_artifact_or_409(
+        content_id=content.id,
+        creator_id=creator_id,
+        db=db,
+    )
+    candidate_topics = db.execute(
+        _content_topic_candidates_for_artifact_query(
+            extraction_artifact_id=artifact.id,
+        )
+    ).scalars().all()
+    authority_state = build_content_authority_state(
+        content=content,
+        artifact=artifact,
+        candidate_topics=candidate_topics,
+        db=db,
+    )
+
+    if authority_state.is_current_artifact_authoritative:
+        logger.info(
+            "content_authoritative_evidence_already_current extraction_artifact_id=%s",
+            artifact.id,
+        )
+        return _content_topic_review_response_for_state(
+            content=content,
+            artifact=artifact,
+            db=db,
+        )
+
+    if not authority_state.promotion_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=authority_state.promotion_block_reason or "promotion unavailable",
+        )
+
+    content.authoritative_extraction_artifact_id = artifact.id
+    db.commit()
+    db.refresh(content)
+
+    logger.info(
+        "content_authoritative_evidence_promoted extraction_artifact_id=%s",
+        artifact.id,
+    )
+
+    return _content_topic_review_response_for_state(
+        content=content,
+        artifact=artifact,
+        db=db,
+    )
+
+
 def list_content_responses_for_creator(
     *,
     creator_id: UUID,
@@ -915,6 +1018,22 @@ def reject_content_topic_candidate(
     return reject_content_topic_candidate_response_for_creator(
         tid=tid,
         candidate_id=candidate_id,
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+
+
+@router.post(
+    "/{tid}/authoritative-evidence/promote",
+    response_model=ContentTopicReviewResponse,
+)
+def promote_content_authoritative_evidence(
+    tid: str,
+    current_user: AuthUser = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+) -> ContentTopicReviewResponse:
+    return promote_content_authoritative_evidence_response_for_creator(
+        tid=tid,
         creator_id=current_user.creator_id,
         db=db,
     )

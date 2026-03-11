@@ -277,6 +277,20 @@ def _fetch_confirmed_rows(*, content_id: str) -> list[dict[str, object]]:
     return [dict(row) for row in rows]
 
 
+def _fetch_content_authority_row(*, content_id: str) -> dict[str, object]:
+    with _engine().connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT authoritative_extraction_artifact_id "
+                "FROM content "
+                "WHERE id = :content_id"
+            ),
+            {"content_id": content_id},
+        ).mappings().one()
+
+    return dict(row)
+
+
 def test_create_content_topic_candidates_uses_latest_artifact_and_reuses_existing_candidates():
     inserted = _insert_creator_user(email=f"content_topics_{uuid.uuid4().hex}@example.com")
     token = _access_token(
@@ -360,7 +374,15 @@ def test_create_content_topic_candidates_uses_latest_artifact_and_reuses_existin
     assert first_payload["content_tid"] == tid
     assert first_payload["extraction_artifact_id"] == latest_artifact_id
     assert first_payload["extraction_title"] == "Launch Pricing Breakdown"
-    assert first_payload["confirmed_topics"] == []
+    assert first_payload["review_confirmed_topics"] == []
+    assert first_payload["authoritative_confirmed_topics"] == []
+    assert first_payload["authoritative_state"] == {
+        "authoritative_extraction_artifact_id": None,
+        "authoritative_fetch_snapshot_id": None,
+        "is_current_artifact_authoritative": False,
+        "promotion_allowed": False,
+        "promotion_block_reason": "Resolve all pending topic candidates before promoting current evidence.",
+    }
     assert len(first_payload["candidate_topics"]) >= 3
     assert first_payload["candidate_topics"][0]["suggested_label"] == "Launch Pricing Breakdown"
     assert all(
@@ -449,8 +471,16 @@ def test_confirm_candidate_edit_dedupes_normalized_variants_and_preserves_origin
     assert second_response.status_code == 200
 
     payload = second_response.json()
-    assert len(payload["confirmed_topics"]) == 1
-    assert payload["confirmed_topics"][0]["canonical_label"] == "Discovery Call Pricing"
+    assert len(payload["review_confirmed_topics"]) == 1
+    assert payload["review_confirmed_topics"][0]["canonical_label"] == "Discovery Call Pricing"
+    assert payload["authoritative_confirmed_topics"] == []
+    assert payload["authoritative_state"] == {
+        "authoritative_extraction_artifact_id": None,
+        "authoritative_fetch_snapshot_id": None,
+        "is_current_artifact_authoritative": False,
+        "promotion_allowed": True,
+        "promotion_block_reason": None,
+    }
     assert payload["candidate_topics"][0]["review_status"] == "confirmed"
     assert payload["candidate_topics"][1]["review_status"] == "confirmed"
     assert payload["candidate_topics"][0]["confirmed_topic_id"] == payload["candidate_topics"][1]["confirmed_topic_id"]
@@ -533,7 +563,15 @@ def test_rejecting_confirmed_candidate_removes_unused_canonical_topic():
     assert reject_response.status_code == 200
 
     payload = reject_response.json()
-    assert payload["confirmed_topics"] == []
+    assert payload["review_confirmed_topics"] == []
+    assert payload["authoritative_confirmed_topics"] == []
+    assert payload["authoritative_state"] == {
+        "authoritative_extraction_artifact_id": None,
+        "authoritative_fetch_snapshot_id": None,
+        "is_current_artifact_authoritative": False,
+        "promotion_allowed": True,
+        "promotion_block_reason": None,
+    }
     assert payload["candidate_topics"] == [
         {
             "id": candidate_id,
@@ -557,6 +595,269 @@ def test_rejecting_confirmed_candidate_removes_unused_canonical_topic():
     assert candidate_rows[0]["confirmed_topic_id"] is None
     assert candidate_rows[0]["reviewed_at"] is not None
     assert _fetch_confirmed_rows(content_id=content_id) == []
+
+
+def test_promote_authoritative_evidence_requires_completed_review_and_keeps_previous_authority():
+    inserted = _insert_creator_user(email=f"content_topics_promote_{uuid.uuid4().hex}@example.com")
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Promote Topic Strategy",
+        calendly_url="https://calendly.com/example/promote-topic-strategy",
+    )
+    tid = uuid.uuid4().hex
+    content_id = _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/promote-topic-strategy",
+        tid=tid,
+    )
+    older_snapshot_id = _insert_fetch_snapshot(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        requested_url="https://example.com/posts/promote-topic-strategy?old=1",
+        fetched_url="https://example.com/posts/promote-topic-strategy?old=1",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Older authoritative text.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 10, 15, 0, tzinfo=timezone.utc),
+    )
+    older_artifact_id = _insert_extraction_artifact(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        fetch_snapshot_id=older_snapshot_id,
+        extraction_status="succeeded",
+        title="Older Canonical Topic",
+        extracted_text="Discovery call pricing anchored the older authoritative topic set.",
+        created_at=datetime(2026, 3, 10, 15, 1, tzinfo=timezone.utc),
+    )
+    older_candidate_id = _insert_topic_candidate(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        extraction_artifact_id=older_artifact_id,
+        suggested_label="Discovery Call Pricing",
+        normalized_label="discovery call pricing",
+        candidate_rank=1,
+    )
+
+    with TestClient(app) as client:
+        confirm_old_response = client.post(
+            f"/content/{tid}/topics/{older_candidate_id}/confirm",
+            json={},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        promote_old_response = client.post(
+            f"/content/{tid}/authoritative-evidence/promote",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert confirm_old_response.status_code == 200
+    assert promote_old_response.status_code == 200
+    assert promote_old_response.json()["authoritative_state"]["authoritative_extraction_artifact_id"] == older_artifact_id
+
+    latest_snapshot_id = _insert_fetch_snapshot(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        requested_url="https://example.com/posts/promote-topic-strategy",
+        fetched_url="https://example.com/posts/promote-topic-strategy",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Latest replacement text.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 10, 15, 5, tzinfo=timezone.utc),
+    )
+    latest_artifact_id = _insert_extraction_artifact(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        fetch_snapshot_id=latest_snapshot_id,
+        extraction_status="succeeded",
+        title="Latest Canonical Topic",
+        extracted_text=(
+            "Retainer onboarding checklists now dominate the latest review text.\n"
+            "Legacy pricing details matter less in this revised artifact."
+        ),
+        created_at=datetime(2026, 3, 10, 15, 6, tzinfo=timezone.utc),
+    )
+    latest_candidate_id = _insert_topic_candidate(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        extraction_artifact_id=latest_artifact_id,
+        suggested_label="Retainer Onboarding Checklist",
+        normalized_label="retainer onboarding checklist",
+        candidate_rank=1,
+    )
+    latest_rejected_candidate_id = _insert_topic_candidate(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        extraction_artifact_id=latest_artifact_id,
+        suggested_label="Legacy Pricing Details",
+        normalized_label="legacy pricing details",
+        candidate_rank=2,
+    )
+
+    with TestClient(app) as client:
+        latest_review_response = client.get(
+            f"/content/{tid}/topics",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        confirm_latest_response = client.post(
+            f"/content/{tid}/topics/{latest_candidate_id}/confirm",
+            json={},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        reject_latest_response = client.post(
+            f"/content/{tid}/topics/{latest_rejected_candidate_id}/reject",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        promote_latest_response = client.post(
+            f"/content/{tid}/authoritative-evidence/promote",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert latest_review_response.status_code == 200
+    latest_review_payload = latest_review_response.json()
+    assert latest_review_payload["authoritative_state"] == {
+        "authoritative_extraction_artifact_id": older_artifact_id,
+        "authoritative_fetch_snapshot_id": older_snapshot_id,
+        "is_current_artifact_authoritative": False,
+        "promotion_allowed": False,
+        "promotion_block_reason": "Resolve all pending topic candidates before promoting current evidence.",
+    }
+    assert [topic["canonical_label"] for topic in latest_review_payload["authoritative_confirmed_topics"]] == [
+        "Discovery Call Pricing"
+    ]
+    assert latest_review_payload["review_confirmed_topics"] == []
+
+    assert confirm_latest_response.status_code == 200
+    assert confirm_latest_response.json()["authoritative_state"]["promotion_allowed"] is False
+
+    assert reject_latest_response.status_code == 200
+    reject_payload = reject_latest_response.json()
+    assert reject_payload["authoritative_state"] == {
+        "authoritative_extraction_artifact_id": older_artifact_id,
+        "authoritative_fetch_snapshot_id": older_snapshot_id,
+        "is_current_artifact_authoritative": False,
+        "promotion_allowed": True,
+        "promotion_block_reason": None,
+    }
+    assert [topic["canonical_label"] for topic in reject_payload["review_confirmed_topics"]] == [
+        "Retainer Onboarding Checklist"
+    ]
+    assert [topic["canonical_label"] for topic in reject_payload["authoritative_confirmed_topics"]] == [
+        "Discovery Call Pricing"
+    ]
+
+    assert promote_latest_response.status_code == 200
+    promote_payload = promote_latest_response.json()
+    assert promote_payload["authoritative_state"] == {
+        "authoritative_extraction_artifact_id": latest_artifact_id,
+        "authoritative_fetch_snapshot_id": latest_snapshot_id,
+        "is_current_artifact_authoritative": True,
+        "promotion_allowed": False,
+        "promotion_block_reason": "Latest extraction artifact is already authoritative.",
+    }
+    assert [topic["canonical_label"] for topic in promote_payload["review_confirmed_topics"]] == [
+        "Retainer Onboarding Checklist"
+    ]
+    assert [topic["canonical_label"] for topic in promote_payload["authoritative_confirmed_topics"]] == [
+        "Retainer Onboarding Checklist"
+    ]
+
+    authority_row = _fetch_content_authority_row(content_id=content_id)
+    assert authority_row == {
+        "authoritative_extraction_artifact_id": uuid.UUID(latest_artifact_id),
+    }
+    confirmed_rows = _fetch_confirmed_rows(content_id=content_id)
+    assert [row["canonical_label"] for row in confirmed_rows] == [
+        "Discovery Call Pricing",
+        "Retainer Onboarding Checklist",
+    ]
+
+
+def test_promote_authoritative_evidence_returns_409_for_missing_review_prerequisites():
+    inserted = _insert_creator_user(email=f"content_topics_promote_blocked_{uuid.uuid4().hex}@example.com")
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Blocked Promotion Strategy",
+        calendly_url="https://calendly.com/example/blocked-promotion-strategy",
+    )
+    tid = uuid.uuid4().hex
+    content_id = _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/blocked-promotion-strategy",
+        tid=tid,
+    )
+
+    with TestClient(app) as client:
+        missing_artifact_response = client.post(
+            f"/content/{tid}/authoritative-evidence/promote",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert missing_artifact_response.status_code == 409
+    assert missing_artifact_response.json() == {"detail": "content extraction artifact required"}
+
+    snapshot_id = _insert_fetch_snapshot(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        requested_url="https://example.com/posts/blocked-promotion-strategy",
+        fetched_url="https://example.com/posts/blocked-promotion-strategy",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Blocked promotion text.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 10, 16, 0, tzinfo=timezone.utc),
+    )
+    artifact_id = _insert_extraction_artifact(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        fetch_snapshot_id=snapshot_id,
+        extraction_status="succeeded",
+        title="Blocked Promotion Strategy",
+        extracted_text="Blocked promotion strategy text still needs candidate review.",
+        created_at=datetime(2026, 3, 10, 16, 1, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        missing_candidates_response = client.post(
+            f"/content/{tid}/authoritative-evidence/promote",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert missing_candidates_response.status_code == 409
+    assert missing_candidates_response.json() == {
+        "detail": "Generate topic candidates before promoting current evidence."
+    }
+
+    _insert_topic_candidate(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        extraction_artifact_id=artifact_id,
+        suggested_label="Blocked Promotion Checklist",
+        normalized_label="blocked promotion checklist",
+        candidate_rank=1,
+    )
+
+    with TestClient(app) as client:
+        pending_candidates_response = client.post(
+            f"/content/{tid}/authoritative-evidence/promote",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert pending_candidates_response.status_code == 409
+    assert pending_candidates_response.json() == {
+        "detail": "Resolve all pending topic candidates before promoting current evidence."
+    }
 
 
 def test_content_topic_review_routes_require_auth_and_enforce_creator_isolation():
@@ -623,12 +924,21 @@ def test_content_topic_review_routes_require_auth_and_enforce_creator_isolation(
             f"/content/{tid}/topics/{candidate_id}/reject",
             headers={"Authorization": f"Bearer {token_b}"},
         )
+        not_owned_promote = client.post(
+            f"/content/{tid}/authoritative-evidence/promote",
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+        unauthenticated_promote = client.post(f"/content/{tid}/authoritative-evidence/promote")
 
     assert unauthenticated_get.status_code == 401
     assert unauthenticated_get.json() == {"detail": "not authenticated"}
+    assert unauthenticated_promote.status_code == 401
+    assert unauthenticated_promote.json() == {"detail": "not authenticated"}
     assert not_owned_get.status_code == 404
     assert not_owned_get.json() == {"detail": "content not found"}
     assert not_owned_confirm.status_code == 404
     assert not_owned_confirm.json() == {"detail": "content not found"}
     assert not_owned_reject.status_code == 404
     assert not_owned_reject.json() == {"detail": "content not found"}
+    assert not_owned_promote.status_code == 404
+    assert not_owned_promote.json() == {"detail": "content not found"}

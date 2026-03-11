@@ -485,6 +485,10 @@ def _evaluate_topic_suggestions(
         )
 
     score = _rounded_average([check["score"] for check in checks]) or 0.0
+    review_confirmed_topics = topic_response.get(
+        "review_confirmed_topics",
+        topic_response.get("confirmed_topics", []),
+    )
     return {
         "skipped": False,
         "passed": score >= TOPIC_SUGGESTION_PASS_THRESHOLD,
@@ -493,7 +497,7 @@ def _evaluate_topic_suggestions(
         "expected": expected.model_dump(mode="json"),
         "actual": {
             "candidate_topics": topic_response["candidate_topics"],
-            "confirmed_topics": topic_response["confirmed_topics"],
+            "confirmed_topics": review_confirmed_topics,
         },
         "checks": checks,
     }

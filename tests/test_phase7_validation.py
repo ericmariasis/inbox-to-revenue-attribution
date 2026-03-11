@@ -414,6 +414,8 @@ def test_phase7_invoice_creation_flow_end_to_end():
     assert open_booking.tid == billed_content["tid"]
     assert open_booking.email == "phase7-booked@example.com"
     assert open_booking.status == "created"
+    assert open_booking.frozen_billing_amount_cents == 19500
+    assert open_booking.frozen_billing_currency == "USD"
     assert open_booking.booked_at == datetime(2026, 3, 8, 21, 0, tzinfo=timezone.utc)
     assert open_booking.canceled_at is None
 
@@ -453,8 +455,12 @@ def test_phase7_invoice_creation_flow_end_to_end():
     assert happy_booking is not None
     assert blocked_booking is not None
     assert happy_booking.status == "canceled"
+    assert happy_booking.frozen_billing_amount_cents == 19500
+    assert happy_booking.frozen_billing_currency == "USD"
     assert happy_booking.canceled_at == datetime(2026, 3, 8, 21, 30, tzinfo=timezone.utc)
     assert blocked_booking.status == "created"
+    assert blocked_booking.frozen_billing_amount_cents is None
+    assert blocked_booking.frozen_billing_currency is None
     assert blocked_booking.canceled_at is None
     assert str(blocked_booking.creator_id) == me_response.json()["id"]
     assert str(blocked_booking.booking_link_id) == blocked_booking_link["id"]

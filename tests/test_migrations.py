@@ -14,6 +14,7 @@ def test_migrations_upgrade_and_downgrade():
     try:
         with engine.connect() as conn:
             inspector = inspect(conn)
+            booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             assert "content_topic_candidates" in inspector.get_table_names(schema="public")
             assert "content_confirmed_topics" in inspector.get_table_names(schema="public")
             assert "content_extraction_artifacts" in inspector.get_table_names(schema="public")
@@ -24,6 +25,31 @@ def test_migrations_upgrade_and_downgrade():
             assert "bookings" in inspector.get_table_names(schema="public")
             assert "content" in inspector.get_table_names(schema="public")
             assert "booking_links" in inspector.get_table_names(schema="public")
+            assert "frozen_billing_amount_cents" in booking_columns
+            assert "frozen_billing_currency" in booking_columns
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
+            assert "content_topic_candidates" in table_names
+            assert "content_confirmed_topics" in table_names
+            assert "content_extraction_artifacts" in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
+            assert "frozen_billing_amount_cents" not in booking_columns
+            assert "frozen_billing_currency" not in booking_columns
             booking_link_columns = {
                 column["name"] for column in inspector.get_columns("booking_links")
             }
@@ -496,6 +522,8 @@ def test_bookings_table_has_expected_columns_fk_indexes_and_unique_uuid():
             "calendly_booking_uuid",
             "email",
             "status",
+            "frozen_billing_amount_cents",
+            "frozen_billing_currency",
             "booked_at",
             "canceled_at",
         }

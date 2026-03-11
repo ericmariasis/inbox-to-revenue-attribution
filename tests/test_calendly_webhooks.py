@@ -537,6 +537,8 @@ def test_calendly_webhook_billable_booking_created_persists_invoice_and_duplicat
     assert first_response.status_code == 200
     assert second_response.status_code == 200
     assert len(bookings) == 1
+    assert bookings[0].frozen_billing_amount_cents == 15000
+    assert bookings[0].frozen_billing_currency == "USD"
     assert len(invoices) == 1
     assert invoices[0].creator_id == stored["creator_id"]
     assert invoices[0].booking_id == bookings[0].id
@@ -781,6 +783,8 @@ def test_calendly_webhook_booking_created_with_non_billable_creator_creates_no_i
 
     assert response.status_code == 200
     assert len(bookings) == 1
+    assert bookings[0].frozen_billing_amount_cents == 22000
+    assert bookings[0].frozen_billing_currency == "USD"
     assert invoices == []
     assert len(blocked_cases) == 1
     assert blocked_cases[0].reason_code == "creator_not_billable"
@@ -850,6 +854,8 @@ def test_calendly_webhook_booking_canceled_closes_open_blocked_billing_case():
     assert canceled_response.status_code == 200
     assert len(bookings) == 1
     assert bookings[0].status == "canceled"
+    assert bookings[0].frozen_billing_amount_cents == 22000
+    assert bookings[0].frozen_billing_currency == "USD"
     assert len(blocked_cases) == 1
     assert blocked_cases[0].status == "resolved"
     assert blocked_cases[0].resolution_code == "booking_canceled"

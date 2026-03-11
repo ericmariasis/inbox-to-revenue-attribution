@@ -71,8 +71,6 @@ class BillingOrchestrator:
         self,
         *,
         booking_id: uuid.UUID,
-        amount_cents_override: int | None = None,
-        currency_override: str | None = None,
     ) -> BillingInvoiceResult:
         with self._session_factory() as session:
             booking = session.get(Booking, booking_id)
@@ -99,17 +97,7 @@ class BillingOrchestrator:
                 )
                 return _billing_invoice_result(existing_invoice, outcome="existing")
 
-            booking_link = booking.booking_link
-            amount_cents = (
-                amount_cents_override
-                if amount_cents_override is not None
-                else booking_link.billing_amount_cents
-            )
-            currency = (
-                currency_override
-                if currency_override is not None
-                else booking_link.billing_currency
-            )
+            amount_cents, currency = _resolve_booking_billing_terms(booking=booking)
             if amount_cents is None or currency is None:
                 logger.info(
                     "billing_invoice_create_deferred_missing_billing_defaults booking_id=%s creator_id=%s booking_link_id=%s missing_amount=%s missing_currency=%s",
@@ -405,3 +393,34 @@ def _billing_invoice_void_result(
         stripe_invoice_id=invoice.stripe_invoice_id,
         invoice_status=invoice.status,
     )
+
+
+def _resolve_booking_billing_terms(*, booking: Booking) -> tuple[int | None, str | None]:
+    frozen_amount_cents = booking.frozen_billing_amount_cents
+    frozen_currency = booking.frozen_billing_currency
+    if frozen_amount_cents is not None and frozen_currency is not None:
+        return frozen_amount_cents, frozen_currency.upper()
+
+    blocked_case = booking.blocked_billing_case
+    if blocked_case is not None:
+        booking.frozen_billing_amount_cents = blocked_case.frozen_amount_cents
+        booking.frozen_billing_currency = blocked_case.frozen_currency.upper()
+        return booking.frozen_billing_amount_cents, booking.frozen_billing_currency
+
+    if frozen_amount_cents is not None or frozen_currency is not None:
+        logger.warning(
+            "billing_booking_frozen_billing_partial booking_id=%s creator_id=%s amount_present=%s currency_present=%s",
+            booking.id,
+            booking.creator_id,
+            frozen_amount_cents is not None,
+            frozen_currency is not None,
+        )
+
+    billing_amount_cents = booking.booking_link.billing_amount_cents
+    billing_currency = booking.booking_link.billing_currency
+    if billing_amount_cents is None or billing_currency is None:
+        return billing_amount_cents, billing_currency.upper() if billing_currency else None
+
+    booking.frozen_billing_amount_cents = billing_amount_cents
+    booking.frozen_billing_currency = billing_currency.upper()
+    return booking.frozen_billing_amount_cents, booking.frozen_billing_currency

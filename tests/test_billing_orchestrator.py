@@ -151,6 +151,12 @@ def _blocked_case_rows() -> list[BlockedBillingCase]:
         return session.scalars(select(BlockedBillingCase)).all()
 
 
+def _booking_rows() -> list[Booking]:
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    with Session(engine) as session:
+        return session.scalars(select(Booking)).all()
+
+
 def test_billing_orchestrator_persists_open_invoice_from_trusted_booking_data():
     engine = create_engine(os.environ["TEST_DATABASE_URL"])
     issued_at = datetime(2026, 3, 8, 18, 5, tzinfo=UTC)
@@ -195,6 +201,9 @@ def test_billing_orchestrator_persists_open_invoice_from_trusted_booking_data():
     ]
     assert provider.void_calls == []
     assert len(invoices) == 1
+    assert len(_booking_rows()) == 1
+    assert _booking_rows()[0].frozen_billing_amount_cents == 15000
+    assert _booking_rows()[0].frozen_billing_currency == "USD"
     assert invoices[0].creator_id == creator_id
     assert invoices[0].booking_id == booking_id
     assert invoices[0].tid == content_tid
@@ -278,6 +287,9 @@ def test_billing_orchestrator_persists_paid_invoice_when_provider_returns_paid_s
     assert result.stripe_invoice_id == "in_story57_paid"
     assert result.invoice_status == "paid"
     assert len(invoices) == 1
+    assert len(_booking_rows()) == 1
+    assert _booking_rows()[0].frozen_billing_amount_cents == 15000
+    assert _booking_rows()[0].frozen_billing_currency == "USD"
     assert invoices[0].status == "paid"
     assert invoices[0].issued_at == issued_at
     assert invoices[0].paid_at == issued_at
@@ -304,6 +316,7 @@ def test_billing_orchestrator_defers_when_billing_defaults_are_missing():
     )
 
     result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
+    bookings = _booking_rows()
 
     assert result.outcome == "deferred"
     assert result.reason == "missing_billing_defaults"
@@ -312,6 +325,101 @@ def test_billing_orchestrator_defers_when_billing_defaults_are_missing():
     assert provider.create_calls == []
     assert _invoice_rows() == []
     assert _blocked_case_rows() == []
+    assert len(bookings) == 1
+    assert bookings[0].frozen_billing_amount_cents is None
+    assert bookings[0].frozen_billing_currency is None
+
+
+def test_billing_orchestrator_freezes_once_defaults_become_complete_after_initial_missing_defaults():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_story67_late_defaults",
+    )
+
+    with Session(engine) as session:
+        _, booking_link, _, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story67_late_defaults",
+            tid="story67_late_defaults_tid",
+            billing_amount_cents=None,
+            billing_currency=None,
+        )
+        booking_id = booking.id
+        booking_link_id = booking_link.id
+        session.commit()
+
+    orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        provider=provider,
+        now_fn=lambda: datetime(2026, 3, 8, 18, 11, tzinfo=UTC),
+    )
+
+    first_result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
+
+    with Session(engine) as session:
+        booking_link = session.get(BookingLink, booking_link_id)
+        assert booking_link is not None
+        booking_link.billing_amount_cents = 12500
+        booking_link.billing_currency = "cad"
+        session.commit()
+
+    second_result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
+    bookings = _booking_rows()
+    invoices = _invoice_rows()
+
+    assert first_result.outcome == "deferred"
+    assert first_result.reason == "missing_billing_defaults"
+    assert second_result.outcome == "created"
+    assert second_result.reason is None
+    assert len(provider.create_calls) == 1
+    assert provider.create_calls[0]["amount_cents"] == 12500
+    assert provider.create_calls[0]["currency"] == "CAD"
+    assert len(bookings) == 1
+    assert bookings[0].frozen_billing_amount_cents == 12500
+    assert bookings[0].frozen_billing_currency == "CAD"
+    assert len(invoices) == 1
+    assert invoices[0].amount_cents == 12500
+    assert invoices[0].currency == "CAD"
+
+
+def test_billing_orchestrator_uses_booking_frozen_values_before_current_booking_link_defaults():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_story67_booking_frozen",
+    )
+
+    with Session(engine) as session:
+        _, booking_link, _, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story67_booking_frozen",
+            tid="story67_booking_frozen_tid",
+            billing_amount_cents=9900,
+            billing_currency="EUR",
+        )
+        booking_id = booking.id
+        booking.frozen_billing_amount_cents = 15000
+        booking.frozen_billing_currency = "USD"
+        session.commit()
+
+    orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        provider=provider,
+        now_fn=lambda: datetime(2026, 3, 8, 18, 12, tzinfo=UTC),
+    )
+
+    result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
+    invoices = _invoice_rows()
+
+    assert result.outcome == "created"
+    assert result.reason is None
+    assert len(provider.create_calls) == 1
+    assert provider.create_calls[0]["amount_cents"] == 15000
+    assert provider.create_calls[0]["currency"] == "USD"
+    assert len(invoices) == 1
+    assert invoices[0].amount_cents == 15000
+    assert invoices[0].currency == "USD"
 
 
 def test_billing_orchestrator_defers_when_creator_is_not_billable():
@@ -345,6 +453,9 @@ def test_billing_orchestrator_defers_when_creator_is_not_billable():
     assert provider.create_calls == []
     assert _invoice_rows() == []
     assert len(blocked_cases) == 1
+    assert len(_booking_rows()) == 1
+    assert _booking_rows()[0].frozen_billing_amount_cents == 15000
+    assert _booking_rows()[0].frozen_billing_currency == "USD"
     assert blocked_cases[0].booking_id == booking_id
     assert blocked_cases[0].reason_code == "creator_not_billable"
     assert blocked_cases[0].frozen_amount_cents == 15000
@@ -394,6 +505,9 @@ def test_billing_orchestrator_defers_when_readiness_lookup_raises_provider_error
     assert provider.create_calls == []
     assert _invoice_rows() == []
     assert len(blocked_cases) == 1
+    assert len(_booking_rows()) == 1
+    assert _booking_rows()[0].frozen_billing_amount_cents == 15000
+    assert _booking_rows()[0].frozen_billing_currency == "USD"
     assert blocked_cases[0].booking_id == booking_id
     assert blocked_cases[0].reason_code == "provider_error"
     assert blocked_cases[0].provider_operation == "stripe_account_readiness"
@@ -441,6 +555,9 @@ def test_billing_orchestrator_defers_when_invoice_create_raises_provider_error()
     assert len(provider.create_calls) == 1
     assert _invoice_rows() == []
     assert len(blocked_cases) == 1
+    assert len(_booking_rows()) == 1
+    assert _booking_rows()[0].frozen_billing_amount_cents == 15000
+    assert _booking_rows()[0].frozen_billing_currency == "USD"
     assert blocked_cases[0].booking_id == booking_id
     assert blocked_cases[0].reason_code == "provider_error"
     assert blocked_cases[0].provider_operation == "stripe_invoice_create"
@@ -506,6 +623,7 @@ def test_blocked_billing_retry_uses_frozen_inputs_and_is_idempotent():
     )
     invoices = _invoice_rows()
     blocked_cases = _blocked_case_rows()
+    bookings = _booking_rows()
 
     assert initial_result.outcome == "deferred"
     assert initial_result.reason == "creator_not_billable"
@@ -518,12 +636,85 @@ def test_blocked_billing_retry_uses_frozen_inputs_and_is_idempotent():
     assert invoices[0].booking_id == booking_id
     assert invoices[0].amount_cents == 15000
     assert invoices[0].currency == "USD"
+    assert len(bookings) == 1
+    assert bookings[0].frozen_billing_amount_cents == 15000
+    assert bookings[0].frozen_billing_currency == "USD"
     assert len(blocked_cases) == 1
     assert blocked_cases[0].status == "resolved"
     assert blocked_cases[0].invoice_id == invoices[0].id
     assert blocked_cases[0].resolution_code == "invoice_created"
     assert blocked_cases[0].resolved_at == recovered_at
     assert blocked_cases[0].last_retry_at == recovered_at
+
+
+def test_blocked_billing_retry_backfills_booking_from_legacy_blocked_case_snapshot():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    blocked_at = datetime(2026, 3, 8, 18, 19, tzinfo=UTC)
+    recovered_at = datetime(2026, 3, 8, 18, 31, tzinfo=UTC)
+
+    with Session(engine) as session:
+        creator, _, _, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story67_legacy_blocked",
+            tid="story67_legacy_blocked_tid",
+            stripe_account_id="acct_story67_legacy_blocked",
+            billing_amount_cents=9900,
+            billing_currency="EUR",
+        )
+        creator_id = creator.id
+        booking_id = booking.id
+        session.add(
+            BlockedBillingCase(
+                creator_id=creator.id,
+                booking_id=booking.id,
+                invoice_id=None,
+                tid=booking.tid,
+                calendly_booking_uuid=booking.calendly_booking_uuid,
+                stripe_account_id=creator.stripe_account_id,
+                frozen_amount_cents=15000,
+                frozen_currency="USD",
+                status="open",
+                reason_code="creator_not_billable",
+                first_blocked_at=blocked_at,
+                last_blocked_at=blocked_at,
+                last_retry_at=None,
+                resolved_at=None,
+                resolution_code=None,
+            )
+        )
+        session.commit()
+
+    retry_provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_story67_legacy_blocked",
+    )
+    retry_service = BlockedBillingRetryService(
+        session_factory=lambda: Session(engine),
+        provider=retry_provider,
+        now_fn=lambda: recovered_at,
+    )
+
+    with Session(engine) as session:
+        blocked_case = session.scalar(
+            select(BlockedBillingCase).where(BlockedBillingCase.booking_id == booking_id)
+        )
+        assert blocked_case is not None
+        blocked_case_id = blocked_case.id
+
+    result = retry_service.retry_case(case_id=blocked_case_id, creator_id=creator_id)
+    bookings = _booking_rows()
+    invoices = _invoice_rows()
+
+    assert result.outcome == "created"
+    assert len(retry_provider.create_calls) == 1
+    assert retry_provider.create_calls[0]["amount_cents"] == 15000
+    assert retry_provider.create_calls[0]["currency"] == "USD"
+    assert len(bookings) == 1
+    assert bookings[0].frozen_billing_amount_cents == 15000
+    assert bookings[0].frozen_billing_currency == "USD"
+    assert len(invoices) == 1
+    assert invoices[0].amount_cents == 15000
+    assert invoices[0].currency == "USD"
 
 
 def test_billing_orchestrator_voids_open_invoice_and_is_idempotent():

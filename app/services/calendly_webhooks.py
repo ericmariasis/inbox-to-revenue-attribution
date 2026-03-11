@@ -5,7 +5,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Literal, Protocol
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models.booking import Booking
+from app.models.calendly_webhook_event import CalendlyWebhookEventRecord
 from app.models.content import Content
 from app.services.blocked_billing import resolve_blocked_billing_case_for_booking_canceled
 from app.services.billing import (
@@ -61,6 +62,38 @@ class CanceledBookingContext:
     tid: str
     calendly_booking_uuid: str
     canceled_at: datetime
+
+
+CalendlyJournalRecordOutcome = Literal["recorded", "duplicate"]
+CalendlyProcessingStatus = Literal[
+    "received",
+    "applied",
+    "deferred_missing_booking",
+    "ignored_missing_tid",
+    "ignored_unknown_tid",
+    "ignored_invalid_payload",
+    "ignored_unsupported_event",
+    "failed",
+]
+CalendlyReplayOutcome = Literal["missing", "reprocessed"]
+
+
+@dataclass(frozen=True)
+class CalendlyWebhookJournalRecordResult:
+    outcome: CalendlyJournalRecordOutcome
+    record_id: uuid.UUID
+    delivery_count: int
+
+
+@dataclass(frozen=True)
+class CalendlyWebhookReducerResult:
+    processing_status: CalendlyProcessingStatus
+
+
+@dataclass(frozen=True)
+class CalendlyWebhookReplayResult:
+    outcome: CalendlyReplayOutcome
+    processing_status: CalendlyProcessingStatus | None = None
 
 
 class CalendlyWebhookRouter(Protocol):
@@ -120,13 +153,13 @@ class BookingCreatedCalendlyWebhookHandler:
         self._session_factory = session_factory
         self._billing_service = billing_service
 
-    def handle_event(self, *, event: CalendlyWebhookEvent) -> bool:
+    def handle_event(self, *, event: CalendlyWebhookEvent) -> CalendlyWebhookReducerResult | None:
         if event.event_type != "booking.created":
-            return False
+            return None
 
         event_payload = event.payload.get("payload")
         if not isinstance(event_payload, dict):
-            return False
+            return CalendlyWebhookReducerResult(processing_status="ignored_invalid_payload")
 
         if not event.tid:
             logger.warning(
@@ -135,7 +168,7 @@ class BookingCreatedCalendlyWebhookHandler:
                 event.provider_event_type,
                 event.calendly_event_id,
             )
-            return True
+            return CalendlyWebhookReducerResult(processing_status="ignored_missing_tid")
 
         booking_id_for_billing: uuid.UUID | None = None
 
@@ -148,7 +181,7 @@ class BookingCreatedCalendlyWebhookHandler:
                     event.tid,
                     event.calendly_event_id,
                 )
-                return True
+                return CalendlyWebhookReducerResult(processing_status="ignored_unknown_tid")
             creator_id = content.creator_id
             booking_link_id = content.booking_link_id
             resolved_tid = content.tid
@@ -163,7 +196,7 @@ class BookingCreatedCalendlyWebhookHandler:
                     email is None,
                     booked_at is None,
                 )
-                return True
+                return CalendlyWebhookReducerResult(processing_status="ignored_invalid_payload")
 
             existing_booking = session.scalar(
                 select(Booking).where(
@@ -231,7 +264,7 @@ class BookingCreatedCalendlyWebhookHandler:
                 billing_result.stripe_invoice_id,
                 billing_result.invoice_status,
             )
-        return True
+        return CalendlyWebhookReducerResult(processing_status="applied")
 
 
 class BookingCanceledCalendlyWebhookHandler:
@@ -244,13 +277,13 @@ class BookingCanceledCalendlyWebhookHandler:
         self._session_factory = session_factory
         self._unpaid_invoice_voider = unpaid_invoice_voider
 
-    def handle_event(self, *, event: CalendlyWebhookEvent) -> bool:
+    def handle_event(self, *, event: CalendlyWebhookEvent) -> CalendlyWebhookReducerResult | None:
         if event.event_type != "booking.canceled":
-            return False
+            return None
 
         event_payload = event.payload.get("payload")
         if not isinstance(event_payload, dict):
-            return False
+            return CalendlyWebhookReducerResult(processing_status="ignored_invalid_payload")
 
         with self._session_factory() as session:
             booking = session.scalar(
@@ -264,7 +297,7 @@ class BookingCanceledCalendlyWebhookHandler:
                     event.calendly_booking_uuid,
                     event.tid,
                 )
-                return True
+                return CalendlyWebhookReducerResult(processing_status="deferred_missing_booking")
 
             if booking.status == "canceled":
                 logger.info(
@@ -272,7 +305,7 @@ class BookingCanceledCalendlyWebhookHandler:
                     booking.calendly_booking_uuid,
                     booking.tid,
                 )
-                return True
+                return CalendlyWebhookReducerResult(processing_status="applied")
 
             canceled_at = _extract_canceled_at(event_payload) or datetime.now(UTC)
             booking.status = "canceled"
@@ -301,7 +334,7 @@ class BookingCanceledCalendlyWebhookHandler:
             booking_context.booking_link_id,
         )
         self._unpaid_invoice_voider.void_unpaid_invoice(booking=booking_context)
-        return True
+        return CalendlyWebhookReducerResult(processing_status="applied")
 
 
 class DefaultCalendlyWebhookRouter:
@@ -312,7 +345,9 @@ class DefaultCalendlyWebhookRouter:
         booking_canceled_handler: BookingCanceledCalendlyWebhookHandler | None = None,
         billing_service: BookingBillingService | None = None,
         unpaid_invoice_voider: UnpaidInvoiceVoider | None = None,
+        session_factory: Callable[[], Session] = SessionLocal,
     ):
+        self._session_factory = session_factory
         resolved_unpaid_invoice_voider = unpaid_invoice_voider
         if resolved_unpaid_invoice_voider is None:
             if billing_service is None:
@@ -322,11 +357,11 @@ class DefaultCalendlyWebhookRouter:
                     billing_service=billing_service
                 )
         self._booking_created_handler = booking_created_handler or BookingCreatedCalendlyWebhookHandler(
-            session_factory=SessionLocal,
+            session_factory=session_factory,
             billing_service=billing_service,
         )
         self._booking_canceled_handler = booking_canceled_handler or BookingCanceledCalendlyWebhookHandler(
-            session_factory=SessionLocal,
+            session_factory=session_factory,
             unpaid_invoice_voider=resolved_unpaid_invoice_voider,
         )
 
@@ -342,10 +377,75 @@ class DefaultCalendlyWebhookRouter:
             event.tid,
             event.tid_path,
         )
-        if self._booking_created_handler.handle_event(event=event):
+        journal_result = _record_calendly_webhook_event(
+            session_factory=self._session_factory,
+            event=event,
+        )
+        if journal_result.outcome == "duplicate":
+            logger.info(
+                "calendly_webhook_event_duplicate provider_event_type=%s calendly_event_id=%s calendly_booking_uuid=%s delivery_count=%s",
+                event.provider_event_type,
+                event.calendly_event_id,
+                event.calendly_booking_uuid,
+                journal_result.delivery_count,
+            )
             return
-        if self._booking_canceled_handler.handle_event(event=event):
-            return
+        self._apply_journaled_event(
+            record_id=journal_result.record_id,
+            event=event,
+        )
+
+    def reprocess_event(self, *, record_id: uuid.UUID) -> CalendlyWebhookReplayResult:
+        event = _load_journaled_calendly_event(
+            session_factory=self._session_factory,
+            record_id=record_id,
+        )
+        if event is None:
+            return CalendlyWebhookReplayResult(outcome="missing")
+
+        processing_status = self._apply_journaled_event(
+            record_id=record_id,
+            event=event,
+        )
+        return CalendlyWebhookReplayResult(
+            outcome="reprocessed",
+            processing_status=processing_status,
+        )
+
+    def _apply_journaled_event(
+        self,
+        *,
+        record_id: uuid.UUID,
+        event: CalendlyWebhookEvent,
+    ) -> CalendlyProcessingStatus:
+        try:
+            result = self._reduce_event(event=event)
+        except Exception as exc:
+            _update_calendly_webhook_event_processing(
+                session_factory=self._session_factory,
+                record_id=record_id,
+                processing_status="failed",
+                last_error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+
+        _update_calendly_webhook_event_processing(
+            session_factory=self._session_factory,
+            record_id=record_id,
+            processing_status=result.processing_status,
+            last_error=None,
+        )
+        return result.processing_status
+
+    def _reduce_event(self, *, event: CalendlyWebhookEvent) -> CalendlyWebhookReducerResult:
+        created_result = self._booking_created_handler.handle_event(event=event)
+        if created_result is not None:
+            return created_result
+
+        canceled_result = self._booking_canceled_handler.handle_event(event=event)
+        if canceled_result is not None:
+            return canceled_result
+
         logger.info(
             "calendly_webhook_event_noop provider_event_type=%s calendly_event_id=%s calendly_event_id_path=%s calendly_booking_uuid=%s calendly_booking_uuid_path=%s event_type=%s tid=%s tid_path=%s",
             event.provider_event_type,
@@ -357,6 +457,7 @@ class DefaultCalendlyWebhookRouter:
             event.tid,
             event.tid_path,
         )
+        return CalendlyWebhookReducerResult(processing_status="ignored_unsupported_event")
 
 
 DEFAULT_CALENDLY_WEBHOOK_ROUTER = DefaultCalendlyWebhookRouter()
@@ -382,7 +483,21 @@ def build_default_calendly_webhook_router(
                 billing_service=billing_service
             ),
         ),
+        session_factory=session_factory,
     )
+
+
+def reprocess_calendly_webhook_event(
+    *,
+    record_id: uuid.UUID,
+    provider: StripeProvider | None = None,
+    session_factory: Callable[[], Session] = SessionLocal,
+) -> CalendlyWebhookReplayResult:
+    router = build_default_calendly_webhook_router(
+        provider=provider,
+        session_factory=session_factory,
+    )
+    return router.reprocess_event(record_id=record_id)
 
 
 def verify_and_parse_calendly_webhook(
@@ -437,6 +552,126 @@ def verify_and_parse_calendly_webhook(
         tid_path=tid_path,
         payload=parsed_payload,
     )
+
+
+def _record_calendly_webhook_event(
+    *,
+    session_factory: Callable[[], Session],
+    event: CalendlyWebhookEvent,
+    received_at: datetime | None = None,
+) -> CalendlyWebhookJournalRecordResult:
+    resolved_received_at = received_at or datetime.now(UTC)
+
+    with session_factory() as session:
+        existing_record = session.scalar(
+            select(CalendlyWebhookEventRecord).where(
+                CalendlyWebhookEventRecord.provider_event_type == event.provider_event_type,
+                CalendlyWebhookEventRecord.calendly_event_id == event.calendly_event_id,
+                CalendlyWebhookEventRecord.calendly_booking_uuid == event.calendly_booking_uuid,
+            )
+        )
+        if existing_record is not None:
+            existing_record.delivery_count += 1
+            existing_record.last_received_at = resolved_received_at
+            session.commit()
+            return CalendlyWebhookJournalRecordResult(
+                outcome="duplicate",
+                record_id=existing_record.id,
+                delivery_count=existing_record.delivery_count,
+            )
+
+        record = CalendlyWebhookEventRecord(
+            calendly_event_id=event.calendly_event_id,
+            provider_event_type=event.provider_event_type,
+            event_type=event.event_type,
+            calendly_event_id_path=event.calendly_event_id_path,
+            calendly_booking_uuid=event.calendly_booking_uuid,
+            calendly_booking_uuid_path=event.calendly_booking_uuid_path,
+            tid=event.tid,
+            tid_path=event.tid_path,
+            payload=event.payload,
+            delivery_count=1,
+            processing_status="received",
+            received_at=resolved_received_at,
+            last_received_at=resolved_received_at,
+        )
+        session.add(record)
+
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            existing_record = session.scalar(
+                select(CalendlyWebhookEventRecord).where(
+                    CalendlyWebhookEventRecord.provider_event_type == event.provider_event_type,
+                    CalendlyWebhookEventRecord.calendly_event_id == event.calendly_event_id,
+                    CalendlyWebhookEventRecord.calendly_booking_uuid == event.calendly_booking_uuid,
+                )
+            )
+            if existing_record is None:
+                raise
+            existing_record.delivery_count += 1
+            existing_record.last_received_at = resolved_received_at
+            session.commit()
+            return CalendlyWebhookJournalRecordResult(
+                outcome="duplicate",
+                record_id=existing_record.id,
+                delivery_count=existing_record.delivery_count,
+            )
+
+        return CalendlyWebhookJournalRecordResult(
+            outcome="recorded",
+            record_id=record.id,
+            delivery_count=record.delivery_count,
+        )
+
+
+def _load_journaled_calendly_event(
+    *,
+    session_factory: Callable[[], Session],
+    record_id: uuid.UUID,
+) -> CalendlyWebhookEvent | None:
+    with session_factory() as session:
+        record = session.scalar(
+            select(CalendlyWebhookEventRecord).where(
+                CalendlyWebhookEventRecord.id == record_id
+            )
+        )
+        if record is None:
+            return None
+
+        return CalendlyWebhookEvent(
+            provider_event_type=record.provider_event_type,
+            calendly_event_id=record.calendly_event_id,
+            calendly_event_id_path=record.calendly_event_id_path,
+            event_type=record.event_type,
+            calendly_booking_uuid=record.calendly_booking_uuid,
+            calendly_booking_uuid_path=record.calendly_booking_uuid_path,
+            tid=record.tid,
+            tid_path=record.tid_path,
+            payload=record.payload,
+        )
+
+
+def _update_calendly_webhook_event_processing(
+    *,
+    session_factory: Callable[[], Session],
+    record_id: uuid.UUID,
+    processing_status: CalendlyProcessingStatus,
+    last_error: str | None,
+) -> None:
+    with session_factory() as session:
+        record = session.scalar(
+            select(CalendlyWebhookEventRecord).where(
+                CalendlyWebhookEventRecord.id == record_id
+            )
+        )
+        if record is None:
+            raise ValueError(f"missing calendly webhook journal row for {record_id}")
+        record.processing_status = processing_status
+        record.last_error = last_error
+        record.processed_at = datetime.now(UTC)
+        session.commit()
 
 
 def _parse_signature_header(signature_header: str | None) -> tuple[int, list[str]]:

@@ -26,6 +26,7 @@ def isolate_test_data():
     with engine.begin() as conn:
         existing = set(inspect(conn).get_table_names(schema="public"))
         ordered_tables = [
+            "calendly_webhook_events",
             "content_topic_candidates",
             "content_confirmed_topics",
             "content_extraction_artifacts",

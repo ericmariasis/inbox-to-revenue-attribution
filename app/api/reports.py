@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -7,16 +8,37 @@ from app.api.deps import get_current_auth_user
 from app.db.session import get_db
 from app.models.auth_user import AuthUser
 from app.schemas.reporting import (
+    AuthoritativeContentHealthResponse,
+    AuthoritativeContentLagReasonCountResponse,
+    BookingAttributionHealthResponse,
+    BookingAttributionReasonCountResponse,
+    CalendlyIngressHealthResponse,
+    CalendlyIngressStatusCountResponse,
+    EvidenceIngressHealthResponse,
+    PaymentProvenanceHealthResponse,
+    PaymentProvenanceReasonCountResponse,
+    PaymentProvenanceStateCountResponse,
     ReportsBlockedReasonCountResponse,
+    BlockedBillingHealthResponse,
     ReportsBlockedSummaryResponse,
     ReportsSummaryResponse,
     ReportsSummaryRowResponse,
     ReportsUnattributedBacklogResponse,
     ReportsUnattributedReasonCountResponse,
 )
+from app.services.evidence_ingress_health import (
+    CreatorEvidenceIngressHealthSnapshot,
+    get_creator_evidence_ingress_health_snapshot,
+)
+from app.services.invoice_payment_events import (
+    PAYMENT_PROVENANCE_STATE_CONFLICTING,
+    PAYMENT_PROVENANCE_STATE_PENDING,
+    PAYMENT_PROVENANCE_STATE_UNMATCHED,
+)
 from app.services.reporting import CreatorReportsSummary, get_creator_reports_summary
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+logger = logging.getLogger(__name__)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -70,6 +92,91 @@ def _build_reports_summary_response(summary: CreatorReportsSummary) -> ReportsSu
     )
 
 
+def _build_reports_health_response(
+    snapshot: CreatorEvidenceIngressHealthSnapshot,
+) -> EvidenceIngressHealthResponse:
+    return EvidenceIngressHealthResponse(
+        creator_id=str(snapshot.creator_id),
+        booking_attribution=BookingAttributionHealthResponse(
+            unattributed_booking_count=snapshot.booking_attribution.unattributed_booking_count,
+            reasons=[
+                BookingAttributionReasonCountResponse(
+                    reason=item.reason,
+                    booking_count=item.booking_count,
+                )
+                for item in snapshot.booking_attribution.reasons
+            ],
+        ),
+        calendly_ingress=CalendlyIngressHealthResponse(
+            backlog_event_count=snapshot.calendly_ingress.backlog_event_count,
+            failed_event_count=snapshot.calendly_ingress.failed_event_count,
+            statuses=[
+                CalendlyIngressStatusCountResponse(
+                    processing_status=item.processing_status,
+                    event_count=item.event_count,
+                )
+                for item in snapshot.calendly_ingress.statuses
+            ],
+        ),
+        payment_provenance=PaymentProvenanceHealthResponse(
+            settled_state_counts=[
+                PaymentProvenanceStateCountResponse(
+                    state=item.state,
+                    row_count=item.row_count,
+                )
+                for item in snapshot.payment_provenance.settled_state_counts
+            ],
+            current_backlog_event_count=snapshot.payment_provenance.current_backlog_event_count,
+            current_backlog_reasons=[
+                PaymentProvenanceReasonCountResponse(
+                    reason=item.reason,
+                    event_count=item.event_count,
+                )
+                for item in snapshot.payment_provenance.current_backlog_reasons
+            ],
+        ),
+        blocked_billing=BlockedBillingHealthResponse(
+            open_case_count=snapshot.blocked_billing.open_case_count,
+            reasons=[
+                ReportsBlockedReasonCountResponse(
+                    reason_code=item.reason_code,
+                    case_count=item.case_count,
+                )
+                for item in snapshot.blocked_billing.reasons
+            ],
+        ),
+        authoritative_content=AuthoritativeContentHealthResponse(
+            lagging_content_count=snapshot.authoritative_content.lagging_content_count,
+            reasons=[
+                AuthoritativeContentLagReasonCountResponse(
+                    reason=item.reason,
+                    content_count=item.content_count,
+                )
+                for item in snapshot.authoritative_content.reasons
+            ],
+        ),
+    )
+
+
+def _log_reports_health_snapshot(snapshot: CreatorEvidenceIngressHealthSnapshot) -> None:
+    payment_state_counts = {
+        item.state: item.row_count
+        for item in snapshot.payment_provenance.settled_state_counts
+    }
+    logger.info(
+        "reports_health_snapshot attribution_unattributed_booking_count=%s calendly_backlog_event_count=%s calendly_failed_event_count=%s payment_backlog_event_count=%s payment_pending_count=%s payment_unmatched_count=%s payment_conflicting_count=%s blocked_billing_open_case_count=%s authoritative_lagging_content_count=%s",
+        snapshot.booking_attribution.unattributed_booking_count,
+        snapshot.calendly_ingress.backlog_event_count,
+        snapshot.calendly_ingress.failed_event_count,
+        snapshot.payment_provenance.current_backlog_event_count,
+        payment_state_counts.get(PAYMENT_PROVENANCE_STATE_PENDING, 0),
+        payment_state_counts.get(PAYMENT_PROVENANCE_STATE_UNMATCHED, 0),
+        payment_state_counts.get(PAYMENT_PROVENANCE_STATE_CONFLICTING, 0),
+        snapshot.blocked_billing.open_case_count,
+        snapshot.authoritative_content.lagging_content_count,
+    )
+
+
 @router.get("/summary", response_model=ReportsSummaryResponse)
 def get_reports_summary(
     start_date: date | None = Query(default=None),
@@ -91,3 +198,16 @@ def get_reports_summary(
         ) from exc
 
     return _build_reports_summary_response(summary)
+
+
+@router.get("/health", response_model=EvidenceIngressHealthResponse)
+def get_reports_health(
+    current_user: AuthUser = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+) -> EvidenceIngressHealthResponse:
+    snapshot = get_creator_evidence_ingress_health_snapshot(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    _log_reports_health_snapshot(snapshot)
+    return _build_reports_health_response(snapshot)

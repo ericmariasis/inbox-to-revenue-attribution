@@ -20,8 +20,12 @@ from app.services.calendly_webhooks import build_default_calendly_webhook_router
 from app.services.email_stub import get_magic_link_outbox
 from app.services.invoice_payment_events import (
     InvoicePaymentEventService,
+    PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE,
+    PAYMENT_PROVENANCE_STATE_MATCHED,
+    PAYMENT_PROVENANCE_STATUS_MATCHED,
     UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
 )
+from app.services.settled_paid_evidence import get_creator_settled_paid_evidence
 from app.services.stripe_provider import StripeAccountReadiness, StripeInvoiceCreateResult
 
 
@@ -410,6 +414,10 @@ def test_phase8_payment_attribution_flow_end_to_end():
         all_payment_events = db.scalars(
             select(InvoicePaymentEvent).order_by(InvoicePaymentEvent.stripe_event_id.asc())
         ).all()
+        settled_snapshot = get_creator_settled_paid_evidence(
+            creator_id=creator_id,
+            db=db,
+        )
 
     assert start_response.status_code == 200
     assert start_response.json() == {"status": "ok"}
@@ -530,6 +538,20 @@ def test_phase8_payment_attribution_flow_end_to_end():
     assert final_summary.unattributed_revenue_by_reason == []
     assert final_summary.unattributed_total_cents == 0
     assert final_summary.unattributed_event_count == 0
+    assert sorted(
+        (row.stripe_invoice_id, row.payment_provenance.state)
+        for row in settled_snapshot.settled_rows
+    ) == [
+        ("in_story50_early", PAYMENT_PROVENANCE_STATE_MATCHED),
+        ("in_story50_paid", PAYMENT_PROVENANCE_STATE_MATCHED),
+    ]
+    assert all(
+        row.payment_provenance.status == PAYMENT_PROVENANCE_STATUS_MATCHED
+        and row.payment_provenance.conflict_status == PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE
+        and row.payment_provenance.conflict_event_count == 0
+        and row.payment_provenance.conflict_reasons == ()
+        for row in settled_snapshot.settled_rows
+    )
 
     assert provider.onboarding_calls == [
         {

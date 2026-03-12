@@ -19,6 +19,8 @@ def test_migrations_upgrade_and_downgrade():
             calendly_columns = {
                 column["name"] for column in inspector.get_columns("calendly_webhook_events")
             }
+            assert "creator_experiment_run_cards" in inspector.get_table_names(schema="public")
+            assert "creator_experiment_runs" in inspector.get_table_names(schema="public")
             assert "creator_claim_paid_evidence_refs" in inspector.get_table_names(schema="public")
             assert "creator_claim_snapshots" in inspector.get_table_names(schema="public")
             assert "calendly_webhook_events" in inspector.get_table_names(schema="public")
@@ -54,6 +56,45 @@ def test_migrations_upgrade_and_downgrade():
             calendly_columns = {
                 column["name"] for column in inspector.get_columns("calendly_webhook_events")
             }
+            assert "creator_experiment_run_cards" not in table_names
+            assert "creator_experiment_runs" not in table_names
+            assert "creator_claim_paid_evidence_refs" in table_names
+            assert "creator_claim_snapshots" in table_names
+            assert "calendly_webhook_events" in table_names
+            assert "content_topic_candidates" in table_names
+            assert "content_confirmed_topics" in table_names
+            assert "content_extraction_artifacts" in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
+            assert "authoritative_extraction_artifact_id" in content_columns
+            assert "attribution_status" in booking_columns
+            assert "unattributed_reason" in booking_columns
+            assert "reducer_key" in calendly_columns
+            assert "reducer_attempt_count" in calendly_columns
+            assert "frozen_billing_amount_cents" in booking_columns
+            assert "frozen_billing_currency" in booking_columns
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
+            content_columns = {column["name"] for column in inspector.get_columns("content")}
+            calendly_columns = {
+                column["name"] for column in inspector.get_columns("calendly_webhook_events")
+            }
+            assert "creator_experiment_run_cards" not in table_names
+            assert "creator_experiment_runs" not in table_names
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
             assert "calendly_webhook_events" in table_names
@@ -86,6 +127,11 @@ def test_migrations_upgrade_and_downgrade():
             table_names = inspector.get_table_names(schema="public")
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
+            calendly_columns = {
+                column["name"] for column in inspector.get_columns("calendly_webhook_events")
+            }
+            assert "creator_experiment_run_cards" not in table_names
+            assert "creator_experiment_runs" not in table_names
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
             assert "calendly_webhook_events" in table_names
@@ -101,6 +147,8 @@ def test_migrations_upgrade_and_downgrade():
             assert "booking_links" in table_names
             assert "authoritative_extraction_artifact_id" in content_columns
             assert "attribution_status" not in booking_columns
+            assert "reducer_key" not in calendly_columns
+            assert "reducer_attempt_count" not in calendly_columns
             assert "frozen_billing_amount_cents" in booking_columns
             assert "frozen_billing_currency" in booking_columns
             booking_link_columns = {
@@ -115,6 +163,8 @@ def test_migrations_upgrade_and_downgrade():
             table_names = inspector.get_table_names(schema="public")
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
+            assert "creator_experiment_run_cards" not in table_names
+            assert "creator_experiment_runs" not in table_names
             assert "creator_claim_paid_evidence_refs" not in table_names
             assert "creator_claim_snapshots" not in table_names
             assert "calendly_webhook_events" in table_names
@@ -545,6 +595,106 @@ def test_content_extraction_artifacts_table_has_expected_columns_fk_indexes_and_
         assert any(
             constraint["name"] == "uq_content_extraction_artifacts_fetch_snapshot_id"
             and constraint["column_names"] == ["fetch_snapshot_id"]
+            for constraint in unique_constraints
+        )
+
+
+def test_creator_experiment_runs_table_has_expected_columns_fk_and_indexes():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {column["name"] for column in inspector.get_columns("creator_experiment_runs")}
+        assert columns == {
+            "id",
+            "creator_id",
+            "status",
+            "summary_text",
+            "run_contract_version",
+            "run_reducer_version",
+            "run_prompt_version",
+            "created_at",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("creator_experiment_runs")
+        assert any(
+            fk["referred_table"] == "creators"
+            and fk["constrained_columns"] == ["creator_id"]
+            for fk in foreign_keys
+        )
+
+        indexes = inspector.get_indexes("creator_experiment_runs")
+        assert any(
+            index["name"] == "ix_creator_experiment_runs_creator_id"
+            and index["column_names"] == ["creator_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_creator_experiment_runs_status"
+            and index["column_names"] == ["status"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_creator_experiment_runs_created_at"
+            and index["column_names"] == ["created_at"]
+            for index in indexes
+        )
+
+
+def test_creator_experiment_run_cards_table_has_expected_columns_fk_indexes_and_unique_constraints():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {column["name"] for column in inspector.get_columns("creator_experiment_run_cards")}
+        assert columns == {
+            "id",
+            "run_id",
+            "claim_snapshot_id",
+            "content_tid",
+            "title",
+            "hypothesis",
+            "why_this_might_work",
+            "evidence_summary",
+            "caution",
+            "card_order",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("creator_experiment_run_cards")
+        assert any(
+            fk["referred_table"] == "creator_experiment_runs"
+            and fk["constrained_columns"] == ["run_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "creator_claim_snapshots"
+            and fk["constrained_columns"] == ["claim_snapshot_id"]
+            for fk in foreign_keys
+        )
+
+        indexes = inspector.get_indexes("creator_experiment_run_cards")
+        assert any(
+            index["name"] == "ix_creator_experiment_run_cards_run_id"
+            and index["column_names"] == ["run_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_creator_experiment_run_cards_claim_snapshot_id"
+            and index["column_names"] == ["claim_snapshot_id"]
+            for index in indexes
+        )
+
+        unique_constraints = inspector.get_unique_constraints("creator_experiment_run_cards")
+        assert any(
+            constraint["name"] == "uq_creator_experiment_run_cards_run_order"
+            and constraint["column_names"] == ["run_id", "card_order"]
+            for constraint in unique_constraints
+        )
+        assert any(
+            constraint["name"] == "uq_creator_experiment_run_cards_run_claim_snapshot"
+            and constraint["column_names"] == ["run_id", "claim_snapshot_id"]
             for constraint in unique_constraints
         )
 

@@ -69,6 +69,14 @@ from app.services.invoice_payment_events import (
     UnmatchedPaymentEventSummary,
     list_current_unmatched_payment_events,
 )
+from app.services.next_content_experiments import (
+    EXPERIMENT_RUN_STATUS_READY,
+    EXPERIMENT_RUN_STATUS_UNSUPPORTED,
+    CreatorNextContentExperimentsResult,
+    create_creator_next_content_experiments_run,
+    get_creator_next_content_experiments_run,
+    get_latest_creator_next_content_experiments_run,
+)
 from app.services.reporting import (
     CreatorPaidAttributionExplanation,
     CreatorReportsSummary,
@@ -685,6 +693,65 @@ def creator_reports_page(
             filter_values=filter_values,
             field_errors=field_errors,
         )
+    )
+
+
+@router.get("/app/experiments")
+def creator_experiments_page(
+    request: Request,
+    status_value: str | None = Query(default=None, alias="status"),
+    claim_snapshot_id: uuid.UUID | None = Query(default=None, alias="claim_snapshot_id"),
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    experiment_run = (
+        get_creator_next_content_experiments_run(
+            creator_id=current_user.creator_id,
+            claim_snapshot_id=claim_snapshot_id,
+            db=db,
+        )
+        if claim_snapshot_id is not None
+        else get_latest_creator_next_content_experiments_run(
+            creator_id=current_user.creator_id,
+            db=db,
+        )
+    )
+    if claim_snapshot_id is not None and experiment_run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="experiment snapshot not found",
+        )
+
+    return _html_response(
+        _render_experiments_page(
+            current_user=current_user,
+            experiment_run=experiment_run,
+            status_value=status_value,
+        )
+    )
+
+
+@router.post("/app/experiments")
+def creator_experiments_generate(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    experiment_run = create_creator_next_content_experiments_run(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    db.commit()
+    return _redirect(
+        f"/app/experiments?status=generated&claim_snapshot_id={experiment_run.claim_snapshot_id}"
     )
 
 
@@ -1561,8 +1628,9 @@ def _render_shell_nav(*, current_path: str) -> str:
         ("/app/booking-links", "Booking Links"),
         ("/app/content", "Content"),
         ("/app/bookings", "Bookings"),
-        ("/app/attention", "Attention"),
         ("/app/reports", "Reports"),
+        ("/app/experiments", "Experiments"),
+        ("/app/attention", "Attention"),
     ]
     items = []
     for href, label in links:
@@ -2460,6 +2528,164 @@ def _render_booking_activity_page(
     </section>
     """
     return _page_layout(title="Booking Activity", body=body)
+
+
+def _render_experiments_page(
+    *,
+    current_user: AuthUser,
+    experiment_run: CreatorNextContentExperimentsResult | None,
+    status_value: str | None,
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    result_heading = (
+        "Latest experiment snapshot"
+        if experiment_run is not None
+        else "No experiment snapshot yet"
+    )
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Experiments</h1>
+        <p class="lede">Generate a strict evidence-backed read of the next content experiments most supported by your authoritative topics and attributed paid results.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/experiments")}
+    {_render_experiments_notice(status_value=status_value)}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Generate snapshot</p>
+          <h2>{result_heading}</h2>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+        </div>
+        <p>This helper returns only `ready` or `unsupported`. It does not fill gaps with generic advice, and it uses stored authoritative content plus settled paid evidence rather than raw diagnostics.</p>
+        <form action="/app/experiments" method="post">
+          <button type="submit">Generate next experiments</button>
+        </form>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">Grounding rules</p>
+          <h2>Keep unsupported and diagnostics separate</h2>
+        </div>
+        <p>Each card shown here must clear one authoritative content pattern plus one settled paid pattern. If that bar is not met, the page stays `unsupported` instead of guessing.</p>
+        <p>Deeper evidence drilldown stays for the next story. This page shows only the top-level snapshot id, inline evidence summary, and the tracked content id behind each card.</p>
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Helper output</p>
+          <h2>{result_heading}</h2>
+        </div>
+        <p>{html.escape(_experiments_snapshot_meta(experiment_run))}</p>
+      </div>
+      {_render_experiment_results(experiment_run=experiment_run)}
+    </section>
+    """
+    return _page_layout(title="Experiments", body=body)
+
+
+def _render_experiments_notice(*, status_value: str | None) -> str:
+    if status_value != "generated":
+        return ""
+
+    return """
+    <section class="notice success">
+      <p class="eyebrow">Fresh snapshot ready</p>
+      <p>Generated a new experiment snapshot from the current authoritative content and settled paid evidence.</p>
+    </section>
+    """
+
+
+def _render_experiment_results(
+    *,
+    experiment_run: CreatorNextContentExperimentsResult | None,
+) -> str:
+    if experiment_run is None:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">No snapshot yet</p>
+          <h2>Generate your first experiment snapshot</h2>
+          <p>This page stays read-only until you explicitly generate a snapshot. Refreshing the page does not create a new helper run.</p>
+        </section>
+        """
+
+    if experiment_run.status == EXPERIMENT_RUN_STATUS_UNSUPPORTED:
+        return _render_experiment_unsupported_state(experiment_run=experiment_run)
+
+    items = "".join(
+        _render_experiment_card(index=index, experiment=experiment)
+        for index, experiment in enumerate(experiment_run.experiments, start=1)
+    )
+    return f"""
+    <section class="stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Current status</p>
+          <h2>{html.escape(experiment_run.summary)}</h2>
+        </div>
+        <span class="status-pill confirmed">Ready</span>
+      </div>
+      <p><strong>Claim snapshot</strong>: <code>{html.escape(str(experiment_run.claim_snapshot_id))}</code></p>
+      <div class="content-list">{items}</div>
+    </section>
+    """
+
+
+def _render_experiment_unsupported_state(
+    *,
+    experiment_run: CreatorNextContentExperimentsResult,
+) -> str:
+    return f"""
+    <section class="empty-state">
+      <p class="eyebrow">Unsupported</p>
+      <h2>Not enough trusted evidence yet</h2>
+      <p>{html.escape(experiment_run.summary)}</p>
+      <p><strong>Claim snapshot</strong>: <code>{html.escape(str(experiment_run.claim_snapshot_id))}</code></p>
+    </section>
+    """
+
+
+def _render_experiment_card(
+    *,
+    index: int,
+    experiment,
+) -> str:
+    content_tids = " ".join(
+        f"<code>{html.escape(content_tid)}</code>"
+        for content_tid in experiment.content_tids
+    )
+    return f"""
+    <article class="content-card stack">
+      <div class="content-card-header">
+        <div>
+          <p class="eyebrow">Experiment {index}</p>
+          <h2>{html.escape(experiment.title)}</h2>
+        </div>
+        <span class="status-pill confirmed">Hypothesis</span>
+      </div>
+      <p><strong>Hypothesis</strong>: {html.escape(experiment.hypothesis)}</p>
+      <p><strong>Why this might work</strong>: {html.escape(experiment.why_this_might_work)}</p>
+      <p><strong>Evidence summary</strong>: {html.escape(experiment.evidence_summary)}</p>
+      <p><strong>Content tracking ID</strong>: {content_tids}</p>
+      <p><strong>Caution</strong>: {html.escape(experiment.caution)}</p>
+    </article>
+    """
+
+
+def _experiments_snapshot_meta(
+    experiment_run: CreatorNextContentExperimentsResult | None,
+) -> str:
+    if experiment_run is None:
+        return "No runs yet"
+    return _format_timestamp_in_utc(experiment_run.created_at)
 
 
 def _render_reports_page(

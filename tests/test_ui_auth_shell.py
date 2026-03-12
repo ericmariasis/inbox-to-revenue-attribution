@@ -17,6 +17,7 @@ from app.services.booking_attribution import (
 from app.services.email_provider import MagicLinkEmailDeliveryError
 from app.services.email_stub import get_magic_link_outbox
 from app.services.invoice_payment_events import UNATTRIBUTED_REASON_MISSING_TID
+from app.services.next_content_experiments import UNSUPPORTED_EXPERIMENTS_SUMMARY
 from app.services.stripe_provider import (
     StripeAccountReadiness,
     StripeInvoiceCreateResult,
@@ -255,6 +256,84 @@ def _insert_extraction_artifact(
         )
 
     return artifact_id
+
+
+def _insert_confirmed_topic(
+    *,
+    content_id: str,
+    creator_id: str,
+    extraction_artifact_id: str,
+    label: str,
+    candidate_rank: int = 1,
+) -> str:
+    topic_id = str(uuid.uuid4())
+    reviewed_at = datetime.now(timezone.utc)
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO content_confirmed_topics "
+                "(id, content_id, creator_id, canonical_label, normalized_label, created_at, updated_at) "
+                "VALUES "
+                "(:id, :content_id, :creator_id, :canonical_label, :normalized_label, :created_at, :updated_at)"
+            ),
+            {
+                "id": topic_id,
+                "content_id": content_id,
+                "creator_id": creator_id,
+                "canonical_label": label,
+                "normalized_label": label.casefold(),
+                "created_at": reviewed_at,
+                "updated_at": reviewed_at,
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO content_topic_candidates "
+                "("
+                "id, content_id, creator_id, extraction_artifact_id, confirmed_topic_id, suggested_label, "
+                "normalized_label, suggestion_method, candidate_rank, review_status, reviewed_at, created_at"
+                ") VALUES ("
+                ":id, :content_id, :creator_id, :extraction_artifact_id, :confirmed_topic_id, :suggested_label, "
+                ":normalized_label, :suggestion_method, :candidate_rank, :review_status, :reviewed_at, :created_at"
+                ")"
+            ),
+            {
+                "id": str(uuid.uuid4()),
+                "content_id": content_id,
+                "creator_id": creator_id,
+                "extraction_artifact_id": extraction_artifact_id,
+                "confirmed_topic_id": topic_id,
+                "suggested_label": label,
+                "normalized_label": label.casefold(),
+                "suggestion_method": "text_keywords",
+                "candidate_rank": candidate_rank,
+                "review_status": "confirmed",
+                "reviewed_at": reviewed_at,
+                "created_at": reviewed_at,
+            },
+        )
+
+    return topic_id
+
+
+def _set_authoritative_extraction_artifact(
+    *,
+    content_id: str,
+    artifact_id: str,
+) -> None:
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE content "
+                "SET authoritative_extraction_artifact_id = :artifact_id "
+                "WHERE id = :content_id"
+            ),
+            {
+                "content_id": content_id,
+                "artifact_id": artifact_id,
+            },
+        )
 
 
 def _fetch_topic_candidate_rows(*, content_id: str) -> list[dict[str, object]]:
@@ -742,6 +821,18 @@ def test_reports_page_redirects_unauthenticated_browser_requests():
     with TestClient(app) as client:
         response = client.get(
             "/app/reports",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+
+
+def test_experiments_page_redirects_unauthenticated_browser_requests():
+    with TestClient(app) as client:
+        response = client.get(
+            "/app/experiments",
             headers=HTML_ACCEPT_HEADERS,
             follow_redirects=False,
         )
@@ -2209,6 +2300,232 @@ def test_reports_page_with_tracked_content_but_no_paid_invoices_shows_empty_paid
     assert "No paid results yet" in response.text
     assert "nothing is counted here until a matching invoice is marked paid" in response.text
     assert 'href="/app/content"' in response.text
+
+
+def test_experiments_page_without_prior_run_renders_generate_empty_state_and_does_not_write():
+    inserted = _insert_creator_user(
+        email=f"ui_experiments_empty_{uuid.uuid4().hex}@example.com",
+        name="Empty Experiments Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_experiments_empty",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with _engine().connect() as conn:
+        before_count = conn.execute(
+            text("SELECT COUNT(*) FROM creator_experiment_runs WHERE creator_id = :creator_id"),
+            {"creator_id": inserted["creator_id"]},
+        ).scalar_one()
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/experiments", headers=HTML_ACCEPT_HEADERS)
+
+    with _engine().connect() as conn:
+        after_count = conn.execute(
+            text("SELECT COUNT(*) FROM creator_experiment_runs WHERE creator_id = :creator_id"),
+            {"creator_id": inserted["creator_id"]},
+        ).scalar_one()
+
+    assert response.status_code == 200
+    assert "Experiments" in response.text
+    assert '<a href="/app/experiments" class="nav-link active">Experiments</a>' in response.text
+    assert "Generate your first experiment snapshot" in response.text
+    assert "Refreshing the page does not create a new helper run." in response.text
+    assert 'action="/app/experiments"' in response.text
+    assert before_count == 0
+    assert after_count == 0
+
+
+def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():
+    inserted = _insert_creator_user(
+        email=f"ui_experiments_ready_{uuid.uuid4().hex}@example.com",
+        name="Ready Experiments Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_experiments_ready",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Experiments Strategy",
+        calendly_url="https://calendly.com/example/experiments-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    content_tid = f"uiexperimentsready{uuid.uuid4().hex[:8]}"
+    content_id = _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/experiments-ready",
+        tid=content_tid,
+    )
+    snapshot_id = _insert_fetch_snapshot(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        requested_url="https://example.com/posts/experiments-ready",
+        fetched_url="https://example.com/posts/experiments-ready",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Experiments ready.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 12, 11, 0, tzinfo=timezone.utc),
+    )
+    artifact_id = _insert_extraction_artifact(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        fetch_snapshot_id=snapshot_id,
+        extraction_status="succeeded",
+        title="Experiments Ready Artifact",
+        extracted_text="Retention review content for ready experiments.",
+        created_at=datetime(2026, 3, 12, 11, 5, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        extraction_artifact_id=artifact_id,
+        label="Retention Reviews",
+    )
+    _set_authoritative_extraction_artifact(
+        content_id=content_id,
+        artifact_id=artifact_id,
+    )
+    booking_id = _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=f"BOOK_UI_EXPERIMENTS_READY_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 12, 12, 0, tzinfo=timezone.utc),
+    )
+    stripe_invoice_id = f"in_ui_experiments_ready_{uuid.uuid4().hex[:8]}"
+    invoice_id = _insert_invoice(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        stripe_account_id="acct_ui_experiments_ready",
+        stripe_invoice_id=stripe_invoice_id,
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        invoice_id=invoice_id,
+        stripe_account_id="acct_ui_experiments_ready",
+        stripe_event_id=f"evt_ui_experiments_ready_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=stripe_invoice_id,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        create_response = client.post(
+            "/app/experiments",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        page_response = client.get(create_response.headers["location"], headers=HTML_ACCEPT_HEADERS)
+
+    with _engine().connect() as conn:
+        run_count = conn.execute(
+            text("SELECT COUNT(*) FROM creator_experiment_runs WHERE creator_id = :creator_id"),
+            {"creator_id": inserted["creator_id"]},
+        ).scalar_one()
+
+    assert create_response.status_code == 303
+    assert create_response.headers["location"].startswith(
+        "/app/experiments?status=generated&claim_snapshot_id="
+    )
+    assert page_response.status_code == 200
+    assert "Fresh snapshot ready" in page_response.text
+    assert "Here is the next content experiment most grounded" in page_response.text
+    assert "Test another Retention Reviews angle" in page_response.text
+    assert "Test whether another post about Retention Reviews may lead to more attributed paid bookings." in page_response.text
+    assert "Claim snapshot" in page_response.text
+    assert "<code>" in page_response.text
+    assert run_count == 1
+
+
+def test_experiments_generate_route_renders_unsupported_state_without_generic_tips():
+    inserted = _insert_creator_user(
+        email=f"ui_experiments_unsupported_{uuid.uuid4().hex}@example.com",
+        name="Unsupported Experiments Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_experiments_unsupported",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Unsupported Experiments Strategy",
+        calendly_url="https://calendly.com/example/experiments-unsupported",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    content_id = _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/experiments-unsupported",
+        tid=f"uiexperimentsunsupported{uuid.uuid4().hex[:8]}",
+    )
+    snapshot_id = _insert_fetch_snapshot(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        requested_url="https://example.com/posts/experiments-unsupported",
+        fetched_url="https://example.com/posts/experiments-unsupported",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Unsupported experiments.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 12, 11, 0, tzinfo=timezone.utc),
+    )
+    artifact_id = _insert_extraction_artifact(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        fetch_snapshot_id=snapshot_id,
+        extraction_status="succeeded",
+        title="Experiments Unsupported Artifact",
+        extracted_text="Unsupported experiments content.",
+        created_at=datetime(2026, 3, 12, 11, 5, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        extraction_artifact_id=artifact_id,
+        label="Discovery Calls",
+    )
+    _set_authoritative_extraction_artifact(
+        content_id=content_id,
+        artifact_id=artifact_id,
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        create_response = client.post(
+            "/app/experiments",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        page_response = client.get(create_response.headers["location"], headers=HTML_ACCEPT_HEADERS)
+
+    assert create_response.status_code == 303
+    assert page_response.status_code == 200
+    assert "Not enough trusted evidence yet" in page_response.text
+    assert UNSUPPORTED_EXPERIMENTS_SUMMARY in page_response.text
+    assert "generic fallback tips" not in page_response.text
+    assert "Test whether another post about" not in page_response.text
 
 
 def test_setup_home_disconnected_stripe_state_shows_reconnect_cta():

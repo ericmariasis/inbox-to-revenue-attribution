@@ -27,7 +27,9 @@ from app.services.next_content_experiments import (
     EXPERIMENT_RUN_STATUS_UNSUPPORTED,
     UNSUPPORTED_EXPERIMENTS_SUMMARY,
     create_creator_next_content_experiments_run,
+    get_creator_next_content_experiment_card_drilldown,
     get_creator_next_content_experiments_run,
+    get_current_creator_next_content_experiments_unsupported_explanation,
     get_latest_creator_next_content_experiments_run,
 )
 
@@ -519,3 +521,170 @@ def test_create_creator_next_content_experiments_run_ignores_diagnostic_backlog_
     assert result.status == EXPERIMENT_RUN_STATUS_READY
     assert "Missing tracking ID" not in combined_text
     assert "creator_not_billable" not in combined_text
+
+
+def test_get_creator_next_content_experiment_card_drilldown_returns_snapshot_backed_evidence():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, booking_link = _create_creator_fixture(session, suffix="drilldown")
+        content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            tid="experiments_drilldown",
+            source_url="https://example.com/posts/experiments-drilldown",
+        )
+        _create_authoritative_artifact(
+            session,
+            content=content,
+            topic_labels=["Retention Reviews"],
+            fetched_at=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_EXPERIMENTS_DRILLDOWN",
+            paid_at=datetime(2026, 3, 12, 14, 0, tzinfo=timezone.utc),
+            amount_cents=19500,
+            stripe_invoice_id="in_experiments_drilldown",
+            stripe_event_id="evt_experiments_drilldown",
+        )
+
+        created = create_creator_next_content_experiments_run(
+            creator_id=creator.id,
+            db=session,
+        )
+        drilldown = get_creator_next_content_experiment_card_drilldown(
+            creator_id=creator.id,
+            run_claim_snapshot_id=created.claim_snapshot_id,
+            card_order=1,
+            db=session,
+        )
+
+    assert drilldown is not None
+    assert drilldown.run_claim_snapshot_id == created.claim_snapshot_id
+    assert drilldown.card_order == 1
+    assert drilldown.authoritative_source_url == "https://example.com/posts/experiments-drilldown"
+    assert drilldown.authoritative_content_tid == "experiments_drilldown"
+    assert drilldown.authoritative_topics == ["Retention Reviews"]
+    assert drilldown.authoritative_artifact_title == "Artifact for experiments_drilldown"
+    assert len(drilldown.settled_paid_results) == 1
+    assert drilldown.settled_paid_results[0].amount_cents == 19500
+    assert drilldown.settled_paid_results[0].currency == "USD"
+    assert drilldown.settled_paid_results[0].content_tid == "experiments_drilldown"
+
+
+def test_get_current_creator_next_content_experiments_unsupported_explanation_reports_missing_authority_and_paid_results():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, booking_link = _create_creator_fixture(session, suffix="unsupported_reasons_empty")
+        _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            tid="experiments_unsupported_reasons_empty",
+            source_url="https://example.com/posts/experiments-unsupported-reasons-empty",
+        )
+
+        explanation = get_current_creator_next_content_experiments_unsupported_explanation(
+            creator_id=creator.id,
+            db=session,
+        )
+
+    assert explanation.reasons == [
+        "No authoritative reviewed topics exist yet on your tracked content.",
+        "No settled attributed paid results exist yet for this workspace.",
+    ]
+    assert explanation.has_excluded_current_activity is False
+
+
+def test_get_current_creator_next_content_experiments_unsupported_explanation_reports_no_overlap_and_current_activity():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, booking_link = _create_creator_fixture(session, suffix="unsupported_reasons_overlap")
+        authoritative_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            tid="experiments_authoritative_only",
+            source_url="https://example.com/posts/experiments-authoritative-only",
+        )
+        paid_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            tid="experiments_paid_only",
+            source_url="https://example.com/posts/experiments-paid-only",
+        )
+        _create_authoritative_artifact(
+            session,
+            content=authoritative_content,
+            topic_labels=["Authority Without Paid"],
+            fetched_at=datetime(2026, 3, 12, 9, 0, tzinfo=timezone.utc),
+        )
+        booking, _, _ = _create_paid_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=paid_content,
+            booking_uuid="BOOK_EXPERIMENTS_PAID_ONLY",
+            paid_at=datetime(2026, 3, 12, 14, 0, tzinfo=timezone.utc),
+            amount_cents=19500,
+            stripe_invoice_id="in_experiments_paid_only",
+            stripe_event_id="evt_experiments_paid_only",
+        )
+        session.add(
+            InvoicePaymentEvent(
+                stripe_event_id="evt_experiments_overlap_unmatched",
+                stripe_event_type="invoice.paid",
+                stripe_account_id=creator.stripe_account_id,
+                stripe_invoice_id="in_experiments_overlap_unmatched",
+                invoice_id=None,
+                creator_id=creator.id,
+                booking_id=None,
+                tid=None,
+                status="unmatched",
+                unattributed_reason="MISSING_TID",
+                paid_at=datetime(2026, 3, 12, 15, 0, tzinfo=timezone.utc),
+                received_at=datetime(2026, 3, 12, 15, 0, tzinfo=timezone.utc),
+                processed_at=None,
+            )
+        )
+        session.add(
+            BlockedBillingCase(
+                creator_id=creator.id,
+                booking_id=booking.id,
+                invoice_id=None,
+                tid=paid_content.tid,
+                calendly_booking_uuid=booking.calendly_booking_uuid,
+                stripe_account_id=creator.stripe_account_id,
+                frozen_amount_cents=19500,
+                frozen_currency="USD",
+                status="open",
+                reason_code="creator_not_billable",
+                provider_operation=None,
+                provider_http_status=None,
+                provider_error_code=None,
+                first_blocked_at=datetime(2026, 3, 12, 15, 5, tzinfo=timezone.utc),
+                last_blocked_at=datetime(2026, 3, 12, 15, 5, tzinfo=timezone.utc),
+                last_retry_at=None,
+                resolved_at=None,
+                resolution_code=None,
+            )
+        )
+        session.flush()
+
+        explanation = get_current_creator_next_content_experiments_unsupported_explanation(
+            creator_id=creator.id,
+            db=session,
+        )
+
+    assert explanation.reasons == [
+        "Your reviewed topics and settled paid results do not overlap on the same tracked content yet."
+    ]
+    assert explanation.has_excluded_current_activity is True

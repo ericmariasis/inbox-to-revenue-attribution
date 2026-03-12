@@ -15,11 +15,17 @@ from app.services.authoritative_content_evidence import (
     AuthoritativeContentEvidence,
     get_authoritative_content_evidence,
 )
+from app.services.booking_attribution import (
+    BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+    list_creator_booking_attribution_rows,
+)
 from app.services.creator_claim_snapshots import (
     CreateCreatorClaimSnapshotInput,
     create_creator_claim_snapshot,
+    resolve_creator_claim_snapshot,
 )
 from app.services.settled_paid_evidence import (
+    CreatorSettledPaidEvidenceSnapshot,
     SettledPaidEvidenceRow,
     get_creator_settled_paid_evidence,
 )
@@ -57,6 +63,38 @@ class CreatorNextContentExperimentsResult:
     summary: str
     experiments: list[NextContentExperimentCard]
     created_at: datetime
+
+
+@dataclass(frozen=True)
+class NextContentExperimentUnsupportedExplanation:
+    reasons: list[str]
+    has_excluded_current_activity: bool
+
+
+@dataclass(frozen=True)
+class NextContentExperimentPaidEvidenceDetail:
+    content_tid: str
+    booked_at: datetime
+    paid_at: datetime
+    amount_cents: int
+    currency: str
+
+
+@dataclass(frozen=True)
+class CreatorNextContentExperimentCardDrilldown:
+    run_claim_snapshot_id: UUID
+    card_claim_snapshot_id: UUID
+    created_at: datetime
+    card_order: int
+    title: str
+    hypothesis: str
+    why_this_might_work: str
+    caution: str
+    authoritative_source_url: str
+    authoritative_content_tid: str
+    authoritative_artifact_title: str | None
+    authoritative_topics: list[str]
+    settled_paid_results: list[NextContentExperimentPaidEvidenceDetail]
 
 
 @dataclass(frozen=True)
@@ -183,6 +221,103 @@ def get_creator_next_content_experiments_run(
     return _build_experiment_result(run_record)
 
 
+def get_creator_next_content_experiment_card_drilldown(
+    *,
+    creator_id: UUID,
+    run_claim_snapshot_id: UUID,
+    card_order: int,
+    db: Session,
+) -> CreatorNextContentExperimentCardDrilldown | None:
+    run_record = db.execute(
+        _creator_experiment_run_query(creator_id=creator_id).where(
+            CreatorExperimentRunRecord.id == run_claim_snapshot_id
+        )
+    ).scalar_one_or_none()
+    if run_record is None:
+        return None
+
+    card_record = next(
+        (card for card in run_record.cards if card.card_order == card_order),
+        None,
+    )
+    if card_record is None:
+        return None
+
+    resolved_snapshot = resolve_creator_claim_snapshot(
+        creator_id=creator_id,
+        claim_snapshot_id=card_record.claim_snapshot_id,
+        db=db,
+    )
+    if resolved_snapshot is None:
+        return None
+
+    authoritative_content = resolved_snapshot.authoritative_content_evidence
+    content = authoritative_content.artifact.content
+    return CreatorNextContentExperimentCardDrilldown(
+        run_claim_snapshot_id=run_record.id,
+        card_claim_snapshot_id=card_record.claim_snapshot_id,
+        created_at=run_record.created_at,
+        card_order=card_record.card_order,
+        title=card_record.title,
+        hypothesis=card_record.hypothesis,
+        why_this_might_work=card_record.why_this_might_work,
+        caution=card_record.caution,
+        authoritative_source_url=content.source_url,
+        authoritative_content_tid=content.tid,
+        authoritative_artifact_title=authoritative_content.artifact.title,
+        authoritative_topics=[
+            topic.canonical_label for topic in authoritative_content.confirmed_topics
+        ],
+        settled_paid_results=[
+            NextContentExperimentPaidEvidenceDetail(
+                content_tid=row.tid,
+                booked_at=row.booked_at,
+                paid_at=row.invoice_paid_at,
+                amount_cents=row.invoice_amount_cents,
+                currency=row.invoice_currency,
+            )
+            for row in resolved_snapshot.settled_paid_evidence_rows
+        ],
+    )
+
+
+def get_current_creator_next_content_experiments_unsupported_explanation(
+    *,
+    creator_id: UUID,
+    db: Session,
+) -> NextContentExperimentUnsupportedExplanation:
+    settled_snapshot = get_creator_settled_paid_evidence(
+        creator_id=creator_id,
+        db=db,
+    )
+    authoritative_content_ids = _load_authoritative_content_ids_with_topics(
+        creator_id=creator_id,
+        db=db,
+    )
+    settled_content_ids = {row.content_id for row in settled_snapshot.settled_rows}
+
+    reasons: list[str] = []
+    if not authoritative_content_ids:
+        reasons.append("No authoritative reviewed topics exist yet on your tracked content.")
+    if not settled_content_ids:
+        reasons.append("No settled attributed paid results exist yet for this workspace.")
+    if authoritative_content_ids and settled_content_ids and not (
+        authoritative_content_ids & settled_content_ids
+    ):
+        reasons.append(
+            "Your reviewed topics and settled paid results do not overlap on the same tracked content yet."
+        )
+
+    return NextContentExperimentUnsupportedExplanation(
+        reasons=reasons,
+        has_excluded_current_activity=_has_excluded_current_activity(
+            creator_id=creator_id,
+            settled_snapshot=settled_snapshot,
+            db=db,
+        ),
+    )
+
+
 def _creator_experiment_run_query(*, creator_id: UUID):
     return (
         select(CreatorExperimentRunRecord)
@@ -246,6 +381,49 @@ def _build_experiment_candidates(
         )
 
     return candidates
+
+
+def _load_authoritative_content_ids_with_topics(
+    *,
+    creator_id: UUID,
+    db: Session,
+) -> set[UUID]:
+    content_rows = db.execute(
+        select(Content).where(Content.creator_id == creator_id)
+    ).scalars().all()
+
+    authoritative_content_ids: set[UUID] = set()
+    for content in content_rows:
+        authoritative_evidence = get_authoritative_content_evidence(
+            content=content,
+            db=db,
+        )
+        if authoritative_evidence is None or not authoritative_evidence.confirmed_topics:
+            continue
+        authoritative_content_ids.add(content.id)
+
+    return authoritative_content_ids
+
+
+def _has_excluded_current_activity(
+    *,
+    creator_id: UUID,
+    settled_snapshot: CreatorSettledPaidEvidenceSnapshot,
+    db: Session,
+) -> bool:
+    if settled_snapshot.unmatched_payment_backlog.event_count > 0:
+        return True
+    if settled_snapshot.blocked_billing_backlog.open_case_count > 0:
+        return True
+
+    booking_rows = list_creator_booking_attribution_rows(
+        creator_id=creator_id,
+        db=db,
+    )
+    return any(
+        row.attribution.status == BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED
+        for row in booking_rows
+    )
 
 
 def _candidate_sort_key(candidate: _ExperimentCandidate) -> tuple[int, int, int, str]:

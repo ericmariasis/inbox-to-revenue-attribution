@@ -26,8 +26,10 @@ from app.services.booking_attribution import (
     BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
 )
 from app.services.calendly_webhooks import (
+    CalendlyWebhookJournalRecordResult,
     DefaultCalendlyWebhookRouter,
     build_default_calendly_webhook_router,
+    verify_and_parse_calendly_webhook,
 )
 from app.services.stripe_provider import (
     StripeAccountReadiness,
@@ -65,8 +67,9 @@ class _StubSettings:
 class _CaptureCalendlyWebhookRouter:
     def __init__(self):
         self.events: list[dict[str, str | None]] = []
+        self.processed_record_ids: list[uuid.UUID] = []
 
-    def handle_event(self, *, event) -> None:
+    def record_event(self, *, event) -> CalendlyWebhookJournalRecordResult:
         self.events.append(
             {
                 "provider_event_type": event.provider_event_type,
@@ -79,6 +82,20 @@ class _CaptureCalendlyWebhookRouter:
                 "tid_path": event.tid_path,
             }
         )
+        return CalendlyWebhookJournalRecordResult(
+            outcome="recorded",
+            record_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            delivery_count=1,
+            processing_status="received",
+            reducer_key=f"booking:{event.calendly_booking_uuid}",
+            should_schedule_reducer=True,
+        )
+
+    def process_event(self, *, record_id: uuid.UUID, force: bool = False):
+        self.processed_record_ids.append(record_id)
+
+    def reprocess_event(self, *, record_id: uuid.UUID):
+        raise AssertionError(f"unexpected replay call for {record_id}")
 
 
 class _CaptureUnpaidInvoiceVoider:
@@ -96,6 +113,13 @@ class _CaptureUnpaidInvoiceVoider:
                 "canceled_at": booking.canceled_at,
             }
         )
+
+
+class _ExplodingBookingCreatedHandler:
+    def handle_event(self, *, event):
+        if event.event_type == "booking.created":
+            raise RuntimeError("story79 reducer explosion")
+        return None
 
 
 class _StubStripeProvider:
@@ -343,6 +367,18 @@ def _invitee_canceled_payload(
     return json.dumps(payload).encode("utf-8")
 
 
+def _verified_event_from_payload(payload: bytes):
+    return verify_and_parse_calendly_webhook(
+        payload=payload,
+        signature_header=_calendly_signature_header(
+            payload=payload,
+            signing_key=_StubSettings.calendly_webhook_signing_key,
+        ),
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+        tolerance_seconds=_StubSettings.calendly_webhook_tolerance_seconds,
+    )
+
+
 def test_calendly_webhook_accepts_valid_signature_routes_verified_event_and_does_not_persist_bookings():
     payload = json.dumps(
         {
@@ -389,7 +425,50 @@ def test_calendly_webhook_accepts_valid_signature_routes_verified_event_and_does
             "tid_path": "payload.tracking.utm_content",
         }
     ]
+    assert capture_router.processed_record_ids == [
+        uuid.UUID("00000000-0000-0000-0000-000000000001")
+    ]
     assert _booking_count() == 0
+
+
+def test_calendly_router_record_event_persists_only_until_worker_processes():
+    stored = _create_creator_booking_link_and_content(tid="story79_persist_only_tid")
+    payload = _invitee_created_payload(
+        event_id="EVT_story79_persist_only",
+        calendly_booking_uuid="BOOK_story79_persist_only",
+        tid=stored["tid"],
+        email="story79-persist-only@example.com",
+        created_at="2026-03-12T16:00:00Z",
+    )
+    router = DefaultCalendlyWebhookRouter()
+    event = _verified_event_from_payload(payload)
+
+    journal_result = router.record_event(event=event)
+    journal_records = _journal_records_for_event_id(calendly_event_id="EVT_story79_persist_only")
+
+    assert journal_result.outcome == "recorded"
+    assert journal_result.processing_status == "received"
+    assert journal_result.reducer_key == "booking:BOOK_story79_persist_only"
+    assert journal_result.should_schedule_reducer is True
+    assert len(journal_records) == 1
+    assert journal_records[0].processing_status == "received"
+    assert journal_records[0].reducer_key == "booking:BOOK_story79_persist_only"
+    assert journal_records[0].reducer_attempt_count == 0
+    assert journal_records[0].processed_at is None
+    assert _bookings_for_uuid(calendly_booking_uuid="BOOK_story79_persist_only") == []
+
+    processing_status = router.process_event(record_id=journal_result.record_id)
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story79_persist_only")
+    journal_records = _journal_records_for_event_id(calendly_event_id="EVT_story79_persist_only")
+
+    assert processing_status == "applied"
+    assert len(bookings) == 1
+    assert bookings[0].status == "created"
+    assert len(journal_records) == 1
+    assert journal_records[0].processing_status == "applied"
+    assert journal_records[0].reducer_key == "booking:BOOK_story79_persist_only"
+    assert journal_records[0].reducer_attempt_count == 1
+    assert journal_records[0].processed_at is not None
 
 
 def test_calendly_webhook_persists_booking_created_for_valid_tid():
@@ -482,6 +561,8 @@ def test_calendly_webhook_duplicate_delivery_is_idempotent_by_booking_uuid():
     assert second_response.status_code == 200
     assert len(journal_records) == 1
     assert journal_records[0].processing_status == "applied"
+    assert journal_records[0].reducer_key == "booking:BOOK_story33_duplicate"
+    assert journal_records[0].reducer_attempt_count == 1
     assert journal_records[0].delivery_count == 2
     assert len(bookings) == 1
     assert bookings[0].creator_id == stored["creator_id"]
@@ -491,6 +572,53 @@ def test_calendly_webhook_duplicate_delivery_is_idempotent_by_booking_uuid():
     assert bookings[0].status == "created"
     assert bookings[0].booked_at == datetime(2026, 3, 7, 16, 0, tzinfo=timezone.utc)
     assert _invoice_count() == 0
+
+
+def test_calendly_webhook_failed_row_can_retry_through_same_live_reducer_path():
+    stored = _create_creator_booking_link_and_content(tid="story79_failed_retry_tid")
+    payload = _invitee_created_payload(
+        event_id="EVT_story79_failed_retry",
+        calendly_booking_uuid="BOOK_story79_failed_retry",
+        tid=stored["tid"],
+        email="story79-failed-retry@example.com",
+        created_at="2026-03-12T17:00:00Z",
+    )
+    event = _verified_event_from_payload(payload)
+    failing_router = DefaultCalendlyWebhookRouter(
+        booking_created_handler=_ExplodingBookingCreatedHandler(),
+    )
+
+    recorded_result = failing_router.record_event(event=event)
+    failed_status = failing_router.process_event(record_id=recorded_result.record_id)
+    failed_records = _journal_records_for_event_id(calendly_event_id="EVT_story79_failed_retry")
+
+    assert recorded_result.outcome == "recorded"
+    assert failed_status == "failed"
+    assert len(failed_records) == 1
+    assert failed_records[0].processing_status == "failed"
+    assert failed_records[0].reducer_key == "booking:BOOK_story79_failed_retry"
+    assert failed_records[0].reducer_attempt_count == 1
+    assert failed_records[0].last_error == "RuntimeError: story79 reducer explosion"
+    assert _bookings_for_uuid(calendly_booking_uuid="BOOK_story79_failed_retry") == []
+
+    retry_router = DefaultCalendlyWebhookRouter()
+    duplicate_result = retry_router.record_event(event=event)
+    applied_status = retry_router.process_event(record_id=recorded_result.record_id)
+    recovered_records = _journal_records_for_event_id(calendly_event_id="EVT_story79_failed_retry")
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story79_failed_retry")
+
+    assert duplicate_result.outcome == "duplicate"
+    assert duplicate_result.processing_status == "failed"
+    assert duplicate_result.should_schedule_reducer is True
+    assert duplicate_result.delivery_count == 2
+    assert applied_status == "applied"
+    assert len(bookings) == 1
+    assert bookings[0].status == "created"
+    assert len(recovered_records) == 1
+    assert recovered_records[0].processing_status == "applied"
+    assert recovered_records[0].reducer_attempt_count == 2
+    assert recovered_records[0].delivery_count == 2
+    assert recovered_records[0].last_error is None
 
 
 def test_calendly_webhook_resolves_creator_and_booking_link_from_stored_content_not_payload_fields():
@@ -1194,14 +1322,20 @@ def test_calendly_webhook_canceled_before_created_is_deferred_and_replay_applies
     assert created_response.status_code == 200
     assert len(deferred_records) == 1
     assert deferred_records[0].processing_status == "deferred_missing_booking"
+    assert deferred_records[0].reducer_key == "booking:BOOK_story69_out_of_order"
+    assert deferred_records[0].reducer_attempt_count == 1
     assert replay_result.outcome == "reprocessed"
     assert replay_result.processing_status == "applied"
     assert len(canceled_records) == 1
     assert canceled_records[0].processing_status == "applied"
+    assert canceled_records[0].reducer_key == "booking:BOOK_story69_out_of_order"
+    assert canceled_records[0].reducer_attempt_count == 2
     assert canceled_records[0].tid == stored["tid"]
     assert canceled_records[0].processed_at is not None
     assert len(created_records) == 1
     assert created_records[0].processing_status == "applied"
+    assert created_records[0].reducer_key == "booking:BOOK_story69_out_of_order"
+    assert created_records[0].reducer_attempt_count == 1
     assert len(bookings) == 1
     assert bookings[0].status == "canceled"
     assert bookings[0].canceled_at == datetime(2026, 3, 11, 18, 0, tzinfo=timezone.utc)

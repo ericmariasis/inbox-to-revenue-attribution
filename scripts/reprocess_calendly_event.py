@@ -24,7 +24,7 @@ def main() -> int:
         f"reprocessed calendly journal row {args.journal_id} "
         f"with status={result.processing_status}"
     )
-    return 0
+    return 0 if result.processing_status != "failed" else 1
 
 
 if __name__ == "__main__":

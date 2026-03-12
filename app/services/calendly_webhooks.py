@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import logging
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -68,6 +69,7 @@ class CanceledBookingContext:
 CalendlyJournalRecordOutcome = Literal["recorded", "duplicate"]
 CalendlyProcessingStatus = Literal[
     "received",
+    "processing",
     "applied",
     "deferred_missing_booking",
     "ignored_missing_tid",
@@ -84,6 +86,9 @@ class CalendlyWebhookJournalRecordResult:
     outcome: CalendlyJournalRecordOutcome
     record_id: uuid.UUID
     delivery_count: int
+    processing_status: CalendlyProcessingStatus
+    reducer_key: str
+    should_schedule_reducer: bool
 
 
 @dataclass(frozen=True)
@@ -98,7 +103,40 @@ class CalendlyWebhookReplayResult:
 
 
 class CalendlyWebhookRouter(Protocol):
-    def handle_event(self, *, event: CalendlyWebhookEvent) -> None: ...
+    def record_event(
+        self,
+        *,
+        event: CalendlyWebhookEvent,
+    ) -> CalendlyWebhookJournalRecordResult: ...
+
+    def process_event(
+        self,
+        *,
+        record_id: uuid.UUID,
+        force: bool = False,
+    ) -> CalendlyProcessingStatus | None: ...
+
+    def reprocess_event(self, *, record_id: uuid.UUID) -> CalendlyWebhookReplayResult: ...
+
+
+_LIVE_RETRYABLE_PROCESSING_STATUSES = frozenset(
+    {"received", "deferred_missing_booking", "failed"}
+)
+
+
+class _CalendlyReducerLockRegistry:
+    def __init__(self) -> None:
+        self._locks: dict[str, threading.Lock] = {}
+        self._guard = threading.Lock()
+
+    def acquire(self, *, reducer_key: str) -> threading.Lock:
+        with self._guard:
+            lock = self._locks.setdefault(reducer_key, threading.Lock())
+        lock.acquire()
+        return lock
+
+
+_CALENDLY_REDUCER_LOCKS = _CalendlyReducerLockRegistry()
 
 
 class UnpaidInvoiceVoider(Protocol):
@@ -367,7 +405,11 @@ class DefaultCalendlyWebhookRouter:
             unpaid_invoice_voider=resolved_unpaid_invoice_voider,
         )
 
-    def handle_event(self, *, event: CalendlyWebhookEvent) -> None:
+    def record_event(
+        self,
+        *,
+        event: CalendlyWebhookEvent,
+    ) -> CalendlyWebhookJournalRecordResult:
         logger.info(
             "calendly_webhook_event_verified provider_event_type=%s calendly_event_id=%s calendly_event_id_path=%s calendly_booking_uuid=%s calendly_booking_uuid_path=%s event_type=%s tid=%s tid_path=%s",
             event.provider_event_type,
@@ -385,59 +427,82 @@ class DefaultCalendlyWebhookRouter:
         )
         if journal_result.outcome == "duplicate":
             logger.info(
-                "calendly_webhook_event_duplicate provider_event_type=%s calendly_event_id=%s calendly_booking_uuid=%s delivery_count=%s",
+                "calendly_webhook_event_duplicate provider_event_type=%s calendly_event_id=%s calendly_booking_uuid=%s delivery_count=%s processing_status=%s reducer_key=%s should_schedule_reducer=%s",
                 event.provider_event_type,
                 event.calendly_event_id,
                 event.calendly_booking_uuid,
                 journal_result.delivery_count,
+                journal_result.processing_status,
+                journal_result.reducer_key,
+                journal_result.should_schedule_reducer,
             )
-            return
-        self._apply_journaled_event(
-            record_id=journal_result.record_id,
-            event=event,
-        )
+        return journal_result
 
-    def reprocess_event(self, *, record_id: uuid.UUID) -> CalendlyWebhookReplayResult:
-        event = _load_journaled_calendly_event(
+    def process_event(
+        self,
+        *,
+        record_id: uuid.UUID,
+        force: bool = False,
+    ) -> CalendlyProcessingStatus | None:
+        record = _load_calendly_webhook_event_record(
             session_factory=self._session_factory,
             record_id=record_id,
         )
-        if event is None:
+        if record is None:
+            return None
+
+        reducer_key = record.reducer_key
+        reducer_lock = _CALENDLY_REDUCER_LOCKS.acquire(reducer_key=reducer_key)
+        try:
+            record = _load_calendly_webhook_event_record(
+                session_factory=self._session_factory,
+                record_id=record_id,
+            )
+            if record is None:
+                return None
+            if not force and record.processing_status not in _LIVE_RETRYABLE_PROCESSING_STATUSES:
+                return record.processing_status
+
+            event = _calendly_webhook_event_from_record(record)
+            _mark_calendly_webhook_event_processing_started(
+                session_factory=self._session_factory,
+                record_id=record_id,
+            )
+            try:
+                result = self._reduce_event(event=event)
+            except Exception as exc:
+                logger.exception(
+                    "calendly_webhook_event_processing_failed record_id=%s reducer_key=%s",
+                    record_id,
+                    reducer_key,
+                )
+                _update_calendly_webhook_event_processing(
+                    session_factory=self._session_factory,
+                    record_id=record_id,
+                    processing_status="failed",
+                    last_error=f"{type(exc).__name__}: {exc}",
+                )
+                return "failed"
+
+            _update_calendly_webhook_event_processing(
+                session_factory=self._session_factory,
+                record_id=record_id,
+                processing_status=result.processing_status,
+                last_error=None,
+            )
+            return result.processing_status
+        finally:
+            reducer_lock.release()
+
+    def reprocess_event(self, *, record_id: uuid.UUID) -> CalendlyWebhookReplayResult:
+        processing_status = self.process_event(record_id=record_id, force=True)
+        if processing_status is None:
             return CalendlyWebhookReplayResult(outcome="missing")
 
-        processing_status = self._apply_journaled_event(
-            record_id=record_id,
-            event=event,
-        )
         return CalendlyWebhookReplayResult(
             outcome="reprocessed",
             processing_status=processing_status,
         )
-
-    def _apply_journaled_event(
-        self,
-        *,
-        record_id: uuid.UUID,
-        event: CalendlyWebhookEvent,
-    ) -> CalendlyProcessingStatus:
-        try:
-            result = self._reduce_event(event=event)
-        except Exception as exc:
-            _update_calendly_webhook_event_processing(
-                session_factory=self._session_factory,
-                record_id=record_id,
-                processing_status="failed",
-                last_error=f"{type(exc).__name__}: {exc}",
-            )
-            raise
-
-        _update_calendly_webhook_event_processing(
-            session_factory=self._session_factory,
-            record_id=record_id,
-            processing_status=result.processing_status,
-            last_error=None,
-        )
-        return result.processing_status
 
     def _reduce_event(self, *, event: CalendlyWebhookEvent) -> CalendlyWebhookReducerResult:
         created_result = self._booking_created_handler.handle_event(event=event)
@@ -563,6 +628,7 @@ def _record_calendly_webhook_event(
     received_at: datetime | None = None,
 ) -> CalendlyWebhookJournalRecordResult:
     resolved_received_at = received_at or datetime.now(UTC)
+    reducer_key = _reducer_key_for_event(event=event)
 
     with session_factory() as session:
         existing_record = session.scalar(
@@ -580,6 +646,11 @@ def _record_calendly_webhook_event(
                 outcome="duplicate",
                 record_id=existing_record.id,
                 delivery_count=existing_record.delivery_count,
+                processing_status=existing_record.processing_status,
+                reducer_key=existing_record.reducer_key,
+                should_schedule_reducer=(
+                    existing_record.processing_status in _LIVE_RETRYABLE_PROCESSING_STATUSES
+                ),
             )
 
         record = CalendlyWebhookEventRecord(
@@ -592,8 +663,10 @@ def _record_calendly_webhook_event(
             tid=event.tid,
             tid_path=event.tid_path,
             payload=event.payload,
+            reducer_key=reducer_key,
             delivery_count=1,
             processing_status="received",
+            reducer_attempt_count=0,
             received_at=resolved_received_at,
             last_received_at=resolved_received_at,
         )
@@ -619,20 +692,57 @@ def _record_calendly_webhook_event(
                 outcome="duplicate",
                 record_id=existing_record.id,
                 delivery_count=existing_record.delivery_count,
+                processing_status=existing_record.processing_status,
+                reducer_key=existing_record.reducer_key,
+                should_schedule_reducer=(
+                    existing_record.processing_status in _LIVE_RETRYABLE_PROCESSING_STATUSES
+                ),
             )
 
         return CalendlyWebhookJournalRecordResult(
             outcome="recorded",
             record_id=record.id,
             delivery_count=record.delivery_count,
+            processing_status=record.processing_status,
+            reducer_key=record.reducer_key,
+            should_schedule_reducer=True,
         )
 
 
-def _load_journaled_calendly_event(
+def _load_calendly_webhook_event_record(
     *,
     session_factory: Callable[[], Session],
     record_id: uuid.UUID,
-) -> CalendlyWebhookEvent | None:
+) -> CalendlyWebhookEventRecord | None:
+    with session_factory() as session:
+        return session.scalar(
+            select(CalendlyWebhookEventRecord).where(
+                CalendlyWebhookEventRecord.id == record_id
+            )
+        )
+
+
+def _calendly_webhook_event_from_record(
+    record: CalendlyWebhookEventRecord,
+) -> CalendlyWebhookEvent:
+    return CalendlyWebhookEvent(
+        provider_event_type=record.provider_event_type,
+        calendly_event_id=record.calendly_event_id,
+        calendly_event_id_path=record.calendly_event_id_path,
+        event_type=record.event_type,
+        calendly_booking_uuid=record.calendly_booking_uuid,
+        calendly_booking_uuid_path=record.calendly_booking_uuid_path,
+        tid=record.tid,
+        tid_path=record.tid_path,
+        payload=record.payload,
+    )
+
+
+def _mark_calendly_webhook_event_processing_started(
+    *,
+    session_factory: Callable[[], Session],
+    record_id: uuid.UUID,
+) -> None:
     with session_factory() as session:
         record = session.scalar(
             select(CalendlyWebhookEventRecord).where(
@@ -640,19 +750,12 @@ def _load_journaled_calendly_event(
             )
         )
         if record is None:
-            return None
-
-        return CalendlyWebhookEvent(
-            provider_event_type=record.provider_event_type,
-            calendly_event_id=record.calendly_event_id,
-            calendly_event_id_path=record.calendly_event_id_path,
-            event_type=record.event_type,
-            calendly_booking_uuid=record.calendly_booking_uuid,
-            calendly_booking_uuid_path=record.calendly_booking_uuid_path,
-            tid=record.tid,
-            tid_path=record.tid_path,
-            payload=record.payload,
-        )
+            raise ValueError(f"missing calendly webhook journal row for {record_id}")
+        record.processing_status = "processing"
+        record.reducer_attempt_count += 1
+        record.last_error = None
+        record.processed_at = None
+        session.commit()
 
 
 def _update_calendly_webhook_event_processing(
@@ -674,6 +777,10 @@ def _update_calendly_webhook_event_processing(
         record.last_error = last_error
         record.processed_at = datetime.now(UTC)
         session.commit()
+
+
+def _reducer_key_for_event(*, event: CalendlyWebhookEvent) -> str:
+    return f"booking:{event.calendly_booking_uuid}"
 
 
 def _parse_signature_header(signature_header: str | None) -> tuple[int, list[str]]:

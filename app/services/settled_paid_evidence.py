@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID
@@ -35,6 +36,14 @@ class SettledPaidEvidenceRow:
     payment_event_status: str | None
     payment_event_paid_at: datetime | None
     payment_event_received_at: datetime | None
+
+
+@dataclass(frozen=True)
+class SettledPaidEvidenceReference:
+    content_id: UUID
+    booking_id: UUID
+    invoice_id: UUID
+    payment_event_id: UUID | None
 
 
 @dataclass(frozen=True)
@@ -154,6 +163,94 @@ def get_creator_settled_paid_evidence(
     )
 
 
+def build_settled_paid_evidence_reference(
+    row: SettledPaidEvidenceRow,
+) -> SettledPaidEvidenceReference:
+    return SettledPaidEvidenceReference(
+        content_id=row.content_id,
+        booking_id=row.booking_id,
+        invoice_id=row.invoice_id,
+        payment_event_id=row.payment_event_id,
+    )
+
+
+def get_creator_settled_paid_evidence_rows_for_references(
+    *,
+    creator_id: UUID,
+    references: Sequence[SettledPaidEvidenceReference],
+    db: Session,
+) -> list[SettledPaidEvidenceRow]:
+    ordered_references = list(references)
+    if not ordered_references:
+        return []
+
+    invoice_ids = sorted({reference.invoice_id for reference in ordered_references}, key=str)
+    base_rows = db.execute(
+        _creator_settled_paid_evidence_query_for_invoice_ids(
+            creator_id=creator_id,
+            invoice_ids=invoice_ids,
+        )
+    ).all()
+    base_rows_by_invoice_id = {row[7]: row for row in base_rows}
+
+    payment_event_ids = [
+        reference.payment_event_id
+        for reference in ordered_references
+        if reference.payment_event_id is not None
+    ]
+    payment_events_by_id: dict[UUID, InvoicePaymentEvent] = {}
+    if payment_event_ids:
+        payment_event_rows = db.execute(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.id.in_(payment_event_ids),
+                InvoicePaymentEvent.creator_id == creator_id,
+            )
+        ).scalars().all()
+        payment_events_by_id = {event.id: event for event in payment_event_rows}
+
+    resolved_rows: list[SettledPaidEvidenceRow] = []
+    for reference in ordered_references:
+        row = base_rows_by_invoice_id.get(reference.invoice_id)
+        if row is None:
+            continue
+        if row[0] != reference.content_id or row[4] != reference.booking_id:
+            continue
+
+        payment_event = (
+            payment_events_by_id.get(reference.payment_event_id)
+            if reference.payment_event_id is not None
+            else None
+        )
+        if reference.payment_event_id is not None and payment_event is None:
+            continue
+        if payment_event is not None and payment_event.invoice_id != reference.invoice_id:
+            continue
+
+        resolved_rows.append(
+            SettledPaidEvidenceRow(
+                content_id=row[0],
+                booking_link_id=row[1],
+                tid=row[2],
+                source_url=row[3],
+                booking_id=row[4],
+                booking_uuid=row[5],
+                booked_at=row[6],
+                invoice_id=row[7],
+                stripe_invoice_id=row[8],
+                invoice_amount_cents=row[9],
+                invoice_currency=row[10],
+                invoice_paid_at=row[11],
+                payment_event_id=payment_event.id if payment_event is not None else None,
+                stripe_event_id=payment_event.stripe_event_id if payment_event is not None else None,
+                payment_event_status=payment_event.status if payment_event is not None else None,
+                payment_event_paid_at=payment_event.paid_at if payment_event is not None else None,
+                payment_event_received_at=payment_event.received_at if payment_event is not None else None,
+            )
+        )
+
+    return resolved_rows
+
+
 def _creator_settled_paid_evidence_query(
     *,
     creator_id: UUID,
@@ -215,6 +312,47 @@ def _creator_settled_paid_evidence_query(
             Booking.booked_at.desc(),
             InvoicePaymentEvent.received_at.desc().nullslast(),
         )
+    )
+
+
+def _creator_settled_paid_evidence_query_for_invoice_ids(
+    *,
+    creator_id: UUID,
+    invoice_ids: Sequence[UUID],
+):
+    return (
+        select(
+            Content.id,
+            Content.booking_link_id,
+            Booking.tid,
+            Content.source_url,
+            Booking.id,
+            Booking.calendly_booking_uuid,
+            Booking.booked_at,
+            Invoice.id,
+            Invoice.stripe_invoice_id,
+            Invoice.amount_cents,
+            Invoice.currency,
+            Invoice.paid_at,
+        )
+        .select_from(Invoice)
+        .join(Booking, Booking.id == Invoice.booking_id)
+        .join(
+            Content,
+            and_(
+                Content.tid == Booking.tid,
+                Content.creator_id == creator_id,
+            ),
+        )
+        .where(
+            Invoice.creator_id == creator_id,
+            Invoice.id.in_(invoice_ids),
+            Invoice.status == "paid",
+            Invoice.paid_at.is_not(None),
+            Booking.creator_id == creator_id,
+            Booking.tid.is_not(None),
+        )
+        .order_by(Invoice.paid_at.desc(), Booking.booked_at.desc())
     )
 
 

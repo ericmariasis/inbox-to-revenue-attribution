@@ -47,3 +47,64 @@ class ReportsSummaryResponse(BaseModel):
     paid_booking_count: int
     unattributed_current_backlog: ReportsUnattributedBacklogResponse
     blocked_summary: ReportsBlockedSummaryResponse
+
+
+class BookingAttributionReasonCountResponse(BaseModel):
+    reason: str
+    booking_count: int
+
+
+class BookingAttributionHealthResponse(BaseModel):
+    unattributed_booking_count: int
+    reasons: list[BookingAttributionReasonCountResponse]
+
+
+class CalendlyIngressStatusCountResponse(BaseModel):
+    processing_status: str
+    event_count: int
+
+
+class CalendlyIngressHealthResponse(BaseModel):
+    backlog_event_count: int
+    failed_event_count: int
+    statuses: list[CalendlyIngressStatusCountResponse]
+
+
+class PaymentProvenanceStateCountResponse(BaseModel):
+    state: str
+    row_count: int
+
+
+class PaymentProvenanceReasonCountResponse(BaseModel):
+    reason: str | None
+    event_count: int
+
+
+class PaymentProvenanceHealthResponse(BaseModel):
+    settled_state_counts: list[PaymentProvenanceStateCountResponse]
+    current_backlog_event_count: int
+    current_backlog_reasons: list[PaymentProvenanceReasonCountResponse]
+
+
+class BlockedBillingHealthResponse(BaseModel):
+    open_case_count: int
+    reasons: list[ReportsBlockedReasonCountResponse]
+
+
+class AuthoritativeContentLagReasonCountResponse(BaseModel):
+    reason: str
+    content_count: int
+
+
+class AuthoritativeContentHealthResponse(BaseModel):
+    lagging_content_count: int
+    reasons: list[AuthoritativeContentLagReasonCountResponse]
+
+
+class EvidenceIngressHealthResponse(BaseModel):
+    creator_id: str
+    booking_attribution: BookingAttributionHealthResponse
+    calendly_ingress: CalendlyIngressHealthResponse
+    payment_provenance: PaymentProvenanceHealthResponse
+    blocked_billing: BlockedBillingHealthResponse
+    authoritative_content: AuthoritativeContentHealthResponse

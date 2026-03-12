@@ -16,6 +16,9 @@ def test_migrations_upgrade_and_downgrade():
             inspector = inspect(conn)
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
+            calendly_columns = {
+                column["name"] for column in inspector.get_columns("calendly_webhook_events")
+            }
             assert "creator_claim_paid_evidence_refs" in inspector.get_table_names(schema="public")
             assert "creator_claim_snapshots" in inspector.get_table_names(schema="public")
             assert "calendly_webhook_events" in inspector.get_table_names(schema="public")
@@ -32,6 +35,43 @@ def test_migrations_upgrade_and_downgrade():
             assert "authoritative_extraction_artifact_id" in content_columns
             assert "attribution_status" in booking_columns
             assert "unattributed_reason" in booking_columns
+            assert "reducer_key" in calendly_columns
+            assert "reducer_attempt_count" in calendly_columns
+            assert "frozen_billing_amount_cents" in booking_columns
+            assert "frozen_billing_currency" in booking_columns
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
+            content_columns = {column["name"] for column in inspector.get_columns("content")}
+            calendly_columns = {
+                column["name"] for column in inspector.get_columns("calendly_webhook_events")
+            }
+            assert "creator_claim_paid_evidence_refs" in table_names
+            assert "creator_claim_snapshots" in table_names
+            assert "calendly_webhook_events" in table_names
+            assert "content_topic_candidates" in table_names
+            assert "content_confirmed_topics" in table_names
+            assert "content_extraction_artifacts" in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
+            assert "authoritative_extraction_artifact_id" in content_columns
+            assert "attribution_status" in booking_columns
+            assert "unattributed_reason" in booking_columns
+            assert "reducer_key" not in calendly_columns
+            assert "reducer_attempt_count" not in calendly_columns
             assert "frozen_billing_amount_cents" in booking_columns
             assert "frozen_billing_currency" in booking_columns
             booking_link_columns = {
@@ -1069,8 +1109,10 @@ def test_calendly_webhook_events_table_has_expected_columns_indexes_and_unique_c
             "tid",
             "tid_path",
             "payload",
+            "reducer_key",
             "delivery_count",
             "processing_status",
+            "reducer_attempt_count",
             "last_error",
             "received_at",
             "last_received_at",
@@ -1094,6 +1136,11 @@ def test_calendly_webhook_events_table_has_expected_columns_indexes_and_unique_c
         assert any(
             index["name"] == "ix_calendly_webhook_events_processing_status"
             and index["column_names"] == ["processing_status"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_calendly_webhook_events_reducer_key"
+            and index["column_names"] == ["reducer_key"]
             for index in indexes
         )
 

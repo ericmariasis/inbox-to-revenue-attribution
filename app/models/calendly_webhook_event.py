@@ -14,6 +14,7 @@ class CalendlyWebhookEventRecord(Base):
         Index("ix_calendly_webhook_events_booking_uuid", "calendly_booking_uuid"),
         Index("ix_calendly_webhook_events_event_type", "event_type"),
         Index("ix_calendly_webhook_events_processing_status", "processing_status"),
+        Index("ix_calendly_webhook_events_reducer_key", "reducer_key"),
         UniqueConstraint(
             "provider_event_type",
             "calendly_event_id",
@@ -32,11 +33,17 @@ class CalendlyWebhookEventRecord(Base):
     tid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tid_path: Mapped[str | None] = mapped_column(String(128), nullable=True)
     payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    reducer_key: Mapped[str] = mapped_column(String(255), nullable=False)
     delivery_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     processing_status: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
         server_default="received",
+    )
+    reducer_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default="0",
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     received_at: Mapped[datetime] = mapped_column(

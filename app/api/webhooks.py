@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 
 from app.core.config import get_settings
 from app.schemas.auth import GenericOkResponse
@@ -38,7 +38,10 @@ def _calendly_webhook_router(request: Request) -> CalendlyWebhookRouter:
 
 
 @router.post("/calendly", response_model=GenericOkResponse)
-async def calendly_webhook(request: Request) -> GenericOkResponse:
+async def calendly_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> GenericOkResponse:
     payload = await request.body()
     signature_header = request.headers.get("calendly-webhook-signature")
     settings = _settings(request)
@@ -61,7 +64,13 @@ async def calendly_webhook(request: Request) -> GenericOkResponse:
             detail=INVALID_CALENDLY_WEBHOOK_PAYLOAD_DETAIL,
         ) from exc
 
-    _calendly_webhook_router(request).handle_event(event=event)
+    calendly_router = _calendly_webhook_router(request)
+    journal_result = calendly_router.record_event(event=event)
+    if journal_result.should_schedule_reducer:
+        background_tasks.add_task(
+            calendly_router.process_event,
+            record_id=journal_result.record_id,
+        )
     return GenericOkResponse()
 
 

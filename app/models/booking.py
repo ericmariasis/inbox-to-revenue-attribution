@@ -1,7 +1,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -14,6 +14,15 @@ class Booking(Base):
         Index("ix_bookings_creator_id", "creator_id"),
         Index("ix_bookings_booking_link_id", "booking_link_id"),
         Index("ix_bookings_tid", "tid"),
+        Index("ix_bookings_attribution_status", "attribution_status"),
+        CheckConstraint(
+            "("
+            "(attribution_status = 'attributed' AND tid IS NOT NULL AND unattributed_reason IS NULL)"
+            " OR "
+            "(attribution_status = 'unattributed' AND tid IS NULL AND unattributed_reason IS NOT NULL)"
+            ")",
+            name="ck_bookings_attribution_current_state",
+        ),
         UniqueConstraint("calendly_booking_uuid", name="uq_bookings_calendly_booking_uuid"),
     )
 
@@ -23,10 +32,10 @@ class Booking(Base):
         ForeignKey("creators.id", ondelete="CASCADE"),
         nullable=False,
     )
-    tid: Mapped[str] = mapped_column(
+    tid: Mapped[str | None] = mapped_column(
         String(64),
         ForeignKey("content.tid", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     booking_link_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -40,6 +49,13 @@ class Booking(Base):
         nullable=False,
         server_default="created",
     )
+    attribution_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="attributed",
+        server_default="attributed",
+    )
+    unattributed_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     frozen_billing_amount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     frozen_billing_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     booked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

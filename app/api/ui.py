@@ -52,6 +52,11 @@ from app.services.blocked_billing import (
     count_open_blocked_billing_cases,
     list_open_blocked_billing_cases,
 )
+from app.services.booking_attribution import (
+    BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+    BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
+    BOOKING_UNATTRIBUTED_REASON_UNKNOWN_TID,
+)
 from app.services.browser_session import (
     clear_browser_session_cookie,
     get_browser_session_token,
@@ -2430,7 +2435,7 @@ def _render_booking_activity_page(
           <h2>Creator-scoped activity only</h2>
           <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
-        <p>This first visibility slice shows only the basics: booking status, timestamps, and the tracked content plus booking-link context that the verified webhook resolved from stored app data.</p>
+        <p>This visibility slice shows booking status, timestamps, booking-link context, and the current attribution state so unattributed bookings stay explicit instead of disappearing into null-only checks.</p>
         <p>Client PII, invoices, revenue reporting, and deeper analytics stay out of scope for Story 41.</p>
       </article>
       <article class="card accent stack">
@@ -2680,21 +2685,40 @@ def _render_booking_activity_card(*, booking: BookingActivityResponse) -> str:
             f"<p><strong>Canceled at</strong>: "
             f"{_format_timestamp_in_utc(booking.canceled_at)}</p>"
         )
+    source_url_line = (
+        f'<p><strong>Source URL</strong>: <a href="{html.escape(booking.source_url)}" class="inline-link">{html.escape(booking.source_url)}</a></p>'
+        if booking.source_url is not None
+        else "<p><strong>Source URL</strong>: Not linked to tracked content yet.</p>"
+    )
+    tracking_id_line = (
+        f"<p><strong>Tracking ID</strong>: <code>{html.escape(booking.tid)}</code></p>"
+        if booking.tid is not None
+        else "<p><strong>Tracking ID</strong>: Not available yet.</p>"
+    )
+    attribution_reason_line = ""
+    if booking.attribution_status == BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED:
+        attribution_reason_line = (
+            f"<p><strong>Attribution reason</strong>: "
+            f"{html.escape(_booking_attribution_reason_label(booking.attribution_reason))}. "
+            f"{html.escape(_booking_attribution_reason_explanation(booking.attribution_reason))}</p>"
+        )
 
     return f"""
     <article class="activity-card stack">
       <div class="activity-card-header">
         <div>
           <p class="eyebrow">Booking activity</p>
-          <h2>{html.escape(_content_card_title(booking.source_url))}</h2>
+          <h2>{html.escape(_booking_activity_title(booking))}</h2>
         </div>
         <span class="status-pill {html.escape(status["badge_class"])}">{html.escape(status["label"])}</span>
       </div>
       <p><strong>Booked at</strong>: {_format_timestamp_in_utc(booking.booked_at)}</p>
       {canceled_at_line}
       <p><strong>Booking link</strong>: {html.escape(booking.booking_link_name)}</p>
-      <p><strong>Source URL</strong>: <a href="{html.escape(booking.source_url)}" class="inline-link">{html.escape(booking.source_url)}</a></p>
-      <p><strong>Tracking ID</strong>: <code>{html.escape(booking.tid)}</code></p>
+      <p><strong>Attribution</strong>: {html.escape(_booking_attribution_status_label(booking.attribution_status))}</p>
+      {attribution_reason_line}
+      {source_url_line}
+      {tracking_id_line}
     </article>
     """
 
@@ -3279,6 +3303,34 @@ def _content_card_title(source_url: str) -> str:
     if parsed.query:
         display_value = f"{display_value}?{parsed.query}"
     return display_value or source_url
+
+
+def _booking_activity_title(booking: BookingActivityResponse) -> str:
+    if booking.source_url is None:
+        return "Unattributed booking"
+    return _content_card_title(booking.source_url)
+
+
+def _booking_attribution_status_label(status_value: str) -> str:
+    if status_value == BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED:
+        return "Unattributed"
+    return "Attributed"
+
+
+def _booking_attribution_reason_label(reason: str | None) -> str:
+    if reason == BOOKING_UNATTRIBUTED_REASON_MISSING_TID:
+        return "Missing tracking ID"
+    if reason == BOOKING_UNATTRIBUTED_REASON_UNKNOWN_TID:
+        return "Unknown tracking ID"
+    return (reason or "Unknown reason").replace("_", " ").title()
+
+
+def _booking_attribution_reason_explanation(reason: str | None) -> str:
+    if reason == BOOKING_UNATTRIBUTED_REASON_MISSING_TID:
+        return "The booking was captured without a creator-scoped tracking ID."
+    if reason == BOOKING_UNATTRIBUTED_REASON_UNKNOWN_TID:
+        return "The booking carried a tracking ID, but it did not match a current tracked content row."
+    return "The booking still needs a canonical content link before it can be treated as attributed."
 
 
 def _billing_defaults_copy(

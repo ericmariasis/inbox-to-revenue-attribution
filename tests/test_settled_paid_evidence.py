@@ -11,6 +11,10 @@ from app.models.content import Content
 from app.models.creator import Creator
 from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
+from app.services.booking_attribution import (
+    BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+    BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
+)
 from app.services.invoice_payment_events import UNATTRIBUTED_REASON_MISSING_TID
 from app.services.settled_paid_evidence import get_creator_settled_paid_evidence
 
@@ -150,6 +154,20 @@ def test_creator_settled_paid_evidence_keeps_paid_invoices_settled_and_surfaces_
         )
         session.add(blocked_booking)
         session.flush()
+
+        session.add(
+            Booking(
+                creator_id=creator.id,
+                booking_link_id=booking_link.id,
+                tid=None,
+                calendly_booking_uuid="BOOK_UNATTRIBUTED_DIAGNOSTIC",
+                email="unattributed-diagnostic@example.com",
+                status="created",
+                attribution_status=BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+                unattributed_reason=BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
+                booked_at=datetime(2026, 3, 8, 12, 30, tzinfo=timezone.utc),
+            )
+        )
 
         session.add(
             BlockedBillingCase(

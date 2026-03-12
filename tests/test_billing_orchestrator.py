@@ -10,6 +10,10 @@ from app.models.blocked_billing_case import BlockedBillingCase
 from app.models.content import Content
 from app.models.creator import Creator
 from app.models.invoice import Invoice
+from app.services.booking_attribution import (
+    BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+    BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
+)
 from app.services.billing import BillingOrchestrator
 from app.services.blocked_billing import BlockedBillingRetryService
 from app.services.stripe_provider import (
@@ -328,6 +332,43 @@ def test_billing_orchestrator_defers_when_billing_defaults_are_missing():
     assert len(bookings) == 1
     assert bookings[0].frozen_billing_amount_cents is None
     assert bookings[0].frozen_billing_currency is None
+
+
+def test_billing_orchestrator_defers_when_booking_is_unattributed():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    provider = _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=True))
+
+    with Session(engine) as session:
+        _, _, _, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story78_unattributed",
+            tid="story78_unattributed_tid",
+        )
+        booking.tid = None
+        booking.attribution_status = BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED
+        booking.unattributed_reason = BOOKING_UNATTRIBUTED_REASON_MISSING_TID
+        booking_id = booking.id
+        session.commit()
+
+    orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        provider=provider,
+    )
+
+    result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
+    bookings = _booking_rows()
+
+    assert result.outcome == "deferred"
+    assert result.reason == "booking_unattributed"
+    assert result.invoice_id is None
+    assert provider.readiness_calls == []
+    assert provider.create_calls == []
+    assert _invoice_rows() == []
+    assert _blocked_case_rows() == []
+    assert len(bookings) == 1
+    assert bookings[0].tid is None
+    assert bookings[0].attribution_status == BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED
+    assert bookings[0].unattributed_reason == BOOKING_UNATTRIBUTED_REASON_MISSING_TID
 
 
 def test_billing_orchestrator_freezes_once_defaults_become_complete_after_initial_missing_defaults():

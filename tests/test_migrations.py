@@ -30,6 +30,37 @@ def test_migrations_upgrade_and_downgrade():
             assert "content" in inspector.get_table_names(schema="public")
             assert "booking_links" in inspector.get_table_names(schema="public")
             assert "authoritative_extraction_artifact_id" in content_columns
+            assert "attribution_status" in booking_columns
+            assert "unattributed_reason" in booking_columns
+            assert "frozen_billing_amount_cents" in booking_columns
+            assert "frozen_billing_currency" in booking_columns
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
+            content_columns = {column["name"] for column in inspector.get_columns("content")}
+            assert "creator_claim_paid_evidence_refs" in table_names
+            assert "creator_claim_snapshots" in table_names
+            assert "calendly_webhook_events" in table_names
+            assert "content_topic_candidates" in table_names
+            assert "content_confirmed_topics" in table_names
+            assert "content_extraction_artifacts" in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
+            assert "authoritative_extraction_artifact_id" in content_columns
+            assert "attribution_status" not in booking_columns
             assert "frozen_billing_amount_cents" in booking_columns
             assert "frozen_billing_currency" in booking_columns
             booking_link_columns = {
@@ -58,6 +89,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "content" in table_names
             assert "booking_links" in table_names
             assert "authoritative_extraction_artifact_id" in content_columns
+            assert "attribution_status" not in booking_columns
             assert "frozen_billing_amount_cents" in booking_columns
             assert "frozen_billing_currency" in booking_columns
             booking_link_columns = {
@@ -73,6 +105,8 @@ def test_migrations_upgrade_and_downgrade():
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
             assert "calendly_webhook_events" not in table_names
+            assert "authoritative_extraction_artifact_id" in content_columns
+            assert "attribution_status" not in booking_columns
             assert "content_topic_candidates" in table_names
             assert "content_confirmed_topics" in table_names
             assert "content_extraction_artifacts" in table_names
@@ -83,7 +117,6 @@ def test_migrations_upgrade_and_downgrade():
             assert "bookings" in table_names
             assert "content" in table_names
             assert "booking_links" in table_names
-            assert "authoritative_extraction_artifact_id" in content_columns
             assert "frozen_billing_amount_cents" in booking_columns
             assert "frozen_billing_currency" in booking_columns
             booking_link_columns = {
@@ -98,7 +131,6 @@ def test_migrations_upgrade_and_downgrade():
             table_names = inspector.get_table_names(schema="public")
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
-            assert "authoritative_extraction_artifact_id" not in content_columns
             assert "content_topic_candidates" in table_names
             assert "content_confirmed_topics" in table_names
             assert "content_extraction_artifacts" in table_names
@@ -109,6 +141,8 @@ def test_migrations_upgrade_and_downgrade():
             assert "bookings" in table_names
             assert "content" in table_names
             assert "booking_links" in table_names
+            assert "authoritative_extraction_artifact_id" not in content_columns
+            assert "attribution_status" not in booking_columns
             assert "frozen_billing_amount_cents" in booking_columns
             assert "frozen_billing_currency" in booking_columns
             booking_link_columns = {
@@ -737,6 +771,8 @@ def test_bookings_table_has_expected_columns_fk_indexes_and_unique_uuid():
             "calendly_booking_uuid",
             "email",
             "status",
+            "attribution_status",
+            "unattributed_reason",
             "frozen_billing_amount_cents",
             "frozen_billing_currency",
             "booked_at",
@@ -777,12 +813,23 @@ def test_bookings_table_has_expected_columns_fk_indexes_and_unique_uuid():
             and index["column_names"] == ["tid"]
             for index in indexes
         )
+        assert any(
+            index["name"] == "ix_bookings_attribution_status"
+            and index["column_names"] == ["attribution_status"]
+            for index in indexes
+        )
 
         unique_constraints = inspector.get_unique_constraints("bookings")
         assert any(
             constraint["name"] == "uq_bookings_calendly_booking_uuid"
             and constraint["column_names"] == ["calendly_booking_uuid"]
             for constraint in unique_constraints
+        )
+
+        check_constraints = inspector.get_check_constraints("bookings")
+        assert any(
+            constraint["name"] == "ck_bookings_attribution_current_state"
+            for constraint in check_constraints
         )
 
 

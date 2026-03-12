@@ -10,6 +10,10 @@ from sqlalchemy import create_engine, text
 
 from app.core.config import get_settings
 from app.main import app
+from app.services.booking_attribution import (
+    BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+    BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
+)
 from app.services.email_provider import MagicLinkEmailDeliveryError
 from app.services.email_stub import get_magic_link_outbox
 from app.services.invoice_payment_events import UNATTRIBUTED_REASON_MISSING_TID
@@ -286,22 +290,31 @@ def _insert_booking(
     *,
     creator_id: str,
     booking_link_id: str,
-    tid: str,
+    tid: str | None,
     calendly_booking_uuid: str,
     booked_at: datetime,
     status: str = "created",
     canceled_at: datetime | None = None,
     email: str = "booked@example.com",
+    attribution_status: str | None = None,
+    unattributed_reason: str | None = None,
 ) -> str:
     booking_id = str(uuid.uuid4())
+    resolved_attribution_status = attribution_status or "attributed"
 
     with _engine().begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO bookings "
-                "(id, creator_id, booking_link_id, tid, calendly_booking_uuid, email, status, booked_at, canceled_at) "
+                "("
+                "id, creator_id, booking_link_id, tid, calendly_booking_uuid, email, status, "
+                "attribution_status, unattributed_reason, booked_at, canceled_at"
+                ") "
                 "VALUES "
-                "(:id, :creator_id, :booking_link_id, :tid, :calendly_booking_uuid, :email, :status, :booked_at, :canceled_at)"
+                "("
+                ":id, :creator_id, :booking_link_id, :tid, :calendly_booking_uuid, :email, :status, "
+                ":attribution_status, :unattributed_reason, :booked_at, :canceled_at"
+                ")"
             ),
             {
                 "id": booking_id,
@@ -311,6 +324,8 @@ def _insert_booking(
                 "calendly_booking_uuid": calendly_booking_uuid,
                 "email": email,
                 "status": status,
+                "attribution_status": resolved_attribution_status,
+                "unattributed_reason": unattributed_reason,
                 "booked_at": booked_at,
                 "canceled_at": canceled_at,
             },
@@ -1435,6 +1450,45 @@ def test_booking_activity_page_lists_only_current_creators_bookings_with_context
     assert "https://example.com/posts/creator-b-booking" not in response.text
     assert "uibbookingactivity" not in response.text
     assert response.text.index("creator-a-canceled") < response.text.index("creator-a-created")
+
+
+def test_booking_activity_page_shows_unattributed_booking_current_state():
+    creator = _insert_creator_user(
+        email=f"ui_activity_unattributed_{uuid.uuid4().hex}@example.com",
+        name="UI Activity Unattributed",
+    )
+    access_token = _access_token(
+        user_id=creator["user_id"],
+        creator_id=creator["creator_id"],
+        email=creator["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="UI Activity Unattributed Link",
+        calendly_url="https://calendly.com/example/ui-activity-unattributed",
+    )
+    _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=None,
+        calendly_booking_uuid="BOOK_UI_ACTIVITY_UNATTRIBUTED",
+        booked_at=datetime(2026, 3, 12, 15, 0, tzinfo=timezone.utc),
+        attribution_status=BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+        unattributed_reason=BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/bookings", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Unattributed booking" in response.text
+    assert "Attribution</strong>: Unattributed" in response.text
+    assert "Attribution reason</strong>: Missing tracking ID." in response.text
+    assert "The booking was captured without a creator-scoped tracking ID." in response.text
+    assert "Source URL</strong>: Not linked to tracked content yet." in response.text
+    assert "Tracking ID</strong>: Not available yet." in response.text
 
 
 def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters():

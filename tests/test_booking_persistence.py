@@ -10,6 +10,10 @@ from app.models.booking import Booking
 from app.models.booking_link import BookingLink
 from app.models.content import Content
 from app.models.creator import Creator
+from app.services.booking_attribution import (
+    BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+    BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
+)
 
 
 def _create_creator_booking_link_and_content(session: Session) -> tuple[Creator, BookingLink, Content]:
@@ -66,6 +70,8 @@ def test_booking_row_can_persist_against_creator_owned_content():
         assert fetched.tid == content.tid
         assert fetched.email == "booked@example.com"
         assert fetched.status == "created"
+        assert fetched.attribution_status == "attributed"
+        assert fetched.unattributed_reason is None
         assert fetched.frozen_billing_amount_cents is None
         assert fetched.frozen_billing_currency is None
         assert fetched.booked_at == booked_at
@@ -115,3 +121,40 @@ def test_duplicate_calendly_booking_uuid_is_blocked_by_db_constraint():
             select(Booking).where(Booking.calendly_booking_uuid == "cal_booking_story31_duplicate")
         ).all()
         assert len(rows) == 1
+
+
+def test_unattributed_booking_row_can_persist_with_explicit_reason():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    booked_at = datetime(2026, 3, 7, 19, 30, tzinfo=timezone.utc)
+
+    with Session(engine) as session:
+        creator, booking_link, _ = _create_creator_booking_link_and_content(session)
+        session.add(
+            Booking(
+                creator_id=creator.id,
+                booking_link_id=booking_link.id,
+                tid=None,
+                calendly_booking_uuid="cal_booking_story78_unattributed",
+                email="unattributed@example.com",
+                status="created",
+                attribution_status=BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+                unattributed_reason=BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
+                booked_at=booked_at,
+            )
+        )
+        session.commit()
+
+        fetched = session.scalar(
+            select(Booking).where(
+                Booking.calendly_booking_uuid == "cal_booking_story78_unattributed"
+            )
+        )
+
+        assert fetched is not None
+        assert fetched.creator_id == creator.id
+        assert fetched.booking_link_id == booking_link.id
+        assert fetched.tid is None
+        assert fetched.attribution_status == BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED
+        assert fetched.unattributed_reason == BOOKING_UNATTRIBUTED_REASON_MISSING_TID
+        assert fetched.booked_at == booked_at
+        assert fetched.content is None

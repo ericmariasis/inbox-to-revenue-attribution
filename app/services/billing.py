@@ -10,6 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
 from app.models.invoice import Invoice
+from app.services.booking_attribution import (
+    BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+    get_booking_attribution_current_state,
+)
 from app.services.blocked_billing import (
     BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
     BLOCKED_BILLING_REASON_PROVIDER_ERROR,
@@ -31,6 +35,7 @@ CreateInvoiceReason = Literal[
     "creator_not_billable",
     "booking_not_found",
     "booking_not_active",
+    "booking_unattributed",
     "provider_error",
 ]
 VoidInvoiceOutcome = Literal["voided", "noop"]
@@ -96,6 +101,20 @@ class BillingOrchestrator:
                     existing_invoice.status,
                 )
                 return _billing_invoice_result(existing_invoice, outcome="existing")
+
+            attribution = get_booking_attribution_current_state(booking=booking)
+            if attribution.status == BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED:
+                logger.info(
+                    "billing_invoice_create_deferred_booking_unattributed booking_id=%s creator_id=%s booking_link_id=%s unattributed_reason=%s",
+                    booking.id,
+                    booking.creator_id,
+                    booking.booking_link_id,
+                    attribution.unattributed_reason,
+                )
+                return BillingInvoiceResult(
+                    outcome="deferred",
+                    reason="booking_unattributed",
+                )
 
             amount_cents, currency = _resolve_booking_billing_terms(booking=booking)
             if amount_cents is None or currency is None:

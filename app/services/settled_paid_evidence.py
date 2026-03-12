@@ -11,7 +11,11 @@ from app.models.booking import Booking
 from app.models.content import Content
 from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
-from app.services.invoice_payment_events import ATTRIBUTED_PAYMENT_EVENT_STATUSES
+from app.services.invoice_payment_events import (
+    ATTRIBUTED_PAYMENT_EVENT_STATUSES,
+    PaymentProvenanceSummary,
+    build_payment_provenance_summary,
+)
 
 CURRENT_UNMATCHED_PAYMENT_BACKLOG_SCOPE = "current_backlog"
 CURRENT_BLOCKED_BILLING_BACKLOG_SCOPE = "current_backlog"
@@ -36,6 +40,7 @@ class SettledPaidEvidenceRow:
     payment_event_status: str | None
     payment_event_paid_at: datetime | None
     payment_event_received_at: datetime | None
+    payment_provenance: PaymentProvenanceSummary
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,12 @@ class BlockedBillingBacklog:
 
 
 @dataclass(frozen=True)
+class _StripeInvoiceConflictSummary:
+    event_count: int
+    reasons: tuple[str | None, ...]
+
+
+@dataclass(frozen=True)
 class CreatorSettledPaidEvidenceSnapshot:
     creator_id: UUID
     start_date: date | None
@@ -106,6 +117,11 @@ def get_creator_settled_paid_evidence(
     blocked_rows = db.execute(
         _creator_blocked_billing_backlog_query(creator_id=creator_id)
     ).all()
+    conflicts_by_stripe_invoice_id = _load_unmatched_payment_conflicts_by_stripe_invoice_id(
+        creator_id=creator_id,
+        stripe_invoice_ids=[row[8] for row in settled_row_values],
+        db=db,
+    )
 
     settled_rows: list[SettledPaidEvidenceRow] = []
     seen_invoice_ids: set[UUID] = set()
@@ -114,6 +130,7 @@ def get_creator_settled_paid_evidence(
         if invoice_id in seen_invoice_ids:
             continue
         seen_invoice_ids.add(invoice_id)
+        conflict_summary = conflicts_by_stripe_invoice_id.get(row[8])
         settled_rows.append(
             SettledPaidEvidenceRow(
                 content_id=row[0],
@@ -133,6 +150,15 @@ def get_creator_settled_paid_evidence(
                 payment_event_status=row[14],
                 payment_event_paid_at=row[15],
                 payment_event_received_at=row[16],
+                payment_provenance=build_payment_provenance_summary(
+                    payment_event_status=row[14],
+                    conflict_event_count=(
+                        conflict_summary.event_count if conflict_summary is not None else 0
+                    ),
+                    conflict_reasons=(
+                        conflict_summary.reasons if conflict_summary is not None else ()
+                    ),
+                ),
             )
         )
 
@@ -207,6 +233,11 @@ def get_creator_settled_paid_evidence_rows_for_references(
             )
         ).scalars().all()
         payment_events_by_id = {event.id: event for event in payment_event_rows}
+    conflicts_by_stripe_invoice_id = _load_unmatched_payment_conflicts_by_stripe_invoice_id(
+        creator_id=creator_id,
+        stripe_invoice_ids=[row[8] for row in base_rows],
+        db=db,
+    )
 
     resolved_rows: list[SettledPaidEvidenceRow] = []
     for reference in ordered_references:
@@ -226,6 +257,7 @@ def get_creator_settled_paid_evidence_rows_for_references(
         if payment_event is not None and payment_event.invoice_id != reference.invoice_id:
             continue
 
+        conflict_summary = conflicts_by_stripe_invoice_id.get(row[8])
         resolved_rows.append(
             SettledPaidEvidenceRow(
                 content_id=row[0],
@@ -245,6 +277,15 @@ def get_creator_settled_paid_evidence_rows_for_references(
                 payment_event_status=payment_event.status if payment_event is not None else None,
                 payment_event_paid_at=payment_event.paid_at if payment_event is not None else None,
                 payment_event_received_at=payment_event.received_at if payment_event is not None else None,
+                payment_provenance=build_payment_provenance_summary(
+                    payment_event_status=payment_event.status if payment_event is not None else None,
+                    conflict_event_count=(
+                        conflict_summary.event_count if conflict_summary is not None else 0
+                    ),
+                    conflict_reasons=(
+                        conflict_summary.reasons if conflict_summary is not None else ()
+                    ),
+                ),
             )
         )
 
@@ -371,6 +412,33 @@ def _creator_unmatched_payment_backlog_query(*, creator_id: UUID):
     )
 
 
+def _creator_unmatched_payment_conflicts_query(
+    *,
+    creator_id: UUID,
+    stripe_invoice_ids: Sequence[str],
+):
+    return (
+        select(
+            InvoicePaymentEvent.stripe_invoice_id,
+            InvoicePaymentEvent.unattributed_reason,
+            func.count(InvoicePaymentEvent.id),
+        )
+        .where(
+            InvoicePaymentEvent.creator_id == creator_id,
+            InvoicePaymentEvent.status == "unmatched",
+            InvoicePaymentEvent.stripe_invoice_id.in_(stripe_invoice_ids),
+        )
+        .group_by(
+            InvoicePaymentEvent.stripe_invoice_id,
+            InvoicePaymentEvent.unattributed_reason,
+        )
+        .order_by(
+            InvoicePaymentEvent.stripe_invoice_id.asc(),
+            InvoicePaymentEvent.unattributed_reason.asc(),
+        )
+    )
+
+
 def _creator_blocked_billing_backlog_query(*, creator_id: UUID):
     return (
         select(
@@ -384,6 +452,38 @@ def _creator_blocked_billing_backlog_query(*, creator_id: UUID):
         .group_by(BlockedBillingCase.reason_code)
         .order_by(BlockedBillingCase.reason_code.asc())
     )
+
+
+def _load_unmatched_payment_conflicts_by_stripe_invoice_id(
+    *,
+    creator_id: UUID,
+    stripe_invoice_ids: Sequence[str],
+    db: Session,
+) -> dict[str, _StripeInvoiceConflictSummary]:
+    deduped_invoice_ids = sorted({stripe_invoice_id for stripe_invoice_id in stripe_invoice_ids})
+    if not deduped_invoice_ids:
+        return {}
+
+    rows = db.execute(
+        _creator_unmatched_payment_conflicts_query(
+            creator_id=creator_id,
+            stripe_invoice_ids=deduped_invoice_ids,
+        )
+    ).all()
+    grouped_counts: dict[str, int] = {}
+    grouped_reasons: dict[str, list[str | None]] = {}
+
+    for stripe_invoice_id, reason, event_count in rows:
+        grouped_counts[stripe_invoice_id] = grouped_counts.get(stripe_invoice_id, 0) + event_count
+        grouped_reasons.setdefault(stripe_invoice_id, []).append(reason)
+
+    return {
+        stripe_invoice_id: _StripeInvoiceConflictSummary(
+            event_count=grouped_counts[stripe_invoice_id],
+            reasons=tuple(grouped_reasons.get(stripe_invoice_id, [])),
+        )
+        for stripe_invoice_id in grouped_counts
+    }
 
 
 def _paid_date_filters(

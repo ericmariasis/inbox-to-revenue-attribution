@@ -15,7 +15,19 @@ from app.services.booking_attribution import (
     BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
     BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
 )
-from app.services.invoice_payment_events import UNATTRIBUTED_REASON_MISSING_TID
+from app.services.invoice_payment_events import (
+    PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE,
+    PAYMENT_PROVENANCE_CONFLICT_STATUS_UNMATCHED_PROVIDER_SIGNAL,
+    PAYMENT_PROVENANCE_STATE_CONFLICTING,
+    PAYMENT_PROVENANCE_STATE_MATCHED,
+    PAYMENT_PROVENANCE_STATE_PENDING,
+    PAYMENT_PROVENANCE_STATE_UNMATCHED,
+    PAYMENT_PROVENANCE_STATUS_MATCHED,
+    PAYMENT_PROVENANCE_STATUS_PENDING,
+    UNATTRIBUTED_REASON_MISSING_TID,
+    UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
+    UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+)
 from app.services.settled_paid_evidence import get_creator_settled_paid_evidence
 
 
@@ -131,6 +143,130 @@ def test_creator_settled_paid_evidence_keeps_paid_invoices_settled_and_surfaces_
                 paid_at=matched_invoice.paid_at,
                 received_at=matched_invoice.paid_at,
                 processed_at=matched_invoice.paid_at,
+            )
+        )
+
+        pending_conflict_content = Content(
+            creator_id=creator.id,
+            booking_link_id=booking_link.id,
+            source_url="https://example.com/posts/settled-pending-conflict",
+            tid="settled_pending_conflict_tid",
+        )
+        session.add(pending_conflict_content)
+        session.flush()
+
+        pending_conflict_booking = Booking(
+            creator_id=creator.id,
+            booking_link_id=booking_link.id,
+            tid=pending_conflict_content.tid,
+            calendly_booking_uuid="BOOK_SETTLED_PENDING_CONFLICT",
+            email="settled-pending-conflict@example.com",
+            status="created",
+            booked_at=datetime(2026, 3, 8, 11, 30, tzinfo=timezone.utc),
+        )
+        session.add(pending_conflict_booking)
+        session.flush()
+
+        pending_conflict_invoice = Invoice(
+            creator_id=creator.id,
+            booking_id=pending_conflict_booking.id,
+            tid=pending_conflict_booking.tid,
+            stripe_account_id=creator.stripe_account_id,
+            stripe_invoice_id="in_settled_pending_conflict",
+            amount_cents=22500,
+            currency="USD",
+            status="paid",
+            issued_at=datetime(2026, 3, 8, 11, 45, tzinfo=timezone.utc),
+            paid_at=datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc),
+        )
+        session.add(pending_conflict_invoice)
+        session.flush()
+
+        session.add(
+            InvoicePaymentEvent(
+                stripe_event_id="evt_settled_pending_conflict_unmatched",
+                stripe_event_type="invoice.paid",
+                stripe_account_id=creator.stripe_account_id,
+                stripe_invoice_id=pending_conflict_invoice.stripe_invoice_id,
+                invoice_id=None,
+                creator_id=creator.id,
+                booking_id=None,
+                tid=None,
+                status="unmatched",
+                unattributed_reason=UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+                paid_at=pending_conflict_invoice.paid_at,
+                received_at=pending_conflict_invoice.paid_at,
+                processed_at=None,
+            )
+        )
+
+        matched_conflict_content = Content(
+            creator_id=creator.id,
+            booking_link_id=booking_link.id,
+            source_url="https://example.com/posts/settled-matched-conflict",
+            tid="settled_matched_conflict_tid",
+        )
+        session.add(matched_conflict_content)
+        session.flush()
+
+        matched_conflict_booking = Booking(
+            creator_id=creator.id,
+            booking_link_id=booking_link.id,
+            tid=matched_conflict_content.tid,
+            calendly_booking_uuid="BOOK_SETTLED_MATCHED_CONFLICT",
+            email="settled-matched-conflict@example.com",
+            status="created",
+            booked_at=datetime(2026, 3, 8, 12, 15, tzinfo=timezone.utc),
+        )
+        session.add(matched_conflict_booking)
+        session.flush()
+
+        matched_conflict_invoice = Invoice(
+            creator_id=creator.id,
+            booking_id=matched_conflict_booking.id,
+            tid=matched_conflict_booking.tid,
+            stripe_account_id=creator.stripe_account_id,
+            stripe_invoice_id="in_settled_matched_conflict",
+            amount_cents=27500,
+            currency="USD",
+            status="paid",
+            issued_at=datetime(2026, 3, 8, 12, 30, tzinfo=timezone.utc),
+            paid_at=datetime(2026, 3, 8, 12, 45, tzinfo=timezone.utc),
+        )
+        session.add(matched_conflict_invoice)
+        session.flush()
+
+        session.add(
+            InvoicePaymentEvent(
+                stripe_event_id="evt_settled_matched_conflict_applied",
+                stripe_event_type="invoice.paid",
+                stripe_account_id=creator.stripe_account_id,
+                stripe_invoice_id=matched_conflict_invoice.stripe_invoice_id,
+                invoice_id=matched_conflict_invoice.id,
+                creator_id=creator.id,
+                booking_id=matched_conflict_booking.id,
+                tid=matched_conflict_booking.tid,
+                status="applied",
+                paid_at=matched_conflict_invoice.paid_at,
+                received_at=matched_conflict_invoice.paid_at,
+                processed_at=matched_conflict_invoice.paid_at,
+            )
+        )
+        session.add(
+            InvoicePaymentEvent(
+                stripe_event_id="evt_settled_matched_conflict_unmatched",
+                stripe_event_type="invoice.paid",
+                stripe_account_id=creator.stripe_account_id,
+                stripe_invoice_id=matched_conflict_invoice.stripe_invoice_id,
+                invoice_id=None,
+                creator_id=creator.id,
+                booking_id=None,
+                tid=None,
+                status="unmatched",
+                unattributed_reason=UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
+                paid_at=matched_conflict_invoice.paid_at,
+                received_at=matched_conflict_invoice.paid_at,
+                processed_at=None,
             )
         )
 
@@ -276,7 +412,9 @@ def test_creator_settled_paid_evidence_keeps_paid_invoices_settled_and_surfaces_
         )
 
     assert sorted(row.stripe_invoice_id for row in snapshot.settled_rows) == [
+        "in_settled_matched_conflict",
         "in_settled_no_event",
+        "in_settled_pending_conflict",
         "in_settled_with_event",
     ]
 
@@ -286,18 +424,69 @@ def test_creator_settled_paid_evidence_keeps_paid_invoices_settled_and_surfaces_
     assert no_event_row.payment_event_id is None
     assert no_event_row.stripe_event_id is None
     assert no_event_row.payment_event_status is None
+    assert no_event_row.payment_provenance.status == PAYMENT_PROVENANCE_STATUS_PENDING
+    assert no_event_row.payment_provenance.conflict_status == PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE
+    assert no_event_row.payment_provenance.conflict_event_count == 0
+    assert no_event_row.payment_provenance.conflict_reasons == ()
+    assert no_event_row.payment_provenance.state == PAYMENT_PROVENANCE_STATE_PENDING
 
     matched_row = next(
         row for row in snapshot.settled_rows if row.stripe_invoice_id == "in_settled_with_event"
     )
     assert matched_row.stripe_event_id == "evt_settled_with_event"
     assert matched_row.payment_event_status == "applied"
+    assert matched_row.payment_provenance.status == PAYMENT_PROVENANCE_STATUS_MATCHED
+    assert matched_row.payment_provenance.conflict_status == PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE
+    assert matched_row.payment_provenance.conflict_event_count == 0
+    assert matched_row.payment_provenance.conflict_reasons == ()
+    assert matched_row.payment_provenance.state == PAYMENT_PROVENANCE_STATE_MATCHED
 
-    assert snapshot.unmatched_payment_backlog.event_count == 1
+    pending_conflict_row = next(
+        row
+        for row in snapshot.settled_rows
+        if row.stripe_invoice_id == "in_settled_pending_conflict"
+    )
+    assert pending_conflict_row.payment_event_id is None
+    assert pending_conflict_row.stripe_event_id is None
+    assert pending_conflict_row.payment_event_status is None
+    assert pending_conflict_row.payment_provenance.status == PAYMENT_PROVENANCE_STATUS_PENDING
+    assert (
+        pending_conflict_row.payment_provenance.conflict_status
+        == PAYMENT_PROVENANCE_CONFLICT_STATUS_UNMATCHED_PROVIDER_SIGNAL
+    )
+    assert pending_conflict_row.payment_provenance.conflict_event_count == 1
+    assert pending_conflict_row.payment_provenance.conflict_reasons == (
+        UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+    )
+    assert pending_conflict_row.payment_provenance.state == PAYMENT_PROVENANCE_STATE_UNMATCHED
+
+    matched_conflict_row = next(
+        row
+        for row in snapshot.settled_rows
+        if row.stripe_invoice_id == "in_settled_matched_conflict"
+    )
+    assert matched_conflict_row.stripe_event_id == "evt_settled_matched_conflict_applied"
+    assert matched_conflict_row.payment_event_status == "applied"
+    assert matched_conflict_row.payment_provenance.status == PAYMENT_PROVENANCE_STATUS_MATCHED
+    assert (
+        matched_conflict_row.payment_provenance.conflict_status
+        == PAYMENT_PROVENANCE_CONFLICT_STATUS_UNMATCHED_PROVIDER_SIGNAL
+    )
+    assert matched_conflict_row.payment_provenance.conflict_event_count == 1
+    assert matched_conflict_row.payment_provenance.conflict_reasons == (
+        UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
+    )
+    assert matched_conflict_row.payment_provenance.state == PAYMENT_PROVENANCE_STATE_CONFLICTING
+
+    assert snapshot.unmatched_payment_backlog.event_count == 3
     assert [
         (item.reason, item.event_count)
         for item in snapshot.unmatched_payment_backlog.reasons
-    ] == [(UNATTRIBUTED_REASON_MISSING_TID, 1)]
+    ] == [
+        (UNATTRIBUTED_REASON_MISSING_TID, 1),
+        (UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID, 1),
+        (UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID, 1),
+    ]
 
     assert snapshot.blocked_billing_backlog.open_case_count == 1
     assert [

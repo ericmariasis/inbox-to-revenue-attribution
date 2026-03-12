@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.services.invoice_payment_events import PaymentProvenanceSummary
 from app.services.settled_paid_evidence import (
     CURRENT_UNMATCHED_PAYMENT_BACKLOG_SCOPE,
     SettledPaidEvidenceRow,
@@ -83,6 +84,7 @@ class PaidAttributionEvidence:
     payment_event_status: str | None
     payment_event_paid_at: datetime | None
     payment_event_received_at: datetime | None
+    payment_provenance: PaymentProvenanceSummary
 
 
 @dataclass(frozen=True)
@@ -184,6 +186,7 @@ def get_creator_paid_attribution_explanation(
             payment_event_status=row.payment_event_status,
             payment_event_paid_at=row.payment_event_paid_at,
             payment_event_received_at=row.payment_event_received_at,
+            payment_provenance=row.payment_provenance,
         )
         for row in snapshot.settled_rows
     ]

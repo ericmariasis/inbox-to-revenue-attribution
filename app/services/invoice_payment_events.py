@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Callable, Literal
@@ -17,6 +18,14 @@ UNATTRIBUTED_REASON_MISSING_TID = "MISSING_TID"
 UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID = "UNKNOWN_BOOKING_UUID"
 UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID = "UNKNOWN_STRIPE_INVOICE_ID"
 ATTRIBUTED_PAYMENT_EVENT_STATUSES = ("applied", "reconciled")
+PAYMENT_PROVENANCE_STATUS_MATCHED = "matched"
+PAYMENT_PROVENANCE_STATUS_PENDING = "pending"
+PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE = "none"
+PAYMENT_PROVENANCE_CONFLICT_STATUS_UNMATCHED_PROVIDER_SIGNAL = "unmatched_provider_signal"
+PAYMENT_PROVENANCE_STATE_MATCHED = PAYMENT_PROVENANCE_STATUS_MATCHED
+PAYMENT_PROVENANCE_STATE_PENDING = PAYMENT_PROVENANCE_STATUS_PENDING
+PAYMENT_PROVENANCE_STATE_UNMATCHED = "unmatched"
+PAYMENT_PROVENANCE_STATE_CONFLICTING = "conflicting"
 
 InvoicePaidHandleOutcome = Literal[
     "applied",
@@ -28,6 +37,9 @@ InvoicePaidHandleOutcome = Literal[
 ]
 ReconcileOutcome = Literal["already_reconciled", "missing", "pending", "reconciled"]
 ReconcileReason = Literal["invoice_not_found", "invoice_not_open", "missing_stripe_account_id", "payment_event_not_found"]
+PaymentProvenanceStatus = Literal["matched", "pending"]
+PaymentProvenanceConflictStatus = Literal["none", "unmatched_provider_signal"]
+PaymentProvenanceState = Literal["matched", "pending", "unmatched", "conflicting"]
 
 
 def _utc_now() -> datetime:
@@ -64,6 +76,22 @@ class InvoicePaymentReconciliationResult:
     booking_uuid: str | None = None
     tid: str | None = None
     invoice_status: str | None = None
+
+
+@dataclass(frozen=True)
+class PaymentProvenanceSummary:
+    status: PaymentProvenanceStatus
+    conflict_status: PaymentProvenanceConflictStatus
+    conflict_event_count: int
+    conflict_reasons: tuple[str | None, ...]
+
+    @property
+    def state(self) -> PaymentProvenanceState:
+        if self.conflict_status == PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE:
+            return self.status
+        if self.status == PAYMENT_PROVENANCE_STATUS_MATCHED:
+            return PAYMENT_PROVENANCE_STATE_CONFLICTING
+        return PAYMENT_PROVENANCE_STATE_UNMATCHED
 
 
 @dataclass(frozen=True)
@@ -556,6 +584,33 @@ class InvoicePaymentEventService:
             tid=payment_event.tid,
             unattributed_reason=unattributed_reason,
         )
+
+
+def build_payment_provenance_summary(
+    *,
+    payment_event_status: str | None,
+    conflict_event_count: int = 0,
+    conflict_reasons: Sequence[str | None] = (),
+) -> PaymentProvenanceSummary:
+    status: PaymentProvenanceStatus = (
+        PAYMENT_PROVENANCE_STATUS_MATCHED
+        if payment_event_status in ATTRIBUTED_PAYMENT_EVENT_STATUSES
+        else PAYMENT_PROVENANCE_STATUS_PENDING
+    )
+    if conflict_event_count <= 0:
+        return PaymentProvenanceSummary(
+            status=status,
+            conflict_status=PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE,
+            conflict_event_count=0,
+            conflict_reasons=(),
+        )
+
+    return PaymentProvenanceSummary(
+        status=status,
+        conflict_status=PAYMENT_PROVENANCE_CONFLICT_STATUS_UNMATCHED_PROVIDER_SIGNAL,
+        conflict_event_count=conflict_event_count,
+        conflict_reasons=tuple(conflict_reasons),
+    )
 
 
 def list_current_unmatched_payment_events(

@@ -22,6 +22,11 @@ from app.services.authoritative_content_evidence import get_authoritative_conten
 from app.services.calendly_webhooks import build_default_calendly_webhook_router
 from app.services.content_fetch import ContentFetchSuccess
 from app.services.email_stub import get_magic_link_outbox
+from app.services.invoice_payment_events import (
+    PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE,
+    PAYMENT_PROVENANCE_STATE_MATCHED,
+    PAYMENT_PROVENANCE_STATUS_MATCHED,
+)
 from app.services.settled_paid_evidence import get_creator_settled_paid_evidence
 from app.services.stripe_provider import StripeAccountReadiness, StripeInvoiceCreateResult
 
@@ -533,6 +538,11 @@ def test_phase12_evidence_truth_and_replay_flow_end_to_end():
     assert settled_row.stripe_invoice_id == "in_story70_paid"
     assert settled_row.payment_event_status == "applied"
     assert settled_row.invoice_paid_at == paid_at
+    assert settled_row.payment_provenance.status == PAYMENT_PROVENANCE_STATUS_MATCHED
+    assert settled_row.payment_provenance.conflict_status == PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE
+    assert settled_row.payment_provenance.conflict_event_count == 0
+    assert settled_row.payment_provenance.conflict_reasons == ()
+    assert settled_row.payment_provenance.state == PAYMENT_PROVENANCE_STATE_MATCHED
     assert settled_snapshot.unmatched_payment_backlog.event_count == 0
     assert settled_snapshot.unmatched_payment_backlog.reasons == []
     assert settled_snapshot.blocked_billing_backlog.open_case_count == 0

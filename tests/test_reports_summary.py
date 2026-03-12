@@ -19,8 +19,16 @@ from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
 from app.services.blocked_billing import BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE
 from app.services.invoice_payment_events import (
+    PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE,
+    PAYMENT_PROVENANCE_CONFLICT_STATUS_UNMATCHED_PROVIDER_SIGNAL,
+    PAYMENT_PROVENANCE_STATE_CONFLICTING,
+    PAYMENT_PROVENANCE_STATE_MATCHED,
+    PAYMENT_PROVENANCE_STATE_PENDING,
+    PAYMENT_PROVENANCE_STATUS_MATCHED,
+    PAYMENT_PROVENANCE_STATUS_PENDING,
     UNATTRIBUTED_REASON_MISSING_TID,
     UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
+    UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
 )
 from app.services.reporting import (
     CURRENT_UNATTRIBUTED_BACKLOG_SCOPE,
@@ -540,6 +548,14 @@ def test_creator_paid_attribution_explanation_returns_canonical_chain_for_creato
     assert explanation.evidence[0].stripe_invoice_id == "in_reports_explanation"
     assert explanation.evidence[0].stripe_event_id == "evt_reports_explanation"
     assert explanation.evidence[0].payment_event_status == "applied"
+    assert explanation.evidence[0].payment_provenance.status == PAYMENT_PROVENANCE_STATUS_MATCHED
+    assert (
+        explanation.evidence[0].payment_provenance.conflict_status
+        == PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE
+    )
+    assert explanation.evidence[0].payment_provenance.conflict_event_count == 0
+    assert explanation.evidence[0].payment_provenance.conflict_reasons == ()
+    assert explanation.evidence[0].payment_provenance.state == PAYMENT_PROVENANCE_STATE_MATCHED
     assert hidden_from_other_creator is None
     assert filtered_out is None
 
@@ -602,6 +618,100 @@ def test_creator_paid_attribution_explanation_keeps_settled_invoice_without_paym
     assert explanation.evidence[0].stripe_invoice_id == "in_reports_explanation_no_event"
     assert explanation.evidence[0].stripe_event_id is None
     assert explanation.evidence[0].payment_event_status is None
+    assert explanation.evidence[0].payment_provenance.status == PAYMENT_PROVENANCE_STATUS_PENDING
+    assert (
+        explanation.evidence[0].payment_provenance.conflict_status
+        == PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE
+    )
+    assert explanation.evidence[0].payment_provenance.conflict_event_count == 0
+    assert explanation.evidence[0].payment_provenance.conflict_reasons == ()
+    assert explanation.evidence[0].payment_provenance.state == PAYMENT_PROVENANCE_STATE_PENDING
+
+
+def test_creator_paid_attribution_explanation_keeps_settled_invoice_when_provider_conflict_is_diagnostic():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, _ = _create_creator_with_user(
+            session,
+            suffix="explanation_conflict",
+            stripe_account_id="acct_reports_explanation_conflict",
+        )
+        booking_link = _create_booking_link(
+            session,
+            creator=creator,
+            suffix="explanation_conflict",
+        )
+        content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="explanation_conflict",
+        )
+        booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_REPORTS_EXPLANATION_CONFLICT",
+            booked_at=datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc),
+        )
+        invoice = _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=booking,
+            stripe_invoice_id="in_reports_explanation_conflict",
+            amount_cents=19500,
+            paid_at=datetime(2026, 3, 8, 13, 0, tzinfo=timezone.utc),
+        )
+        _create_matched_payment_event(
+            session,
+            creator=creator,
+            booking=booking,
+            invoice=invoice,
+            stripe_event_id="evt_reports_explanation_conflict_applied",
+            paid_at=invoice.paid_at,
+        )
+        _create_unmatched_payment_event(
+            session,
+            creator=creator,
+            stripe_event_id="evt_reports_explanation_conflict_unmatched",
+            stripe_invoice_id=invoice.stripe_invoice_id,
+            reason=UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+            paid_at=invoice.paid_at,
+        )
+
+        creator_id = creator.id
+        content_tid = content.tid
+        session.commit()
+
+    with Session(engine) as session:
+        explanation = get_creator_paid_attribution_explanation(
+            creator_id=creator_id,
+            tid=content_tid,
+            db=session,
+            start_date=date(2026, 3, 8),
+            end_date=date(2026, 3, 8),
+        )
+
+    assert explanation is not None
+    assert explanation.summary_row.tid == content_tid
+    assert explanation.summary_row.paid_revenue_cents == 19500
+    assert explanation.summary_row.paid_invoice_count == 1
+    assert len(explanation.evidence) == 1
+    assert explanation.evidence[0].stripe_invoice_id == "in_reports_explanation_conflict"
+    assert explanation.evidence[0].stripe_event_id == "evt_reports_explanation_conflict_applied"
+    assert explanation.evidence[0].payment_event_status == "applied"
+    assert explanation.evidence[0].payment_provenance.status == PAYMENT_PROVENANCE_STATUS_MATCHED
+    assert (
+        explanation.evidence[0].payment_provenance.conflict_status
+        == PAYMENT_PROVENANCE_CONFLICT_STATUS_UNMATCHED_PROVIDER_SIGNAL
+    )
+    assert explanation.evidence[0].payment_provenance.conflict_event_count == 1
+    assert explanation.evidence[0].payment_provenance.conflict_reasons == (
+        UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+    )
+    assert explanation.evidence[0].payment_provenance.state == PAYMENT_PROVENANCE_STATE_CONFLICTING
 
 
 def test_reports_summary_requires_auth():

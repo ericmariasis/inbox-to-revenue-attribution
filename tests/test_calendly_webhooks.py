@@ -21,6 +21,10 @@ from app.models.blocked_billing_case import BlockedBillingCase
 from app.models.content import Content
 from app.models.creator import Creator
 from app.models.invoice import Invoice
+from app.services.booking_attribution import (
+    BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+    BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
+)
 from app.services.calendly_webhooks import (
     DefaultCalendlyWebhookRouter,
     build_default_calendly_webhook_router,
@@ -233,6 +237,31 @@ def _bookings_for_uuid(*, calendly_booking_uuid: str) -> list[Booking]:
         return session.scalars(
             select(Booking).where(Booking.calendly_booking_uuid == calendly_booking_uuid)
         ).all()
+
+
+def _persist_unattributed_booking(
+    *,
+    creator_id,
+    booking_link_id,
+    calendly_booking_uuid: str,
+    booked_at: datetime,
+) -> None:
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    with Session(engine) as session:
+        session.add(
+            Booking(
+                creator_id=creator_id,
+                booking_link_id=booking_link_id,
+                tid=None,
+                calendly_booking_uuid=calendly_booking_uuid,
+                email=f"{calendly_booking_uuid.lower()}@example.com",
+                status="created",
+                attribution_status=BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+                unattributed_reason=BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
+                booked_at=booked_at,
+            )
+        )
+        session.commit()
 
 
 def _invoices_for_booking_uuid(*, calendly_booking_uuid: str) -> list[Invoice]:
@@ -1184,6 +1213,65 @@ def test_calendly_webhook_canceled_before_created_is_deferred_and_replay_applies
             "tid": stored["tid"],
             "calendly_booking_uuid": "BOOK_story69_out_of_order",
             "canceled_at": datetime(2026, 3, 11, 18, 0, tzinfo=timezone.utc),
+        }
+    ]
+
+
+def test_calendly_webhook_canceled_preserves_unattributed_booking_current_state():
+    stored = _create_creator_booking_link_and_content(tid="story78_unattributed_cancel_seed")
+    _persist_unattributed_booking(
+        creator_id=stored["creator_id"],
+        booking_link_id=stored["booking_link_id"],
+        calendly_booking_uuid="BOOK_story78_unattributed_cancel",
+        booked_at=datetime(2026, 3, 12, 16, 0, tzinfo=timezone.utc),
+    )
+    canceled_payload = _invitee_canceled_payload(
+        event_id="EVT_story78_unattributed_cancel",
+        calendly_booking_uuid="BOOK_story78_unattributed_cancel",
+        tid=None,
+        canceled_at="2026-03-12T16:45:00Z",
+    )
+    canceled_signature_header = _calendly_signature_header(
+        payload=canceled_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    capture_voider = _CaptureUnpaidInvoiceVoider()
+    router = DefaultCalendlyWebhookRouter(unpaid_invoice_voider=capture_voider)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("calendly_webhook_router", router):
+                response = client.post(
+                    "/webhooks/calendly",
+                    content=canceled_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": canceled_signature_header,
+                    },
+                )
+
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story78_unattributed_cancel")
+    journal_records = _journal_records_for_event_id(
+        calendly_event_id="EVT_story78_unattributed_cancel"
+    )
+
+    assert response.status_code == 200
+    assert len(bookings) == 1
+    assert bookings[0].status == "canceled"
+    assert bookings[0].canceled_at == datetime(2026, 3, 12, 16, 45, tzinfo=timezone.utc)
+    assert bookings[0].tid is None
+    assert bookings[0].attribution_status == BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED
+    assert bookings[0].unattributed_reason == BOOKING_UNATTRIBUTED_REASON_MISSING_TID
+    assert len(journal_records) == 1
+    assert journal_records[0].processing_status == "applied"
+    assert capture_voider.bookings == [
+        {
+            "booking_id": bookings[0].id,
+            "creator_id": stored["creator_id"],
+            "booking_link_id": stored["booking_link_id"],
+            "tid": None,
+            "calendly_booking_uuid": "BOOK_story78_unattributed_cancel",
+            "canceled_at": datetime(2026, 3, 12, 16, 45, tzinfo=timezone.utc),
         }
     ]
 

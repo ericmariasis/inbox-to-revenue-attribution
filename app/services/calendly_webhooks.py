@@ -16,6 +16,7 @@ from app.db.session import SessionLocal
 from app.models.booking import Booking
 from app.models.calendly_webhook_event import CalendlyWebhookEventRecord
 from app.models.content import Content
+from app.services.booking_attribution import BOOKING_ATTRIBUTION_STATUS_ATTRIBUTED
 from app.services.blocked_billing import resolve_blocked_billing_case_for_booking_canceled
 from app.services.billing import (
     BillingInvoiceResult,
@@ -59,7 +60,7 @@ class CanceledBookingContext:
     booking_id: uuid.UUID
     creator_id: uuid.UUID
     booking_link_id: uuid.UUID
-    tid: str
+    tid: str | None
     calendly_booking_uuid: str
     canceled_at: datetime
 
@@ -219,6 +220,7 @@ class BookingCreatedCalendlyWebhookHandler:
                     email=email,
                     booked_at=booked_at,
                     status="created",
+                    attribution_status=BOOKING_ATTRIBUTION_STATUS_ATTRIBUTED,
                 )
                 session.add(booking)
 

@@ -71,13 +71,46 @@ def get_authoritative_content_evidence(
     if fetch_snapshot is None:
         return None
 
-    return AuthoritativeContentEvidence(
+    return _build_authoritative_content_evidence(
         artifact=artifact,
         fetch_snapshot=fetch_snapshot,
-        confirmed_topics=get_confirmed_topics_for_artifact(
-            extraction_artifact_id=artifact.id,
-            db=db,
-        ),
+        db=db,
+    )
+
+
+def get_authoritative_content_evidence_for_snapshot(
+    *,
+    creator_id: UUID,
+    content_id: UUID,
+    extraction_artifact_id: UUID,
+    fetch_snapshot_id: UUID,
+    db: Session,
+) -> AuthoritativeContentEvidence | None:
+    artifact = db.execute(
+        select(ContentExtractionArtifact).where(
+            ContentExtractionArtifact.id == extraction_artifact_id,
+            ContentExtractionArtifact.content_id == content_id,
+            ContentExtractionArtifact.creator_id == creator_id,
+            ContentExtractionArtifact.fetch_snapshot_id == fetch_snapshot_id,
+        )
+    ).scalar_one_or_none()
+    if artifact is None:
+        return None
+
+    fetch_snapshot = db.execute(
+        select(ContentFetchSnapshot).where(
+            ContentFetchSnapshot.id == fetch_snapshot_id,
+            ContentFetchSnapshot.content_id == content_id,
+            ContentFetchSnapshot.creator_id == creator_id,
+        )
+    ).scalar_one_or_none()
+    if fetch_snapshot is None:
+        return None
+
+    return _build_authoritative_content_evidence(
+        artifact=artifact,
+        fetch_snapshot=fetch_snapshot,
+        db=db,
     )
 
 
@@ -116,6 +149,22 @@ def get_confirmed_topics_for_artifact(
     ).scalars().all()
     topics_by_id = {topic.id: topic for topic in topic_rows}
     return [topics_by_id[topic_id] for topic_id in ordered_topic_ids if topic_id in topics_by_id]
+
+
+def _build_authoritative_content_evidence(
+    *,
+    artifact: ContentExtractionArtifact,
+    fetch_snapshot: ContentFetchSnapshot,
+    db: Session,
+) -> AuthoritativeContentEvidence:
+    return AuthoritativeContentEvidence(
+        artifact=artifact,
+        fetch_snapshot=fetch_snapshot,
+        confirmed_topics=get_confirmed_topics_for_artifact(
+            extraction_artifact_id=artifact.id,
+            db=db,
+        ),
+    )
 
 
 def build_content_authority_state(

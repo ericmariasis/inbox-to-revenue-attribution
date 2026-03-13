@@ -7,6 +7,7 @@ This repo's first public-beta deployment path is a single Render web service plu
 - one Render blueprint in `render.yaml`
 - one pinned Python runtime in `.python-version`
 - one startup smoke command in `scripts/render_startup_smoke.py`
+- one schema-aware startup smoke result that can optionally fail when migrations are not at head
 - one explicit non-local config checklist for the Render service
 
 ## What Story 73 Does Not Include
@@ -19,6 +20,10 @@ This repo's first public-beta deployment path is a single Render web service plu
 - no automatic migration workflow choice
 
 Those remain for later Phase 14 stories.
+
+For the current Story 74 operator workflow, use:
+
+- [Render public-beta operations](./render-public-beta-operations.md)
 
 ## Target Shape
 
@@ -82,9 +87,18 @@ python scripts/render_startup_smoke.py
 
 Expected result:
 
-- `render_startup_smoke_ok`
+- output begins with `render_startup_smoke_ok`
+- `schema_ready=false` is expected on a brand-new database before migrations run
 
-5. For a brand new database, run migrations manually before broader app validation:
+5. If you need to prove DB-backed routes are ready, require the schema to be at head:
+
+```bash
+python scripts/render_startup_smoke.py --require-schema
+```
+
+This fails safely until the current database revision matches the repo migration head.
+
+6. For a brand new database, run migrations manually before broader app validation:
 
 ```bash
 alembic upgrade head
@@ -92,7 +106,7 @@ alembic upgrade head
 
 This story documents that command but does not automate it. Migration workflow hardening stays in Story 75.
 
-6. Verify the service health endpoint:
+7. Verify the service health endpoint:
 
 ```text
 GET /health
@@ -107,5 +121,6 @@ Expected result:
 ## Notes
 
 - The app already blocks unsafe non-local startup in `app.core.config`.
-- The startup smoke command is the narrow Story 73 check for config safety plus database reachability.
+- The startup smoke command is still the narrow bootstrap check, but it now also reports whether the current database schema is at the repo migration head.
 - Single-instance deployment is intentional because redirect soft limiting is still process-local in the current codebase.
+- For creator-scoped triage after deploy, use the Story 74 browser page at `/app/health`.

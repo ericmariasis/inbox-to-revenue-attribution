@@ -25,6 +25,10 @@ For the current Story 74 operator workflow, use:
 
 - [Render public-beta operations](./render-public-beta-operations.md)
 
+For the current Story 75 migration and recovery workflow, use:
+
+- [Render public-beta migration and recovery](./render-public-beta-migration-recovery.md)
+
 ## Target Shape
 
 - web service: `inbox-to-revenue-attribution-web`

@@ -841,6 +841,18 @@ def test_experiments_page_redirects_unauthenticated_browser_requests():
     assert response.headers["location"] == "/sign-in"
 
 
+def test_experiment_card_page_redirects_unauthenticated_browser_requests():
+    with TestClient(app) as client:
+        response = client.get(
+            f"/app/experiments/{uuid.uuid4()}/cards/1",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+
+
 def test_attention_page_redirects_unauthenticated_browser_requests():
     with TestClient(app) as client:
         response = client.get(
@@ -2434,6 +2446,12 @@ def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():
             follow_redirects=False,
         )
         page_response = client.get(create_response.headers["location"], headers=HTML_ACCEPT_HEADERS)
+        parsed_location = urlparse(create_response.headers["location"])
+        run_claim_snapshot_id = parse_qs(parsed_location.query)["claim_snapshot_id"][0]
+        evidence_response = client.get(
+            f"/app/experiments/{run_claim_snapshot_id}/cards/1",
+            headers=HTML_ACCEPT_HEADERS,
+        )
 
     with _engine().connect() as conn:
         run_count = conn.execute(
@@ -2451,7 +2469,18 @@ def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():
     assert "Test another Retention Reviews angle" in page_response.text
     assert "Test whether another post about Retention Reviews may lead to more attributed paid bookings." in page_response.text
     assert "Claim snapshot" in page_response.text
+    assert f'href="/app/experiments/{run_claim_snapshot_id}/cards/1"' in page_response.text
     assert "<code>" in page_response.text
+    assert evidence_response.status_code == 200
+    assert "Experiment evidence" in evidence_response.text
+    assert "Authoritative content used" in evidence_response.text
+    assert "Settled paid results used" in evidence_response.text
+    assert "Parent run snapshot" in evidence_response.text
+    assert "Card snapshot" in evidence_response.text
+    assert "Experiments Ready Artifact" in evidence_response.text
+    assert content_tid in evidence_response.text
+    assert "USD 195.00" in evidence_response.text
+    assert stripe_invoice_id not in evidence_response.text
     assert run_count == 1
 
 
@@ -2524,6 +2553,8 @@ def test_experiments_generate_route_renders_unsupported_state_without_generic_ti
     assert page_response.status_code == 200
     assert "Not enough trusted evidence yet" in page_response.text
     assert UNSUPPORTED_EXPERIMENTS_SUMMARY in page_response.text
+    assert "Why this helper is still unsupported" in page_response.text
+    assert "No settled attributed paid results exist yet for this workspace." in page_response.text
     assert "generic fallback tips" not in page_response.text
     assert "Test whether another post about" not in page_response.text
 

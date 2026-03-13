@@ -72,9 +72,13 @@ from app.services.invoice_payment_events import (
 from app.services.next_content_experiments import (
     EXPERIMENT_RUN_STATUS_READY,
     EXPERIMENT_RUN_STATUS_UNSUPPORTED,
+    CreatorNextContentExperimentCardDrilldown,
     CreatorNextContentExperimentsResult,
+    NextContentExperimentUnsupportedExplanation,
     create_creator_next_content_experiments_run,
+    get_creator_next_content_experiment_card_drilldown,
     get_creator_next_content_experiments_run,
+    get_current_creator_next_content_experiments_unsupported_explanation,
     get_latest_creator_next_content_experiments_run,
 )
 from app.services.reporting import (
@@ -725,12 +729,21 @@ def creator_experiments_page(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="experiment snapshot not found",
         )
+    unsupported_explanation = (
+        get_current_creator_next_content_experiments_unsupported_explanation(
+            creator_id=current_user.creator_id,
+            db=db,
+        )
+        if experiment_run is not None and experiment_run.status == EXPERIMENT_RUN_STATUS_UNSUPPORTED
+        else None
+    )
 
     return _html_response(
         _render_experiments_page(
             current_user=current_user,
             experiment_run=experiment_run,
             status_value=status_value,
+            unsupported_explanation=unsupported_explanation,
         )
     )
 
@@ -752,6 +765,38 @@ def creator_experiments_generate(
     db.commit()
     return _redirect(
         f"/app/experiments?status=generated&claim_snapshot_id={experiment_run.claim_snapshot_id}"
+    )
+
+
+@router.get("/app/experiments/{run_claim_snapshot_id}/cards/{card_order}")
+def creator_experiment_card_page(
+    request: Request,
+    run_claim_snapshot_id: uuid.UUID,
+    card_order: int,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    drilldown = get_creator_next_content_experiment_card_drilldown(
+        creator_id=current_user.creator_id,
+        run_claim_snapshot_id=run_claim_snapshot_id,
+        card_order=card_order,
+        db=db,
+    )
+    if drilldown is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="experiment card not found",
+        )
+
+    return _html_response(
+        _render_experiment_card_drilldown_page(
+            current_user=current_user,
+            drilldown=drilldown,
+        )
     )
 
 
@@ -2535,6 +2580,7 @@ def _render_experiments_page(
     current_user: AuthUser,
     experiment_run: CreatorNextContentExperimentsResult | None,
     status_value: str | None,
+    unsupported_explanation: NextContentExperimentUnsupportedExplanation | None,
 ) -> str:
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
@@ -2586,7 +2632,7 @@ def _render_experiments_page(
         </div>
         <p>{html.escape(_experiments_snapshot_meta(experiment_run))}</p>
       </div>
-      {_render_experiment_results(experiment_run=experiment_run)}
+      {_render_experiment_results(experiment_run=experiment_run, unsupported_explanation=unsupported_explanation)}
     </section>
     """
     return _page_layout(title="Experiments", body=body)
@@ -2607,6 +2653,7 @@ def _render_experiments_notice(*, status_value: str | None) -> str:
 def _render_experiment_results(
     *,
     experiment_run: CreatorNextContentExperimentsResult | None,
+    unsupported_explanation: NextContentExperimentUnsupportedExplanation | None,
 ) -> str:
     if experiment_run is None:
         return """
@@ -2618,10 +2665,17 @@ def _render_experiment_results(
         """
 
     if experiment_run.status == EXPERIMENT_RUN_STATUS_UNSUPPORTED:
-        return _render_experiment_unsupported_state(experiment_run=experiment_run)
+        return _render_experiment_unsupported_state(
+            experiment_run=experiment_run,
+            unsupported_explanation=unsupported_explanation,
+        )
 
     items = "".join(
-        _render_experiment_card(index=index, experiment=experiment)
+        _render_experiment_card(
+            index=index,
+            experiment=experiment,
+            run_claim_snapshot_id=experiment_run.claim_snapshot_id,
+        )
         for index, experiment in enumerate(experiment_run.experiments, start=1)
     )
     return f"""
@@ -2642,13 +2696,36 @@ def _render_experiment_results(
 def _render_experiment_unsupported_state(
     *,
     experiment_run: CreatorNextContentExperimentsResult,
+    unsupported_explanation: NextContentExperimentUnsupportedExplanation | None,
 ) -> str:
+    reasons_html = ""
+    if unsupported_explanation is not None and unsupported_explanation.reasons:
+        reason_items = "".join(
+            f"<li>{html.escape(reason)}</li>"
+            for reason in unsupported_explanation.reasons
+        )
+        reasons_html = f"""
+        <div class="stack">
+          <p class="eyebrow">Still blocked today</p>
+          <h3>Why this helper is still unsupported</h3>
+          <ul class="reason-list">{reason_items}</ul>
+        </div>
+        """
+
+    current_activity_note = ""
+    if unsupported_explanation is not None and unsupported_explanation.has_excluded_current_activity:
+        current_activity_note = """
+        <p>Some newer activity is still excluded here until it resolves into attributed booking state or settled paid evidence.</p>
+        """
+
     return f"""
     <section class="empty-state">
       <p class="eyebrow">Unsupported</p>
       <h2>Not enough trusted evidence yet</h2>
       <p>{html.escape(experiment_run.summary)}</p>
       <p><strong>Claim snapshot</strong>: <code>{html.escape(str(experiment_run.claim_snapshot_id))}</code></p>
+      {reasons_html}
+      {current_activity_note}
     </section>
     """
 
@@ -2657,6 +2734,7 @@ def _render_experiment_card(
     *,
     index: int,
     experiment,
+    run_claim_snapshot_id: uuid.UUID,
 ) -> str:
     content_tids = " ".join(
         f"<code>{html.escape(content_tid)}</code>"
@@ -2676,8 +2754,100 @@ def _render_experiment_card(
       <p><strong>Evidence summary</strong>: {html.escape(experiment.evidence_summary)}</p>
       <p><strong>Content tracking ID</strong>: {content_tids}</p>
       <p><strong>Caution</strong>: {html.escape(experiment.caution)}</p>
+      <p><a href="/app/experiments/{html.escape(str(run_claim_snapshot_id))}/cards/{index}" class="inline-link">View evidence</a></p>
     </article>
     """
+
+
+def _render_experiment_card_drilldown_page(
+    *,
+    current_user: AuthUser,
+    drilldown: CreatorNextContentExperimentCardDrilldown,
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    topic_list = "".join(
+        f"<li>{html.escape(topic)}</li>"
+        for topic in drilldown.authoritative_topics
+    )
+    settled_rows = "".join(
+        f"""
+        <tr>
+          <td><code>{html.escape(result.content_tid)}</code></td>
+          <td>{_format_timestamp_in_utc(result.booked_at)}</td>
+          <td>{_format_timestamp_in_utc(result.paid_at)}</td>
+          <td>{html.escape(_reports_currency_amount_copy(result.currency, result.amount_cents))}</td>
+        </tr>
+        """
+        for result in drilldown.settled_paid_results
+    )
+    authoritative_title = (
+        f"<p><strong>Authoritative artifact title</strong>: {html.escape(drilldown.authoritative_artifact_title)}</p>"
+        if drilldown.authoritative_artifact_title
+        else ""
+    )
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Experiment evidence</h1>
+        <p class="lede">Inspect the exact authoritative content and settled paid results behind this experiment card.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/experiments")}
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Card {drilldown.card_order}</p>
+          <h2>{html.escape(drilldown.title)}</h2>
+        </div>
+        <a href="/app/experiments?claim_snapshot_id={html.escape(str(drilldown.run_claim_snapshot_id))}" class="inline-link">Back to experiments</a>
+      </div>
+      <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+      <p><strong>Parent run snapshot</strong>: <code>{html.escape(str(drilldown.run_claim_snapshot_id))}</code></p>
+      <p><strong>Card snapshot</strong>: <code>{html.escape(str(drilldown.card_claim_snapshot_id))}</code></p>
+      <p><strong>Generated</strong>: {_format_timestamp_in_utc(drilldown.created_at)}</p>
+      <p><strong>Hypothesis</strong>: {html.escape(drilldown.hypothesis)}</p>
+      <p><strong>Why this might work</strong>: {html.escape(drilldown.why_this_might_work)}</p>
+      <p><strong>Caution</strong>: {html.escape(drilldown.caution)}</p>
+    </section>
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Authoritative content used</p>
+          <h2><code>{html.escape(drilldown.authoritative_content_tid)}</code></h2>
+        </div>
+        <p><strong>Source URL</strong>: <span class="wrap-anywhere">{html.escape(drilldown.authoritative_source_url)}</span></p>
+        {authoritative_title}
+        <div>
+          <p><strong>Confirmed topics</strong></p>
+          <ul class="reason-list">{topic_list}</ul>
+        </div>
+      </article>
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Settled paid results used</p>
+          <h2>{html.escape(_count_copy(len(drilldown.settled_paid_results), "paid result"))}</h2>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>TID</th>
+              <th>Booked</th>
+              <th>Paid</th>
+              <th>Amount</th>
+            </tr>
+          </thead>
+          <tbody>{settled_rows}</tbody>
+        </table>
+      </article>
+    </section>
+    """
+    return _page_layout(title="Experiment Evidence", body=body)
 
 
 def _experiments_snapshot_meta(
@@ -4281,6 +4451,27 @@ def _page_layout(*, title: str, body: str) -> str:
 
       .copy-button {{
         white-space: nowrap;
+      }}
+
+      .data-table {{
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.96rem;
+      }}
+
+      .data-table th,
+      .data-table td {{
+        padding: 12px 10px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }}
+
+      .data-table th {{
+        color: var(--ink);
+        font-size: 0.84rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
       }}
 
       @media (max-width: 720px) {{

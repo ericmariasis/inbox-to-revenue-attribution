@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 from contextlib import contextmanager
@@ -16,7 +17,10 @@ from app.services.booking_attribution import (
 )
 from app.services.email_provider import MagicLinkEmailDeliveryError
 from app.services.email_stub import get_magic_link_outbox
-from app.services.invoice_payment_events import UNATTRIBUTED_REASON_MISSING_TID
+from app.services.invoice_payment_events import (
+    UNATTRIBUTED_REASON_MISSING_TID,
+    UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+)
 from app.services.next_content_experiments import UNSUPPORTED_EXPERIMENTS_SUMMARY
 from app.services.stripe_provider import (
     StripeAccountReadiness,
@@ -494,6 +498,69 @@ def _insert_unmatched_payment_event(
     return payment_event_id
 
 
+def _insert_calendly_event_record(
+    *,
+    tid: str,
+    calendly_event_id: str,
+    calendly_booking_uuid: str,
+    processing_status: str,
+) -> str:
+    event_record_id = str(uuid.uuid4())
+    received_at = datetime(2026, 3, 12, 14, 0, tzinfo=timezone.utc)
+    processed_at = (
+        None
+        if processing_status == "received"
+        else datetime(2026, 3, 12, 14, 5, tzinfo=timezone.utc)
+    )
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO calendly_webhook_events "
+                "(id, calendly_event_id, provider_event_type, event_type, calendly_event_id_path, "
+                "calendly_booking_uuid, calendly_booking_uuid_path, tid, tid_path, payload, reducer_key, "
+                "delivery_count, processing_status, reducer_attempt_count, last_error, received_at, "
+                "last_received_at, processed_at) "
+                "VALUES "
+                "(:id, :calendly_event_id, :provider_event_type, :event_type, :calendly_event_id_path, "
+                ":calendly_booking_uuid, :calendly_booking_uuid_path, :tid, :tid_path, CAST(:payload AS JSONB), :reducer_key, "
+                ":delivery_count, :processing_status, :reducer_attempt_count, :last_error, :received_at, "
+                ":last_received_at, :processed_at)"
+            ),
+            {
+                "id": event_record_id,
+                "calendly_event_id": calendly_event_id,
+                "provider_event_type": "invitee.created",
+                "event_type": "booking.created",
+                "calendly_event_id_path": "payload.event",
+                "calendly_booking_uuid": calendly_booking_uuid,
+                "calendly_booking_uuid_path": "payload.uri",
+                "tid": tid,
+                "tid_path": "payload.tracking.utm_content",
+                "payload": json.dumps(
+                    {
+                        "event": "invitee.created",
+                        "payload": {"tracking": {"utm_content": tid}},
+                    }
+                ),
+                "reducer_key": f"booking:{calendly_booking_uuid}",
+                "delivery_count": 1,
+                "processing_status": processing_status,
+                "reducer_attempt_count": 0 if processing_status == "received" else 1,
+                "last_error": (
+                    "RuntimeError: ui health test reducer failure"
+                    if processing_status == "failed"
+                    else None
+                ),
+                "received_at": received_at,
+                "last_received_at": received_at,
+                "processed_at": processed_at,
+            },
+        )
+
+    return event_record_id
+
+
 def _insert_blocked_billing_case(
     *,
     creator_id: str,
@@ -857,6 +924,18 @@ def test_attention_page_redirects_unauthenticated_browser_requests():
     with TestClient(app) as client:
         response = client.get(
             "/app/attention",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+
+
+def test_health_page_redirects_unauthenticated_browser_requests():
+    with TestClient(app) as client:
+        response = client.get(
+            "/app/health",
             headers=HTML_ACCEPT_HEADERS,
             follow_redirects=False,
         )
@@ -1818,6 +1897,191 @@ def test_attention_page_renders_blocked_and_unmatched_cases():
     assert stripe_event_id in response.text
     assert stripe_invoice_id in response.text
     assert "Missing tracking ID" in response.text
+
+
+def test_health_page_renders_creator_scoped_snapshot():
+    creator = _insert_creator_user(
+        email=f"ui_health_{uuid.uuid4().hex}@example.com",
+        name="Health Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_health",
+    )
+    other_creator = _insert_creator_user(
+        email=f"ui_health_other_{uuid.uuid4().hex}@example.com",
+        name="Other Health Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_health_other",
+    )
+    access_token = _access_token(
+        user_id=creator["user_id"],
+        creator_id=creator["creator_id"],
+        email=creator["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Health Strategy",
+        calendly_url="https://calendly.com/example/health-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    other_booking_link_id = _insert_booking_link(
+        creator_id=other_creator["creator_id"],
+        name="Other Health Strategy",
+        calendly_url="https://calendly.com/example/other-health-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+
+    tracked_tid = f"uihealth{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/health-current",
+        tid=tracked_tid,
+    )
+    _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=None,
+        calendly_booking_uuid=f"BOOK_UI_HEALTH_UNATTRIBUTED_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+        attribution_status=BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
+        unattributed_reason=BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
+    )
+    _insert_calendly_event_record(
+        tid=tracked_tid,
+        calendly_event_id=f"EVT_UI_HEALTH_FAILED_{uuid.uuid4().hex[:8]}",
+        calendly_booking_uuid=f"BOOK_UI_HEALTH_FAILED_{uuid.uuid4().hex[:8]}",
+        processing_status="failed",
+    )
+
+    blocked_tid = f"uihealthblocked{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/health-blocked",
+        tid=blocked_tid,
+    )
+    blocked_booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=blocked_tid,
+        calendly_booking_uuid=f"BOOK_UI_HEALTH_BLOCKED_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 12, 10, 15, tzinfo=timezone.utc),
+    )
+    _insert_blocked_billing_case(
+        creator_id=creator["creator_id"],
+        booking_id=blocked_booking_id,
+        tid=blocked_tid,
+        calendly_booking_uuid=f"BOOK_UI_HEALTH_BLOCKED_CASE_{uuid.uuid4().hex[:8]}",
+        stripe_account_id="acct_ui_health",
+        frozen_amount_cents=19500,
+        frozen_currency="USD",
+        reason_code="creator_not_billable",
+        first_blocked_at=datetime(2026, 3, 12, 10, 20, tzinfo=timezone.utc),
+    )
+
+    pending_tid = f"uihealthpending{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/health-pending",
+        tid=pending_tid,
+    )
+    pending_booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=pending_tid,
+        calendly_booking_uuid=f"BOOK_UI_HEALTH_PENDING_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 12, 10, 30, tzinfo=timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=creator["creator_id"],
+        booking_id=pending_booking_id,
+        tid=pending_tid,
+        stripe_account_id="acct_ui_health",
+        stripe_invoice_id=f"in_ui_health_pending_{uuid.uuid4().hex[:8]}",
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 12, 11, 0, tzinfo=timezone.utc),
+    )
+    _insert_unmatched_payment_event(
+        creator_id=creator["creator_id"],
+        stripe_account_id="acct_ui_health",
+        stripe_event_id=f"evt_ui_health_unmatched_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=f"in_ui_health_unmatched_{uuid.uuid4().hex[:8]}",
+        reason=UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+        paid_at=datetime(2026, 3, 12, 11, 5, tzinfo=timezone.utc),
+    )
+
+    lag_tid = f"uihealthlag{uuid.uuid4().hex[:8]}"
+    lag_content_id = _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/health-lag",
+        tid=lag_tid,
+    )
+    lag_snapshot_id = _insert_fetch_snapshot(
+        content_id=lag_content_id,
+        creator_id=creator["creator_id"],
+        requested_url="https://example.com/posts/health-lag",
+        fetched_url="https://example.com/posts/health-lag",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Health lag.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 12, 11, 10, tzinfo=timezone.utc),
+    )
+    lag_artifact_id = _insert_extraction_artifact(
+        content_id=lag_content_id,
+        creator_id=creator["creator_id"],
+        fetch_snapshot_id=lag_snapshot_id,
+        extraction_status="succeeded",
+        title="Health Lag Artifact",
+        extracted_text="Health lag extracted text.",
+        created_at=datetime(2026, 3, 12, 11, 15, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=lag_content_id,
+        creator_id=creator["creator_id"],
+        extraction_artifact_id=lag_artifact_id,
+        label="Lagging Authority",
+    )
+
+    other_tid = f"uihealthother{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=other_creator["creator_id"],
+        booking_link_id=other_booking_link_id,
+        source_url="https://example.com/posts/other-health",
+        tid=other_tid,
+    )
+    _insert_calendly_event_record(
+        tid=other_tid,
+        calendly_event_id=f"EVT_UI_HEALTH_OTHER_FAILED_{uuid.uuid4().hex[:8]}",
+        calendly_booking_uuid=f"BOOK_UI_HEALTH_OTHER_FAILED_{uuid.uuid4().hex[:8]}",
+        processing_status="failed",
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/health", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Health" in response.text
+    assert '<a href="/app/health" class="nav-link active">Health</a>' in response.text
+    assert "1 unattributed booking" in response.text
+    assert "1 failed event currently need operator review." in response.text
+    assert "1 backlog event" in response.text
+    assert "1 open case" in response.text
+    assert "1 lagging content item" in response.text
+    assert "1 booking with missing tracking id." in response.text
+    assert "1 event currently marked failed." in response.text
+    assert "1 settled row currently marked pending." in response.text
+    assert "1 backlog event due to unknown invoice." in response.text
+    assert "1 open case due to creator not billable." in response.text
+    assert "1 content item with missing authoritative evidence." in response.text
+    assert 'href="/app/attention"' in response.text
+    assert 'href="/app/content"' in response.text
 
 
 def test_attention_retry_route_recovers_blocked_case_with_frozen_inputs():

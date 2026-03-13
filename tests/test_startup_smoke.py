@@ -4,7 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from app.core.config import get_settings
-from app.core.startup_smoke import StartupSmokeError, run_startup_smoke
+from app.core.startup_smoke import StartupSmokeError, StartupSmokeResult, run_startup_smoke
 
 
 SAFE_NON_LOCAL_ENV = {
@@ -47,7 +47,11 @@ def test_run_startup_smoke_validates_runtime_and_connects_to_database(
 ):
     _set_safe_non_local_env(monkeypatch)
 
-    run_startup_smoke()
+    result = run_startup_smoke(require_schema=True)
+
+    assert result.schema_ready is True
+    assert result.current_revision is not None
+    assert result.current_revision == result.head_revision
 
 
 def test_run_startup_smoke_wraps_database_connection_failures(
@@ -65,3 +69,74 @@ def test_run_startup_smoke_wraps_database_connection_failures(
     with patch("app.core.startup_smoke.create_engine", return_value=_BrokenEngine()):
         with pytest.raises(StartupSmokeError, match="startup smoke failed"):
             run_startup_smoke()
+
+
+def test_run_startup_smoke_reports_schema_not_ready_when_head_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_safe_non_local_env(monkeypatch)
+
+    class _StubConnection:
+        def execute(self, _statement):
+            return None
+
+    class _StubEngine:
+        def connect(self):
+            class _ContextManager:
+                def __enter__(self):
+                    return _StubConnection()
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            return _ContextManager()
+
+        def dispose(self):
+            return None
+
+    not_ready_result = StartupSmokeResult(
+        current_revision=None,
+        head_revision="365dd98_schema_head",
+        schema_ready=False,
+    )
+
+    with patch("app.core.startup_smoke.create_engine", return_value=_StubEngine()):
+        with patch("app.core.startup_smoke._load_schema_state", return_value=not_ready_result):
+            result = run_startup_smoke()
+
+    assert result == not_ready_result
+
+
+def test_run_startup_smoke_can_require_schema_to_be_ready(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_safe_non_local_env(monkeypatch)
+
+    class _StubConnection:
+        def execute(self, _statement):
+            return None
+
+    class _StubEngine:
+        def connect(self):
+            class _ContextManager:
+                def __enter__(self):
+                    return _StubConnection()
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            return _ContextManager()
+
+        def dispose(self):
+            return None
+
+    not_ready_result = StartupSmokeResult(
+        current_revision=None,
+        head_revision="365dd98_schema_head",
+        schema_ready=False,
+    )
+
+    with patch("app.core.startup_smoke.create_engine", return_value=_StubEngine()):
+        with patch("app.core.startup_smoke._load_schema_state", return_value=not_ready_result):
+            with pytest.raises(StartupSmokeError, match="schema is not at the current migration head"):
+                run_startup_smoke(require_schema=True)

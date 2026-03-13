@@ -62,7 +62,17 @@ from app.services.browser_session import (
     get_browser_session_token,
 )
 from app.services.email_provider import MagicLinkEmailDeliveryError
+from app.services.evidence_ingress_health import (
+    AUTHORITATIVE_CONTENT_LAG_REASON_MISSING_AUTHORITY,
+    AUTHORITATIVE_CONTENT_LAG_REASON_STALE_AUTHORITY,
+    CreatorEvidenceIngressHealthSnapshot,
+    get_creator_evidence_ingress_health_snapshot,
+)
 from app.services.invoice_payment_events import (
+    PAYMENT_PROVENANCE_STATE_CONFLICTING,
+    PAYMENT_PROVENANCE_STATE_MATCHED,
+    PAYMENT_PROVENANCE_STATE_PENDING,
+    PAYMENT_PROVENANCE_STATE_UNMATCHED,
     UNATTRIBUTED_REASON_MISSING_TID,
     UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
@@ -825,6 +835,28 @@ def creator_attention_page(
             blocked_cases=blocked_cases,
             unmatched_events=unmatched_events,
             status_value=status_value,
+        )
+    )
+
+
+@router.get("/app/health")
+def creator_health_page(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    snapshot = get_creator_evidence_ingress_health_snapshot(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    return _html_response(
+        _render_health_page(
+            current_user=current_user,
+            snapshot=snapshot,
         )
     )
 
@@ -1674,6 +1706,7 @@ def _render_shell_nav(*, current_path: str) -> str:
         ("/app/content", "Content"),
         ("/app/bookings", "Bookings"),
         ("/app/reports", "Reports"),
+        ("/app/health", "Health"),
         ("/app/experiments", "Experiments"),
         ("/app/attention", "Attention"),
     ]
@@ -3052,6 +3085,173 @@ def _render_attention_page(
     return _page_layout(title="Attention", body=body)
 
 
+def _render_health_page(
+    *,
+    current_user: AuthUser,
+    snapshot: CreatorEvidenceIngressHealthSnapshot,
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    payment_state_summary = ", ".join(
+        f"{item.row_count} {_health_payment_state_label(item.state).lower()} row"
+        f"{'' if item.row_count == 1 else 's'}"
+        for item in snapshot.payment_provenance.settled_state_counts
+    )
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Health</h1>
+        <p class="lede">Review the creator-scoped attribution, ingress, billing, and evidence checks that explain why this workspace is clear, degraded, or still unsupported.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/health")}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Workspace</p>
+          <h2>{creator_name}</h2>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong>.</p>
+        </div>
+        <p><strong>{_count_copy(snapshot.booking_attribution.unattributed_booking_count, "unattributed booking")}</strong> still waiting on canonical tracked-content linkage.</p>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">Calendly ingress</p>
+          <h2>{_count_copy(snapshot.calendly_ingress.backlog_event_count, "backlog event")}</h2>
+          <p>{_count_copy(snapshot.calendly_ingress.failed_event_count, "failed event")} currently need operator review.</p>
+        </div>
+      </article>
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Payment provenance</p>
+          <h2>{_count_copy(snapshot.payment_provenance.current_backlog_event_count, "backlog event")}</h2>
+          <p>{html.escape(payment_state_summary)} across the current settled paid rows.</p>
+        </div>
+      </article>
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Blocked billing</p>
+          <h2>{_count_copy(snapshot.blocked_billing.open_case_count, "open case")}</h2>
+          <p>Use Attention to retry invoice creation only when the stored blocking condition has actually changed.</p>
+        </div>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">Authoritative content</p>
+          <h2>{_count_copy(snapshot.authoritative_content.lagging_content_count, "lagging content item")}</h2>
+          <p>These are the content rows most likely to keep helper output unsupported or stale.</p>
+        </div>
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Booking attribution</p>
+          <h2>Bookings still missing trusted attribution</h2>
+        </div>
+        <p>{html.escape(_count_copy(snapshot.booking_attribution.unattributed_booking_count, "booking"))}</p>
+      </div>
+      {_render_health_reason_list(
+          items=[
+              f"{_count_copy(item.booking_count, 'booking')} with {_booking_attribution_reason_label(item.reason).lower()}. {_booking_attribution_reason_explanation(item.reason)}"
+              for item in snapshot.booking_attribution.reasons
+              if item.booking_count > 0
+          ],
+          empty_heading="No unattributed bookings are waiting right now",
+          empty_body="Current bookings for this creator already have canonical tracked-content linkage.",
+      )}
+      <p><a href="/app/bookings" class="inline-link">Review booking activity</a></p>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Calendly ingress</p>
+          <h2>Webhook backlog and failure counts</h2>
+        </div>
+        <p>{html.escape(_count_copy(snapshot.calendly_ingress.backlog_event_count + snapshot.calendly_ingress.failed_event_count, "event"))}</p>
+      </div>
+      {_render_health_reason_list(
+          items=[
+              f"{_count_copy(item.event_count, 'event')} currently marked {_health_calendly_status_label(item.processing_status).lower()}."
+              for item in snapshot.calendly_ingress.statuses
+              if item.event_count > 0
+          ],
+          empty_heading="No Calendly backlog or failures are waiting right now",
+          empty_body="Verified Calendly events for this creator are not currently sitting in backlog or failure states.",
+      )}
+      <p>Use structured webhook logs for event-level identifiers and replay context when these counts rise.</p>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Payment provenance</p>
+          <h2>Paid rows and backlog still waiting on linkage</h2>
+        </div>
+        <p>{html.escape(_count_copy(snapshot.payment_provenance.current_backlog_event_count, "backlog event"))}</p>
+      </div>
+      {_render_health_reason_list(
+          items=[
+              f"{_count_copy(item.row_count, 'settled row')} currently marked {_health_payment_state_label(item.state).lower()}."
+              for item in snapshot.payment_provenance.settled_state_counts
+              if item.row_count > 0
+          ]
+          + [
+              f"{_count_copy(item.event_count, 'backlog event')} due to {_reports_reason_label(item.reason).lower()}. {_reports_reason_explanation(item.reason)}"
+              for item in snapshot.payment_provenance.current_backlog_reasons
+              if item.event_count > 0
+          ],
+          empty_heading="No payment backlog is waiting right now",
+          empty_body="Current creator-scoped paid rows do not have a separate unmatched payment backlog attached to them.",
+      )}
+      <p><a href="/app/attention" class="inline-link">Open Attention for blocked or unmatched details</a></p>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Blocked billing</p>
+          <h2>Invoice creation still waiting on a safe retry</h2>
+        </div>
+        <p>{html.escape(_count_copy(snapshot.blocked_billing.open_case_count, "open case"))}</p>
+      </div>
+      {_render_health_reason_list(
+          items=[
+              f"{_count_copy(item.case_count, 'open case')} due to {_blocked_billing_reason_label(item.reason_code).lower()}. {_blocked_billing_reason_explanation(item.reason_code)}"
+              for item in snapshot.blocked_billing.reasons
+              if item.case_count > 0
+          ],
+          empty_heading="No blocked billing cases are waiting right now",
+          empty_body="This creator does not currently have invoice creation cases waiting on retry or repair.",
+      )}
+      <p><a href="/app/attention" class="inline-link">Review blocked billing cases</a></p>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Authoritative content</p>
+          <h2>Content evidence still lagging current truth</h2>
+        </div>
+        <p>{html.escape(_count_copy(snapshot.authoritative_content.lagging_content_count, "content item"))}</p>
+      </div>
+      {_render_health_reason_list(
+          items=[
+              f"{_count_copy(item.content_count, 'content item')} with {_health_authoritative_lag_reason_label(item.reason).lower()}. {_health_authoritative_lag_reason_explanation(item.reason)}"
+              for item in snapshot.authoritative_content.reasons
+              if item.content_count > 0
+          ],
+          empty_heading="No authoritative-content lag is waiting right now",
+          empty_body="The latest promotable reviewed content for this creator is already authoritative or has not yet produced a lagging state.",
+      )}
+      <p><a href="/app/content" class="inline-link">Review content and topic authority</a> before expecting helper output to become ready.</p>
+    </section>
+    """
+    return _page_layout(title="Health", body=body)
+
+
 def _render_booking_activity_list(
     booking_activity: list[BookingActivityResponse],
 ) -> str:
@@ -3940,6 +4140,49 @@ def _reports_blocked_case_copy(blocked_billing_count: int) -> str:
     return f"{_count_copy(blocked_billing_count, 'booking')} waiting on invoice recovery or retry."
 
 
+def _render_health_reason_list(
+    *,
+    items: list[str],
+    empty_heading: str,
+    empty_body: str,
+) -> str:
+    if not items:
+        return f"""
+        <section class="empty-state">
+          <p class="eyebrow">Clear</p>
+          <h2>{html.escape(empty_heading)}</h2>
+          <p>{html.escape(empty_body)}</p>
+        </section>
+        """
+
+    rows = "".join(f"<li>{html.escape(item)}</li>" for item in items)
+    return f'<ul class="reason-list">{rows}</ul>'
+
+
+def _health_calendly_status_label(processing_status: str) -> str:
+    if processing_status == "received":
+        return "Received"
+    if processing_status == "processing":
+        return "Processing"
+    if processing_status == "deferred_missing_booking":
+        return "Deferred waiting on booking"
+    if processing_status == "failed":
+        return "Failed"
+    return processing_status.replace("_", " ").title()
+
+
+def _health_payment_state_label(state: str) -> str:
+    if state == PAYMENT_PROVENANCE_STATE_MATCHED:
+        return "Matched"
+    if state == PAYMENT_PROVENANCE_STATE_PENDING:
+        return "Pending"
+    if state == PAYMENT_PROVENANCE_STATE_UNMATCHED:
+        return "Unmatched"
+    if state == PAYMENT_PROVENANCE_STATE_CONFLICTING:
+        return "Conflicting"
+    return state.replace("_", " ").title()
+
+
 def _blocked_billing_reason_label(reason_code: str) -> str:
     if reason_code == BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE:
         return "Creator not billable"
@@ -3960,6 +4203,28 @@ def _blocked_billing_reason_explanation(reason_code: str) -> str:
             "stayed blocked with the latest provider context and frozen billing inputs."
         )
     return "This booking is blocked until the stored billing condition is repaired."
+
+
+def _health_authoritative_lag_reason_label(reason: str) -> str:
+    if reason == AUTHORITATIVE_CONTENT_LAG_REASON_MISSING_AUTHORITY:
+        return "Missing authoritative evidence"
+    if reason == AUTHORITATIVE_CONTENT_LAG_REASON_STALE_AUTHORITY:
+        return "Stale authoritative evidence"
+    return reason.replace("_", " ").title()
+
+
+def _health_authoritative_lag_reason_explanation(reason: str) -> str:
+    if reason == AUTHORITATIVE_CONTENT_LAG_REASON_MISSING_AUTHORITY:
+        return (
+            "A reviewed latest artifact exists for at least one content row, "
+            "but no authoritative artifact has been promoted yet."
+        )
+    if reason == AUTHORITATIVE_CONTENT_LAG_REASON_STALE_AUTHORITY:
+        return (
+            "A newer reviewed artifact exists, but the current authoritative selection "
+            "still points to an older artifact."
+        )
+    return "The current authoritative content selection still needs review."
 
 
 def _page_layout(*, title: str, body: str) -> str:

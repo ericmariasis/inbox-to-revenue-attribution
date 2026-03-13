@@ -10,6 +10,10 @@ It intentionally stays small:
 - existing app surfaces and scripts only
 - lightweight external docs instead of a separate admin console or external observability stack
 
+For planned schema-change releases and restore drills, use:
+
+- [Render public-beta migration and recovery](./render-public-beta-migration-recovery.md)
+
 ## Operator Surfaces
 
 Use these surfaces in this order before reaching for ad hoc database inspection:

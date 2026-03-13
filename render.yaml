@@ -1,0 +1,64 @@
+services:
+  - type: web
+    name: inbox-to-revenue-attribution-web
+    runtime: python
+    plan: starter
+    region: virginia
+    numInstances: 1
+    buildCommand: pip install .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: inbox-to-revenue-attribution-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: STRIPE_CONNECT_AUTHORIZE_URL
+        value: https://connect.stripe.com/oauth/authorize
+      - key: STRIPE_CONNECT_CLIENT_ID
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_CONNECT_REDIRECT_URI
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: CALENDLY_WEBHOOK_SIGNING_KEY
+        sync: false
+      - key: TRACKED_LINK_BASE_URL
+        sync: false
+      - key: MAGIC_LINK_EMAIL_PROVIDER
+        value: smtp
+      - key: MAGIC_LINK_BASE_URL
+        sync: false
+      - key: MAGIC_LINK_EMAIL_FROM_EMAIL
+        sync: false
+      - key: MAGIC_LINK_EMAIL_FROM_NAME
+        value: Creator Compass
+      - key: MAGIC_LINK_EMAIL_SMTP_HOST
+        sync: false
+      - key: MAGIC_LINK_EMAIL_SMTP_PORT
+        value: "587"
+      - key: MAGIC_LINK_EMAIL_SMTP_USERNAME
+        sync: false
+      - key: MAGIC_LINK_EMAIL_SMTP_PASSWORD
+        sync: false
+      - key: MAGIC_LINK_EMAIL_SMTP_STARTTLS
+        value: "true"
+      - key: MAGIC_LINK_EMAIL_SMTP_USE_SSL
+        value: "false"
+
+databases:
+  - name: inbox-to-revenue-attribution-db
+    plan: basic-256mb
+    region: virginia
+    postgresMajorVersion: "17"
+    databaseName: attribution
+    user: attribution_app
+    ipAllowList: []

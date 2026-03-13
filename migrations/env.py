@@ -7,6 +7,7 @@ from sqlalchemy import pool
 from alembic import context
 import app.models
 
+from app.db.url import normalize_database_url
 from app.models.base import Base
 
 # this is the Alembic Config object, which provides
@@ -16,7 +17,7 @@ config = context.config
 # Allow local/CI override without committing secrets into alembic.ini.
 db_url = os.getenv("DATABASE_URL")
 if db_url:
-    config.set_main_option("sqlalchemy.url", db_url)
+    config.set_main_option("sqlalchemy.url", normalize_database_url(db_url))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

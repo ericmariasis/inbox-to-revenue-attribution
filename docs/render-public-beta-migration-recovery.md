@@ -9,6 +9,10 @@ It intentionally stays small:
 - one scratch-database `pg_restore` drill
 - one schema-required startup smoke gate before DB-backed validation
 
+For the final Story 76 launch sign-off that reuses this workflow, use:
+
+- [Render public-beta launch checklist](./render-public-beta-launch-checklist.md)
+
 ## What Story 75 Includes
 
 - one tracked helper script:

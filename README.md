@@ -9,6 +9,7 @@ Architecture and design docs are in /docs
 - [Render public-beta bootstrap](./docs/render-public-beta-bootstrap.md)
 - [Render public-beta operations](./docs/render-public-beta-operations.md)
 - [Render public-beta migration and recovery](./docs/render-public-beta-migration-recovery.md)
+- [Render public-beta launch checklist](./docs/render-public-beta-launch-checklist.md)
 
 ## Development
 

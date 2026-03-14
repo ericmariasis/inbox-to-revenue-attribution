@@ -29,6 +29,10 @@ For the current Story 75 migration and recovery workflow, use:
 
 - [Render public-beta migration and recovery](./render-public-beta-migration-recovery.md)
 
+For the final Story 76 launch sign-off, use:
+
+- [Render public-beta launch checklist](./render-public-beta-launch-checklist.md)
+
 ## Target Shape
 
 - web service: `inbox-to-revenue-attribution-web`

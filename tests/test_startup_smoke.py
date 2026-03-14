@@ -1,10 +1,16 @@
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from app.core.config import get_settings
-from app.core.startup_smoke import StartupSmokeError, StartupSmokeResult, run_startup_smoke
+from app.core.startup_smoke import (
+    StartupSmokeError,
+    StartupSmokeResult,
+    _resolve_repo_root,
+    run_startup_smoke,
+)
 
 
 SAFE_NON_LOCAL_ENV = {
@@ -140,3 +146,51 @@ def test_run_startup_smoke_can_require_schema_to_be_ready(
         with patch("app.core.startup_smoke._load_schema_state", return_value=not_ready_result):
             with pytest.raises(StartupSmokeError, match="schema is not at the current migration head"):
                 run_startup_smoke(require_schema=True)
+
+
+def test_resolve_repo_root_prefers_current_working_directory_when_imported_from_site_packages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "alembic.ini").write_text("[alembic]\nscript_location = migrations\n", encoding="utf-8")
+    (repo_root / "migrations").mkdir()
+
+    fake_module_path = (
+        tmp_path
+        / "venv"
+        / "lib"
+        / "python3.12"
+        / "site-packages"
+        / "app"
+        / "core"
+        / "startup_smoke.py"
+    )
+    fake_module_path.parent.mkdir(parents=True)
+    fake_module_path.write_text("# stub", encoding="utf-8")
+
+    monkeypatch.chdir(repo_root)
+
+    with patch("app.core.startup_smoke.__file__", str(fake_module_path)):
+        assert _resolve_repo_root() == repo_root.resolve()
+
+
+def test_resolve_repo_root_raises_when_alembic_files_are_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    missing_root = tmp_path / "missing"
+    missing_root.mkdir()
+    fake_module_path = missing_root / "app" / "core" / "startup_smoke.py"
+    fake_module_path.parent.mkdir(parents=True)
+    fake_module_path.write_text("# stub", encoding="utf-8")
+
+    monkeypatch.chdir(missing_root)
+
+    with patch("app.core.startup_smoke.__file__", str(fake_module_path)):
+        with pytest.raises(
+            StartupSmokeError,
+            match="could not locate alembic.ini and migrations",
+        ):
+            _resolve_repo_root()

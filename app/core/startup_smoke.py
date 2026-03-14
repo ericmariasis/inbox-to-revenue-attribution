@@ -54,7 +54,26 @@ def _load_schema_state(connection: Connection) -> StartupSmokeResult:
 
 
 def _load_migration_head_revision() -> str | None:
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = _resolve_repo_root()
     config = Config(str(repo_root / "alembic.ini"))
     config.set_main_option("script_location", str(repo_root / "migrations"))
     return ScriptDirectory.from_config(config).get_current_head()
+
+
+def _resolve_repo_root() -> Path:
+    candidate_roots: list[Path] = []
+    seen: set[Path] = set()
+
+    for start_path in (Path.cwd().resolve(), Path(__file__).resolve()):
+        path_candidates = [start_path, *start_path.parents]
+        for candidate in path_candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            candidate_roots.append(candidate)
+
+    for candidate in candidate_roots:
+        if (candidate / "alembic.ini").is_file() and (candidate / "migrations").is_dir():
+            return candidate
+
+    raise StartupSmokeError("startup smoke could not locate alembic.ini and migrations from the current project root")

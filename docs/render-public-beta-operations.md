@@ -14,6 +14,10 @@ For planned schema-change releases and restore drills, use:
 
 - [Render public-beta migration and recovery](./render-public-beta-migration-recovery.md)
 
+For the final Story 76 launch sign-off, use:
+
+- [Render public-beta launch checklist](./render-public-beta-launch-checklist.md)
+
 ## Operator Surfaces
 
 Use these surfaces in this order before reaching for ad hoc database inspection:

@@ -61,7 +61,10 @@ from app.services.browser_session import (
     clear_browser_session_cookie,
     get_browser_session_token,
 )
-from app.services.email_provider import MagicLinkEmailDeliveryError
+from app.services.email_provider import (
+    MagicLinkEmailDeliveryError,
+    SupportRequestEmailDeliveryError,
+)
 from app.services.evidence_ingress_health import (
     AUTHORITATIVE_CONTENT_LAG_REASON_MISSING_AUTHORITY,
     AUTHORITATIVE_CONTENT_LAG_REASON_STALE_AUTHORITY,
@@ -99,6 +102,12 @@ from app.services.reporting import (
     build_reports_summary_csv,
     get_creator_paid_attribution_explanation,
     get_creator_reports_summary,
+)
+from app.services.support_requests import (
+    SupportRequestSubmission,
+    send_support_request_email,
+    SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION,
+    SUPPORT_REQUEST_TYPE_WORKSPACE_RESET,
 )
 from app.services.stripe_provider import build_default_stripe_provider
 
@@ -163,6 +172,29 @@ REPORT_FILTER_FIELDS = (
     "start_date",
     "end_date",
 )
+ACCOUNT_REQUEST_STATUS_MESSAGES = {
+    "workspace-reset-requested": {
+        "title": "Workspace reset requested",
+        "body": "Your request was recorded for manual review. Keep using this workspace unless support confirms that reset work is complete.",
+        "notice_class": "notice success",
+    },
+    "account-deletion-requested": {
+        "title": "Account deletion requested",
+        "body": "Your request was recorded for manual review. No local data has been removed yet.",
+        "notice_class": "notice success",
+    },
+    "workspace-reset-retry": {
+        "title": "Try again in a moment",
+        "body": "We could not send your workspace reset request just now. Try again in a few minutes.",
+        "notice_class": "notice error",
+    },
+    "account-deletion-retry": {
+        "title": "Try again in a moment",
+        "body": "We could not send your account deletion request just now. Try again in a few minutes.",
+        "notice_class": "notice error",
+    },
+}
+ACCOUNT_DANGER_ZONE_FRAGMENT = "#danger-zone"
 
 
 @router.get("/")
@@ -263,6 +295,56 @@ def creator_app_shell(
             unmatched_payment_count=unmatched_payment_count,
             status_value=status_value,
         )
+    )
+
+
+@router.get("/app/account")
+def creator_account_page(
+    request: Request,
+    status_value: str | None = Query(default=None, alias="status"),
+    confirm_value: str | None = Query(default=None, alias="confirm"),
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    booking_links = list_booking_link_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    return _html_response(
+        _render_account_page(
+            current_user=current_user,
+            booking_links=booking_links,
+            status_value=status_value,
+            confirm_value=confirm_value,
+        )
+    )
+
+
+@router.post("/app/account/requests/workspace-reset")
+def creator_workspace_reset_request(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+) -> Response:
+    return _account_support_request_response(
+        request=request,
+        current_user=current_user,
+        request_type=SUPPORT_REQUEST_TYPE_WORKSPACE_RESET,
+    )
+
+
+@router.post("/app/account/requests/account-deletion")
+def creator_account_deletion_request(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+) -> Response:
+    return _account_support_request_response(
+        request=request,
+        current_user=current_user,
+        request_type=SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION,
     )
 
 
@@ -1383,6 +1465,145 @@ def _render_app_shell(
     return _page_layout(title="Creator Home", body=body)
 
 
+def _render_account_page(
+    *,
+    current_user: AuthUser,
+    booking_links: list[BookingLinkResponse],
+    status_value: str | None,
+    confirm_value: str | None,
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    stripe_state = _account_stripe_management_state(
+        raw_status=current_user.creator.stripe_connect_status
+    )
+    booking_links_count = len(booking_links)
+    billing_ready_count = sum(
+        1
+        for booking_link in booking_links
+        if booking_link.billing_amount_cents is not None
+        and booking_link.billing_currency is not None
+    )
+
+    stripe_detail_lines = []
+    if current_user.creator.stripe_account_id:
+        stripe_detail_lines.append(
+            f"<p><strong>Connected account</strong>: "
+            f"{html.escape(current_user.creator.stripe_account_id)}</p>"
+        )
+    if current_user.creator.stripe_connected_at:
+        stripe_detail_lines.append(
+            f"<p><strong>Connected on</strong>: "
+            f"{_format_connected_at(current_user.creator.stripe_connected_at)}</p>"
+        )
+
+    booking_links_summary = "No booking links are saved yet for this workspace."
+    if booking_links_count > 0:
+        booking_links_summary = (
+            f"This workspace currently has "
+            f"{html.escape(_count_copy(booking_links_count, 'saved booking link'))}. "
+            f"{html.escape(_account_billing_ready_summary_copy(billing_ready_count))}"
+        )
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Account</p>
+        <h1>Account settings</h1>
+        <p class="lede">Manage your sign-in session, payment connection, active booking setup, and the beta policies for starting over or closing this workspace.</p>
+      </div>
+    </header>
+    {_render_shell_nav(current_path="/app/account")}
+    {_render_account_request_notice(status_value=status_value)}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Current workspace</p>
+          <h2 class="wrap-anywhere">{creator_name}</h2>
+        </div>
+        <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong>. This workspace currently holds your Stripe connection, booking links, tracked content, reports, and any blocked or unresolved items still waiting on review.</p>
+      </article>
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Session</p>
+          <h2>Session</h2>
+        </div>
+        <p>Signing out ends this browser session only. Your workspace data stays here when you sign back in.</p>
+        <form action="/sign-out" method="post">
+          <button type="submit" class="secondary">Sign out</button>
+        </form>
+      </article>
+    </section>
+    <section class="grid">
+      <article class="card stack">
+        <div class="status-row">
+          <div>
+            <p class="eyebrow">Stripe connection</p>
+            <h2>Stripe connection</h2>
+          </div>
+          <span class="status-pill {html.escape(stripe_state['badge_class'])}">{html.escape(stripe_state['label'])}</span>
+        </div>
+        <p>{html.escape(stripe_state['body'])}</p>
+        {"".join(stripe_detail_lines)}
+        <p><strong>What this changes</strong></p>
+        <p>Changing the Stripe connection affects future billing readiness. It does not erase local history already recorded for this workspace, and it does not delete anything from Stripe automatically.</p>
+        <form action="/app/stripe/connect/start" method="post">
+          <button type="submit">{html.escape(stripe_state['action_label'])}</button>
+        </form>
+      </article>
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Booking links</p>
+          <h2>Booking links</h2>
+        </div>
+        <p>Manage which booking links stay active for future tracked traffic and bookings. Turning off an old link should not remove the historical content, booking, or reporting records already tied to it.</p>
+        <p>{html.escape(booking_links_summary)}</p>
+        <p><strong>What this changes</strong></p>
+        <p>Changing booking links affects future tracked behavior. Existing tracked links, bookings, invoices, and reports may still reflect earlier activity already recorded for this workspace.</p>
+        <p><a href="/app/booking-links" class="inline-link">Manage booking links</a></p>
+      </article>
+    </section>
+    <section id="danger-zone" class="card accent stack">
+      <div>
+        <p class="eyebrow">Danger zone</p>
+        <h2>Support-assisted destructive changes</h2>
+        <p>Workspace reset and account deletion stay support-assisted during beta. You can submit a request for manual review here, but no destructive changes are applied immediately.</p>
+      </div>
+      <div class="grid">
+        <article class="topic-summary stack">
+          <div class="status-row">
+            <h2>Request workspace reset</h2>
+            <span class="pill-note">Manual review</span>
+          </div>
+          <p>Use this only if you want to start over with the same email. During beta, workspace reset is reviewed manually before anything changes.</p>
+          <p><strong>What reset may change</strong></p>
+          <p>A reset can break tracked links, remove local setup state, and make earlier reports or history unavailable from this workspace. Reset does not delete or reverse anything in Stripe or Calendly automatically.</p>
+          <p>If your workspace already has booking, billing, or payment history, we may not be able to reset it safely.</p>
+          {_render_account_request_call_to_action(
+              request_type=SUPPORT_REQUEST_TYPE_WORKSPACE_RESET,
+              confirm_value=confirm_value,
+          )}
+        </article>
+        <article class="topic-summary stack">
+          <div class="status-row">
+            <h2>Request account deletion</h2>
+            <span class="pill-note">Manual review</span>
+          </div>
+          <p>Use this if you want to close this local account and remove this workspace from the product. During beta, deletion is handled manually so we can avoid false promises about what is removed.</p>
+          <p><strong>Before you request deletion</strong></p>
+          <p>Deleting this account can remove local workspace data and end access to tracked links, reports, and historical workspace views. Some detached diagnostics may remain without workspace links, and Stripe or Calendly accounts are not deleted automatically.</p>
+          <p>After deletion is complete, you may sign up again later with the same email, but it will be treated as a new workspace.</p>
+          {_render_account_request_call_to_action(
+              request_type=SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION,
+              confirm_value=confirm_value,
+          )}
+        </article>
+      </div>
+    </section>
+    """
+    return _page_layout(title="Account settings", body=body)
+
+
 def _render_setup_home_notice(*, status_value: str | None) -> str:
     message = SETUP_HOME_STATUS_MESSAGES.get(status_value)
     if message is None:
@@ -1394,6 +1615,49 @@ def _render_setup_home_notice(*, status_value: str | None) -> str:
       <p>{html.escape(message['body'])}</p>
     </section>
     """
+
+
+def _render_account_request_notice(*, status_value: str | None) -> str:
+    message = ACCOUNT_REQUEST_STATUS_MESSAGES.get(status_value)
+    if message is None:
+        return ""
+
+    return f"""
+    <section class="{html.escape(message['notice_class'])}">
+      <p class="eyebrow">{html.escape(message['title'])}</p>
+      <p>{html.escape(message['body'])}</p>
+    </section>
+    """
+
+
+def _render_account_request_call_to_action(
+    *,
+    request_type: str,
+    confirm_value: str | None,
+) -> str:
+    flow = _account_request_flow(request_type)
+    if flow is None:
+        return ""
+
+    if confirm_value == request_type:
+        return f"""
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Confirm</p>
+            <h2>{html.escape(flow['confirm_title'])}</h2>
+          </div>
+          <p>{html.escape(flow['confirm_body'])}</p>
+          <form action="{html.escape(flow['submit_path'])}" method="post">
+            <button type="submit">{html.escape(flow['confirm_button'])}</button>
+          </form>
+          <p><a href="/app/account{ACCOUNT_DANGER_ZONE_FRAGMENT}" class="inline-link">{html.escape(flow['cancel_button'])}</a></p>
+        </section>
+        """
+
+    return (
+        f'<p><a href="/app/account?confirm={quote(request_type, safe="")}{ACCOUNT_DANGER_ZONE_FRAGMENT}" class="inline-link">'
+        f"{html.escape(flow['action_label'])}</a></p>"
+    )
 
 
 def _render_setup_progress_section(*, setup_progress: dict[str, object]) -> str:
@@ -1709,6 +1973,7 @@ def _render_shell_nav(*, current_path: str) -> str:
         ("/app/health", "Health"),
         ("/app/experiments", "Experiments"),
         ("/app/attention", "Attention"),
+        ("/app/account", "Account"),
     ]
     items = []
     for href, label in links:
@@ -3998,6 +4263,42 @@ def _stripe_setup_home_state(raw_status: str) -> dict[str, str]:
     }
 
 
+def _account_stripe_management_state(raw_status: str) -> dict[str, str]:
+    normalized_status = raw_status.strip().lower()
+    if normalized_status == "connected":
+        return {
+            "label": "Connected",
+            "body": (
+                "This workspace is connected to Stripe for future invoicing. You can "
+                "reconnect or replace that connection without deleting your historical "
+                "bookings, invoices, reports, or recovery history."
+            ),
+            "action_label": "Reconnect Stripe",
+            "badge_class": "connected",
+        }
+
+    if normalized_status == "disconnected":
+        return {
+            "label": "Disconnected",
+            "body": (
+                "This workspace is not currently connected to Stripe for invoicing. "
+                "You can connect or reconnect Stripe here when you are ready."
+            ),
+            "action_label": "Reconnect Stripe",
+            "badge_class": "disconnected",
+        }
+
+    return {
+        "label": "Pending",
+        "body": (
+            "This workspace is not currently connected to Stripe for invoicing. "
+            "You can connect or reconnect Stripe here when you are ready."
+        ),
+        "action_label": "Start Stripe setup",
+        "badge_class": "pending",
+    }
+
+
 def _booking_activity_status(raw_status: str) -> dict[str, str]:
     normalized_status = raw_status.strip().lower()
     if normalized_status == "canceled":
@@ -4031,6 +4332,85 @@ def _format_connected_at(value) -> str:
 def _count_copy(count: int, singular: str, plural: str | None = None) -> str:
     label = singular if count == 1 else plural or f"{singular}s"
     return f"{count} {label}"
+
+
+def _account_billing_ready_summary_copy(billing_ready_count: int) -> str:
+    if billing_ready_count == 1:
+        return "1 billing-ready link already has amount and currency saved."
+    return (
+        f"{_count_copy(billing_ready_count, 'billing-ready link')} already have amount "
+        "and currency saved."
+    )
+
+
+def _account_request_flow(request_type: str) -> dict[str, str] | None:
+    if request_type == SUPPORT_REQUEST_TYPE_WORKSPACE_RESET:
+        return {
+            "action_label": "Request workspace reset",
+            "confirm_title": "Request workspace reset?",
+            "confirm_body": (
+                "This sends a manual review request for a fresh start with the same email. "
+                "If approved, your current tracked links, reports, and setup history may stop "
+                "working from this workspace. No changes are applied immediately."
+            ),
+            "confirm_button": "Submit reset request",
+            "cancel_button": "Keep workspace",
+            "submit_path": "/app/account/requests/workspace-reset",
+            "success_status": "workspace-reset-requested",
+            "retry_status": "workspace-reset-retry",
+        }
+    if request_type == SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION:
+        return {
+            "action_label": "Request account deletion",
+            "confirm_title": "Request account deletion?",
+            "confirm_body": (
+                "This sends a manual request to remove this local workspace where possible. "
+                "It does not automatically delete Stripe or Calendly accounts, and historical "
+                "workspace access may not be recoverable after deletion work begins."
+            ),
+            "confirm_button": "Submit deletion request",
+            "cancel_button": "Keep account",
+            "submit_path": "/app/account/requests/account-deletion",
+            "success_status": "account-deletion-requested",
+            "retry_status": "account-deletion-retry",
+        }
+    return None
+
+
+def _account_support_request_response(
+    *,
+    request: Request,
+    current_user: AuthUser | None,
+    request_type: str,
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    flow = _account_request_flow(request_type)
+    if flow is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="account request type not found",
+        )
+
+    submission = SupportRequestSubmission(
+        request_type=request_type,
+        creator_id=str(current_user.creator_id),
+        creator_name=current_user.creator.name,
+        requester_email=current_user.email,
+    )
+    try:
+        send_support_request_email(
+            provider=request.app.state.email_provider,
+            submission=submission,
+        )
+    except SupportRequestEmailDeliveryError:
+        return _redirect(
+            f"/app/account?status={quote(flow['retry_status'], safe='')}&confirm={quote(request_type, safe='')}{ACCOUNT_DANGER_ZONE_FRAGMENT}"
+        )
+
+    return _redirect(f"/app/account?status={quote(flow['success_status'], safe='')}{ACCOUNT_DANGER_ZONE_FRAGMENT}")
 
 
 def _reports_filter_error_detail(field_errors: dict[str, str]) -> str:

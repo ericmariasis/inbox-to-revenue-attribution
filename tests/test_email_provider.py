@@ -8,6 +8,8 @@ from app.services.email_provider import (
     MagicLinkEmailMessage,
     SmtpEmailProvider,
     StubEmailProvider,
+    SupportRequestEmailDeliveryError,
+    SupportRequestEmailMessage,
     build_default_email_provider,
 )
 
@@ -79,3 +81,60 @@ def test_smtp_provider_wraps_delivery_errors():
     with patch("app.services.email_provider.smtplib.SMTP", side_effect=OSError("socket closed")):
         with pytest.raises(MagicLinkEmailDeliveryError, match="magic-link email delivery failed"):
             provider.send_magic_link(message)
+
+
+def test_smtp_provider_sends_support_request_email_without_live_network():
+    provider = build_default_email_provider(settings=_smtp_settings())
+    assert isinstance(provider, SmtpEmailProvider)
+
+    smtp_client = MagicMock()
+    message = SupportRequestEmailMessage(
+        support_email="eric@careercodepro.com",
+        request_type="workspace-reset",
+        requester_email="creator@example.com",
+        creator_name="Creator Example",
+        creator_id="creator-123",
+        requested_at="2026-03-14T21:30:00+00:00",
+        subject="Workspace reset request for creator@example.com",
+        body=(
+            "Workspace reset request\n\n"
+            "This beta request was submitted from the signed-in account page.\n\n"
+            "Request type: workspace-reset\n"
+            "Signed-in email: creator@example.com\n"
+        ),
+    )
+
+    with patch("app.services.email_provider.smtplib.SMTP") as smtp_factory:
+        smtp_factory.return_value.__enter__.return_value = smtp_client
+        provider.send_support_request(message)
+
+    smtp_factory.assert_called_once_with(
+        host="smtp.creatortrust.co",
+        port=587,
+        timeout=10,
+    )
+    smtp_client.starttls.assert_called_once()
+    smtp_client.login.assert_called_once_with("smtp-user", "smtp-pass")
+    sent_message = smtp_client.send_message.call_args.args[0]
+    assert sent_message["To"] == "eric@careercodepro.com"
+    assert sent_message["Subject"] == "Workspace reset request for creator@example.com"
+    assert "Request type: workspace-reset" in sent_message.get_content()
+    assert "Signed-in email: creator@example.com" in sent_message.get_content()
+
+
+def test_smtp_provider_wraps_support_request_delivery_errors():
+    provider = SmtpEmailProvider(settings=_smtp_settings())
+    message = SupportRequestEmailMessage(
+        support_email="eric@careercodepro.com",
+        request_type="account-deletion",
+        requester_email="creator@example.com",
+        creator_name="Creator Example",
+        creator_id="creator-123",
+        requested_at="2026-03-14T21:30:00+00:00",
+        subject="Account deletion request for creator@example.com",
+        body="Account deletion request",
+    )
+
+    with patch("app.services.email_provider.smtplib.SMTP", side_effect=OSError("socket closed")):
+        with pytest.raises(SupportRequestEmailDeliveryError, match="support-request email delivery failed"):
+            provider.send_support_request(message)

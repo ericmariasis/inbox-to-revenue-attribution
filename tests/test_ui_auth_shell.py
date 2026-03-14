@@ -15,8 +15,11 @@ from app.services.booking_attribution import (
     BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
     BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
 )
-from app.services.email_provider import MagicLinkEmailDeliveryError
-from app.services.email_stub import get_magic_link_outbox
+from app.services.email_provider import (
+    MagicLinkEmailDeliveryError,
+    SupportRequestEmailDeliveryError,
+)
+from app.services.email_stub import get_magic_link_outbox, get_support_request_outbox
 from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_MISSING_TID,
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
@@ -41,6 +44,13 @@ def _latest_magic_link_token_for_email(email: str) -> str:
         if message["email"] == email:
             return message["token"]
     raise AssertionError(f"No magic-link token found for {email}")
+
+
+def _latest_support_request(request_type: str) -> dict[str, str]:
+    for message in reversed(get_support_request_outbox()):
+        if message["request_type"] == request_type:
+            return message
+    raise AssertionError(f"No support-request email found for {request_type}")
 
 
 def _insert_creator_user(
@@ -777,6 +787,9 @@ class _FailingEmailProvider:
     def send_magic_link(self, message) -> None:
         raise MagicLinkEmailDeliveryError(self.error_text)
 
+    def send_support_request(self, message) -> None:
+        raise SupportRequestEmailDeliveryError(self.error_text)
+
 
 def test_sign_in_page_is_browser_accessible():
     with TestClient(app) as client:
@@ -936,6 +949,30 @@ def test_health_page_redirects_unauthenticated_browser_requests():
     with TestClient(app) as client:
         response = client.get(
             "/app/health",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+
+
+def test_account_page_redirects_unauthenticated_browser_requests():
+    with TestClient(app) as client:
+        response = client.get(
+            "/app/account",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+
+
+def test_workspace_reset_request_route_redirects_unauthenticated_browser_requests():
+    with TestClient(app) as client:
+        response = client.post(
+            "/app/account/requests/workspace-reset",
             headers=HTML_ACCEPT_HEADERS,
             follow_redirects=False,
         )
@@ -2874,6 +2911,236 @@ def test_setup_home_connected_stripe_state_shows_connected_details():
     assert "Connected account" in response.text
 
 
+def test_account_page_connected_state_renders_entry_points_and_policy_copy():
+    connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    inserted = _insert_creator_user(
+        email=f"ui_account_connected_{uuid.uuid4().hex}@example.com",
+        name="Account Connected Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_connected",
+        stripe_connected_at=connected_at,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Account Strategy",
+        calendly_url="https://calendly.com/example/account-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Account settings" in response.text
+    assert '<a href="/app/account" class="nav-link active">Account</a>' in response.text
+    assert "Current workspace" in response.text
+    assert inserted["email"] in response.text
+    assert "Signing out ends this browser session only." in response.text
+    assert 'action="/sign-out"' in response.text
+    assert "This workspace is connected to Stripe for future invoicing." in response.text
+    assert "Changing the Stripe connection affects future billing readiness." in response.text
+    assert "acct_ui_account_connected" in response.text
+    assert "Reconnect Stripe" in response.text
+    assert 'action="/app/stripe/connect/start"' in response.text
+    assert "Manage which booking links stay active for future tracked traffic and bookings." in response.text
+    assert "1 saved booking link" in response.text
+    assert 'href="/app/booking-links"' in response.text
+    assert "Danger zone" in response.text
+    assert "Request workspace reset" in response.text
+    assert "Request account deletion" in response.text
+    assert 'href="/app/account?confirm=workspace-reset#danger-zone"' in response.text
+    assert 'href="/app/account?confirm=account-deletion#danger-zone"' in response.text
+    assert "Submit reset request" not in response.text
+    assert "Submit deletion request" not in response.text
+
+
+def test_account_page_disconnected_state_renders_reconnect_copy_without_destructive_forms():
+    inserted = _insert_creator_user(
+        email=f"ui_account_disconnected_{uuid.uuid4().hex}@example.com",
+        name="Account Disconnected Creator",
+        stripe_connect_status="disconnected",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Disconnected" in response.text
+    assert "This workspace is not currently connected to Stripe for invoicing." in response.text
+    assert "Reconnect Stripe" in response.text
+    assert "No booking links are saved yet for this workspace." in response.text
+    assert "Workspace reset and account deletion stay support-assisted during beta." in response.text
+    assert 'href="/app/account?confirm=workspace-reset#danger-zone"' in response.text
+    assert 'href="/app/account?confirm=account-deletion#danger-zone"' in response.text
+    assert 'action="/app/stripe/connect/start"' in response.text
+    assert 'action="/app/account"' not in response.text
+
+
+def test_account_page_reset_confirmation_renders_before_send():
+    inserted = _insert_creator_user(
+        email=f"ui_account_confirm_reset_{uuid.uuid4().hex}@example.com",
+        name="Reset Confirm Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_confirm_reset",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get(
+            "/app/account",
+            params={"confirm": "workspace-reset"},
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert "Request workspace reset?" in response.text
+    assert "This sends a manual review request for a fresh start with the same email." in response.text
+    assert 'action="/app/account/requests/workspace-reset"' in response.text
+    assert "Submit reset request" in response.text
+    assert "Keep workspace" in response.text
+
+
+def test_account_page_reset_submit_sends_support_request_and_shows_requested_state():
+    inserted = _insert_creator_user(
+        email=f"ui_account_reset_submit_{uuid.uuid4().hex}@example.com",
+        name="Reset Submit Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_reset_submit",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        submit_response = client.post(
+            "/app/account/requests/workspace-reset",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        page_response = client.get(
+            submit_response.headers["location"],
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    captured = _latest_support_request("workspace-reset")
+
+    assert submit_response.status_code == 303
+    assert submit_response.headers["location"] == "/app/account?status=workspace-reset-requested#danger-zone"
+    assert page_response.status_code == 200
+    assert "Workspace reset requested" in page_response.text
+    assert "Keep using this workspace unless support confirms that reset work is complete." in page_response.text
+    assert captured["support_email"] == "eric@careercodepro.com"
+    assert captured["requester_email"] == inserted["email"]
+    assert captured["creator_name"] == "Reset Submit Creator"
+    assert captured["creator_id"] == inserted["creator_id"]
+    assert captured["subject"] == f"Workspace reset request for {inserted['email']}"
+    assert "Request type: workspace-reset" in captured["body"]
+
+
+def test_account_page_deletion_submit_sends_support_request_and_shows_requested_state():
+    inserted = _insert_creator_user(
+        email=f"ui_account_delete_submit_{uuid.uuid4().hex}@example.com",
+        name="Deletion Submit Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_delete_submit",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        submit_response = client.post(
+            "/app/account/requests/account-deletion",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        page_response = client.get(
+            submit_response.headers["location"],
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    captured = _latest_support_request("account-deletion")
+
+    assert submit_response.status_code == 303
+    assert submit_response.headers["location"] == "/app/account?status=account-deletion-requested#danger-zone"
+    assert page_response.status_code == 200
+    assert "Account deletion requested" in page_response.text
+    assert "No local data has been removed yet." in page_response.text
+    assert captured["support_email"] == "eric@careercodepro.com"
+    assert captured["requester_email"] == inserted["email"]
+    assert captured["creator_name"] == "Deletion Submit Creator"
+    assert captured["creator_id"] == inserted["creator_id"]
+    assert captured["subject"] == f"Account deletion request for {inserted['email']}"
+    assert "Request type: account-deletion" in captured["body"]
+
+
+def test_account_page_support_request_failure_shows_retry_without_false_success():
+    inserted = _insert_creator_user(
+        email=f"ui_account_request_failure_{uuid.uuid4().hex}@example.com",
+        name="Failure Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_request_failure",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _FailingEmailProvider(error_text="smtp timeout from sandbox provider")
+
+    with _override_app_state("email_provider", provider):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            submit_response = client.post(
+                "/app/account/requests/workspace-reset",
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+            page_response = client.get(
+                submit_response.headers["location"],
+                headers=HTML_ACCEPT_HEADERS,
+            )
+
+    assert submit_response.status_code == 303
+    assert submit_response.headers["location"] == (
+        "/app/account?status=workspace-reset-retry&confirm=workspace-reset#danger-zone"
+    )
+    assert page_response.status_code == 200
+    assert "We could not send your workspace reset request just now." in page_response.text
+    assert "Request workspace reset?" in page_response.text
+    assert "Workspace reset requested" not in page_response.text
+
+
 def test_setup_home_connect_cta_redirects_to_stripe_and_callback_returns_to_app():
     inserted = _insert_creator_user(
         email=f"ui_cta_{uuid.uuid4().hex}@example.com",
@@ -3046,6 +3313,25 @@ def test_app_shell_clears_expired_session_cookie():
     with TestClient(app) as client:
         client.cookies.set(SESSION_COOKIE_NAME, expired_token)
         response = client.get("/app", headers=HTML_ACCEPT_HEADERS, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+    assert f"{SESSION_COOKIE_NAME}=" in response.headers["set-cookie"]
+    assert "Max-Age=0" in response.headers["set-cookie"]
+
+
+def test_account_page_clears_expired_session_cookie():
+    inserted = _insert_creator_user(email=f"ui_account_expired_{uuid.uuid4().hex}@example.com")
+    expired_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(minutes=-1),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, expired_token)
+        response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS, follow_redirects=False)
 
     assert response.status_code == 303
     assert response.headers["location"] == "/sign-in"

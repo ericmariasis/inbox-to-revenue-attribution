@@ -4,6 +4,7 @@ from jose import JWTError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.models.auth_user import AuthUser
 from app.services.browser_session import get_browser_session_token
@@ -73,3 +74,15 @@ def get_optional_browser_auth_user(
         return _get_auth_user_from_access_token(access_token=access_token, db=db)
     except HTTPException:
         return None
+
+
+def browser_auth_user_is_allowlisted_operator(
+    user: AuthUser | None,
+    *,
+    settings: Settings | None = None,
+) -> bool:
+    if user is None:
+        return False
+
+    resolved_settings = settings or get_settings()
+    return resolved_settings.is_operator_email_allowed(user.email)

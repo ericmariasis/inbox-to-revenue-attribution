@@ -26,7 +26,10 @@ from app.api.content import (
     promote_content_authoritative_evidence_response_for_creator,
     reject_content_topic_candidate_response_for_creator,
 )
-from app.api.deps import get_optional_browser_auth_user
+from app.api.deps import (
+    browser_auth_user_is_allowlisted_operator,
+    get_optional_browser_auth_user,
+)
 from app.api.stripe import (
     STRIPE_CONNECT_FAILED_STATUS,
     STRIPE_CONNECT_INTERRUPTED_STATUS,
@@ -113,12 +116,20 @@ from app.services.support_requests import (
     SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION,
     SUPPORT_REQUEST_TYPE_WORKSPACE_RESET,
     create_or_get_active_support_request,
+    get_support_request_by_id,
     list_active_support_requests_for_creator,
+    list_latest_support_requests_for_creator,
+    list_support_requests_for_operator,
     mark_support_request_notification_failed,
     mark_support_request_notification_succeeded,
     send_support_request_email,
+    support_request_available_transitions,
+    support_request_notification_state_display,
     support_request_public_id,
     support_request_status_display,
+    support_request_status_label,
+    support_request_type_label,
+    transition_support_request_status,
 )
 from app.services.stripe_provider import build_default_stripe_provider
 
@@ -222,6 +233,18 @@ ACCOUNT_REQUEST_STATUS_MESSAGES = {
     "account-deletion-throttled": {
         "title": "Too many account deletion attempts",
         "body": "We recorded too many recent account deletion submit attempts. Wait a few minutes before trying again.",
+        "notice_class": "notice error",
+    },
+}
+OPERATOR_SUPPORT_REQUEST_STATUS_MESSAGES = {
+    "status-updated": {
+        "title": "Request status updated",
+        "body": "The support request review status was saved successfully.",
+        "notice_class": "notice success",
+    },
+    "invalid-transition": {
+        "title": "Request status was not changed",
+        "body": "That review transition is not allowed from the current saved state.",
         "notice_class": "notice error",
     },
 }
@@ -346,6 +369,10 @@ def creator_account_page(
         creator_id=current_user.creator_id,
         db=db,
     )
+    support_requests = list_latest_support_requests_for_creator(
+        db,
+        creator_id=current_user.creator_id,
+    )
     active_support_requests = list_active_support_requests_for_creator(
         db,
         creator_id=current_user.creator_id,
@@ -354,6 +381,7 @@ def creator_account_page(
         _render_account_page(
             current_user=current_user,
             booking_links=booking_links,
+            support_requests=support_requests,
             active_support_requests=active_support_requests,
             status_value=status_value,
             confirm_value=confirm_value,
@@ -387,6 +415,95 @@ def creator_account_deletion_request(
         db=db,
         request_type=SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION,
     )
+
+
+@router.get("/app/operator/support-requests")
+def operator_support_request_queue_page(
+    request: Request,
+    status_value: str | None = Query(default=None, alias="status"),
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    operator_user = _allowlisted_operator_from_browser_request(
+        request=request,
+        current_user=current_user,
+    )
+    if isinstance(operator_user, Response):
+        return operator_user
+
+    support_requests = list_support_requests_for_operator(db)
+    return _html_response(
+        _render_operator_support_request_queue_page(
+            current_user=operator_user,
+            support_requests=support_requests,
+            status_value=status_value,
+        )
+    )
+
+
+@router.get("/app/operator/support-requests/{request_id}")
+def operator_support_request_detail_page(
+    request_id: uuid.UUID,
+    request: Request,
+    status_value: str | None = Query(default=None, alias="status"),
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    operator_user = _allowlisted_operator_from_browser_request(
+        request=request,
+        current_user=current_user,
+    )
+    if isinstance(operator_user, Response):
+        return operator_user
+
+    request_record = get_support_request_by_id(
+        db,
+        request_id=request_id,
+    )
+    if request_record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="support request not found")
+
+    return _html_response(
+        _render_operator_support_request_detail_page(
+            current_user=operator_user,
+            request_record=request_record,
+            status_value=status_value,
+        )
+    )
+
+
+@router.post("/app/operator/support-requests/{request_id}/status")
+async def operator_support_request_status_update(
+    request_id: uuid.UUID,
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    operator_user = _allowlisted_operator_from_browser_request(
+        request=request,
+        current_user=current_user,
+    )
+    if isinstance(operator_user, Response):
+        return operator_user
+
+    request_record = get_support_request_by_id(
+        db,
+        request_id=request_id,
+    )
+    if request_record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="support request not found")
+
+    form_values = await _parse_form_values(request)
+    try:
+        transition_support_request_status(
+            db,
+            request_record=request_record,
+            new_status=form_values.get("status", ""),
+        )
+    except ValueError:
+        return _redirect(f"/app/operator/support-requests/{request_id}?status=invalid-transition")
+
+    return _redirect(f"/app/operator/support-requests/{request_id}?status=status-updated")
 
 
 @router.post("/app/stripe/connect/start")
@@ -1510,6 +1627,7 @@ def _render_account_page(
     *,
     current_user: AuthUser,
     booking_links: list[BookingLinkResponse],
+    support_requests: dict[str, SupportRequestRecord],
     active_support_requests: dict[str, SupportRequestRecord],
     status_value: str | None,
     confirm_value: str | None,
@@ -1622,7 +1740,7 @@ def _render_account_page(
           <p>A reset can break tracked links, remove local setup state, and make earlier reports or history unavailable from this workspace. Reset does not delete or reverse anything in Stripe or Calendly automatically.</p>
           <p>If your workspace already has booking, billing, or payment history, we may not be able to reset it safely.</p>
           {_render_account_request_current_state(
-              request_record=active_support_requests.get(SUPPORT_REQUEST_TYPE_WORKSPACE_RESET),
+              request_record=support_requests.get(SUPPORT_REQUEST_TYPE_WORKSPACE_RESET),
           )}
           {_render_account_request_call_to_action(
               request_type=SUPPORT_REQUEST_TYPE_WORKSPACE_RESET,
@@ -1640,7 +1758,7 @@ def _render_account_page(
           <p>Deleting this account can remove local workspace data and end access to tracked links, reports, and historical workspace views. Some detached diagnostics may remain without workspace links, and Stripe or Calendly accounts are not deleted automatically.</p>
           <p>After deletion is complete, you may sign up again later with the same email, but it will be treated as a new workspace.</p>
           {_render_account_request_current_state(
-              request_record=active_support_requests.get(SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION),
+              request_record=support_requests.get(SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION),
           )}
           {_render_account_request_call_to_action(
               request_type=SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION,
@@ -1678,6 +1796,29 @@ def _render_account_request_notice(*, status_value: str | None) -> str:
       <p>{html.escape(message['body'])}</p>
     </section>
     """
+
+
+def _render_operator_support_request_notice(*, status_value: str | None) -> str:
+    message = OPERATOR_SUPPORT_REQUEST_STATUS_MESSAGES.get(status_value)
+    if message is None:
+        return ""
+
+    return f"""
+    <section class="{html.escape(message['notice_class'])}">
+      <p class="eyebrow">{html.escape(message['title'])}</p>
+      <p>{html.escape(message['body'])}</p>
+    </section>
+    """
+
+
+def _render_operator_nav(*, current_path: str) -> str:
+    href = "/app/operator/support-requests"
+    class_name = (
+        "nav-link active"
+        if current_path == href or current_path.startswith(f"{href}/")
+        else "nav-link"
+    )
+    return f'<nav class="shell-nav"><a href="{href}" class="{class_name}">Operator Queue</a></nav>'
 
 
 def _render_account_request_call_to_action(
@@ -1721,22 +1862,23 @@ def _render_account_request_current_state(*, request_record: SupportRequestRecor
     if request_record is None:
         return ""
 
-    state = support_request_status_display(request_record)
+    review_state = support_request_status_display(request_record)
+    notification_state = support_request_notification_state_display(request_record)
     created_at_copy = _format_account_request_created_at(request_record.created_at)
-    notification_copy = _account_request_notification_copy(request_record)
     return f"""
     <section class="topic-summary stack">
       <div class="status-row">
         <div>
           <p class="eyebrow">Current request</p>
-          <h2>{html.escape(state['label'])}</h2>
+          <h2>{html.escape(review_state['label'])}</h2>
         </div>
-        <span class="status-pill {html.escape(state['badge_class'])}">{html.escape(state['label'])}</span>
+        <span class="status-pill {html.escape(review_state['badge_class'])}">{html.escape(review_state['label'])}</span>
       </div>
-      <p>{html.escape(state['body'])}</p>
+      <p>{html.escape(review_state['body'])}</p>
       <p><strong>Request ID</strong>: <code>{html.escape(support_request_public_id(request_record))}</code></p>
       <p><strong>Submitted</strong>: {html.escape(created_at_copy)}</p>
-      <p>{html.escape(notification_copy)}</p>
+      <p><strong>Email delivery</strong>: <span class="status-pill {html.escape(notification_state['badge_class'])}">{html.escape(notification_state['label'])}</span></p>
+      <p>{html.escape(notification_state['body'])}</p>
     </section>
     """
 
@@ -1747,18 +1889,177 @@ def _format_account_request_created_at(created_at: datetime | None) -> str:
     return created_at.astimezone(timezone.utc).strftime("%B %d, %Y at %H:%M UTC")
 
 
-def _account_request_notification_copy(request_record: SupportRequestRecord) -> str:
-    if request_record.notification_sent_at is not None:
-        sent_at = request_record.notification_sent_at.astimezone(timezone.utc).strftime(
-            "%B %d, %Y at %H:%M UTC"
+def _render_operator_support_request_queue_page(
+    *,
+    current_user: AuthUser,
+    support_requests: list[SupportRequestRecord],
+    status_value: str | None,
+) -> str:
+    operator_email = html.escape(current_user.email)
+    queue_body = _render_operator_support_request_queue_rows(support_requests=support_requests)
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Internal operator queue</p>
+        <h1>Support request queue</h1>
+        <p class="lede">Review the saved beta reset and account-deletion requests without writing directly to the database.</p>
+      </div>
+    </header>
+    {_render_shell_nav(current_path="/app/operator/support-requests")}
+    {_render_operator_nav(current_path="/app/operator/support-requests")}
+    {_render_operator_support_request_notice(status_value=status_value)}
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Queue</p>
+          <h2>Support-assisted destructive requests</h2>
+        </div>
+        <p>Allowlisted operator signed in as <strong class="wrap-anywhere">{operator_email}</strong>.</p>
+      </div>
+      {queue_body}
+    </section>
+    """
+    return _page_layout(title="Support request queue", body=body)
+
+
+def _render_operator_support_request_queue_rows(
+    *,
+    support_requests: list[SupportRequestRecord],
+) -> str:
+    if not support_requests:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">Clear</p>
+          <h2>No support requests yet</h2>
+          <p>New reset or account-deletion requests will appear here once creators submit them from the account page.</p>
+        </section>
+        """
+
+    rows: list[str] = []
+    for request_record in support_requests:
+        review_state = support_request_status_display(request_record)
+        notification_state = support_request_notification_state_display(request_record)
+        rows.append(
+            f"""
+            <tr>
+              <td><code>{html.escape(support_request_public_id(request_record))}</code></td>
+              <td>{html.escape(support_request_type_label(request_record.request_type))}</td>
+              <td class="wrap-anywhere">{html.escape(request_record.creator_name_snapshot)}</td>
+              <td class="wrap-anywhere">{html.escape(request_record.requester_email)}</td>
+              <td>{html.escape(review_state['label'])}</td>
+              <td>{html.escape(notification_state['label'])}</td>
+              <td>{html.escape(_format_account_request_created_at(request_record.created_at))}</td>
+              <td><a href="/app/operator/support-requests/{support_request_public_id(request_record)}" class="inline-link">Review</a></td>
+            </tr>
+            """
         )
-        return f"Support email notification succeeded on {sent_at}."
-    if request_record.notification_failed_at is not None:
-        failed_at = request_record.notification_failed_at.astimezone(timezone.utc).strftime(
-            "%B %d, %Y at %H:%M UTC"
+
+    return f"""
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Request ID</th>
+          <th>Type</th>
+          <th>Workspace</th>
+          <th>Requester</th>
+          <th>Review</th>
+          <th>Email</th>
+          <th>Submitted</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {"".join(rows)}
+      </tbody>
+    </table>
+    """
+
+
+def _render_operator_support_request_detail_page(
+    *,
+    current_user: AuthUser,
+    request_record: SupportRequestRecord,
+    status_value: str | None,
+) -> str:
+    operator_email = html.escape(current_user.email)
+    review_state = support_request_status_display(request_record)
+    notification_state = support_request_notification_state_display(request_record)
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Internal operator queue</p>
+        <h1>{html.escape(support_request_type_label(request_record.request_type))}</h1>
+        <p class="lede">Inspect the saved request context, keep email-delivery state visible, and move the request through the approved review states.</p>
+      </div>
+    </header>
+    {_render_shell_nav(current_path=f"/app/operator/support-requests/{support_request_public_id(request_record)}")}
+    {_render_operator_nav(current_path=f"/app/operator/support-requests/{support_request_public_id(request_record)}")}
+    {_render_operator_support_request_notice(status_value=status_value)}
+    <section class="card stack">
+      <p><a href="/app/operator/support-requests" class="inline-link">Back to support request queue</a></p>
+      <p>Allowlisted operator signed in as <strong class="wrap-anywhere">{operator_email}</strong>.</p>
+    </section>
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Request context</p>
+          <h2>{html.escape(support_request_type_label(request_record.request_type))}</h2>
+        </div>
+        <p><strong>Request ID</strong>: <code>{html.escape(support_request_public_id(request_record))}</code></p>
+        <p><strong>Request type</strong>: {html.escape(support_request_type_label(request_record.request_type))}</p>
+        <p><strong>Creator ID</strong>: <code>{html.escape(str(request_record.creator_id))}</code></p>
+        <p><strong>Requester email</strong>: <span class="wrap-anywhere">{html.escape(request_record.requester_email)}</span></p>
+        <p><strong>Workspace name</strong>: <span class="wrap-anywhere">{html.escape(request_record.creator_name_snapshot)}</span></p>
+        <p><strong>Submitted</strong>: {html.escape(_format_account_request_created_at(request_record.created_at))}</p>
+      </article>
+      <article class="card stack">
+        <div class="status-row">
+          <div>
+            <p class="eyebrow">Review status</p>
+            <h2>{html.escape(review_state['label'])}</h2>
+          </div>
+          <span class="status-pill {html.escape(review_state['badge_class'])}">{html.escape(review_state['label'])}</span>
+        </div>
+        <p>{html.escape(review_state['body'])}</p>
+        <p><strong>Email delivery</strong>: <span class="status-pill {html.escape(notification_state['badge_class'])}">{html.escape(notification_state['label'])}</span></p>
+        <p>{html.escape(notification_state['body'])}</p>
+        {_render_operator_support_request_transition_actions(request_record=request_record)}
+      </article>
+    </section>
+    """
+    return _page_layout(title="Support request detail", body=body)
+
+
+def _render_operator_support_request_transition_actions(
+    *,
+    request_record: SupportRequestRecord,
+) -> str:
+    available_transitions = support_request_available_transitions(request_record)
+    if not available_transitions:
+        return (
+            "<p><strong>Terminal status.</strong> This request can no longer move to another review state inside the app.</p>"
         )
-        return f"Support email notification failed on {failed_at}, but the request is still saved."
-    return "Support email delivery has not finished yet."
+
+    forms = []
+    for next_status in available_transitions:
+        forms.append(
+            f"""
+            <form action="/app/operator/support-requests/{support_request_public_id(request_record)}/status" method="post">
+              <input type="hidden" name="status" value="{html.escape(next_status)}" />
+              <button type="submit" class="secondary">{html.escape(support_request_status_label(next_status))}</button>
+            </form>
+            """
+        )
+
+    return f"""
+    <div>
+      <p><strong>Allowed transitions</strong></p>
+      <p>Keep actual workspace reset or account deletion execution manual and outside the app.</p>
+    </div>
+    <div class="filter-actions">
+      {"".join(forms)}
+    </div>
+    """
 
 
 def _render_setup_progress_section(*, setup_progress: dict[str, object]) -> str:
@@ -4488,6 +4789,31 @@ def _support_request_rate_limiter(request: Request):
 
 def _support_request_submit_policy(request: Request):
     return getattr(request.app.state, "support_request_submit_policy", SUPPORT_REQUEST_SUBMIT_POLICY)
+
+
+def _request_settings(request: Request):
+    return getattr(request.app.state, "settings", get_settings())
+
+
+def _allowlisted_operator_from_browser_request(
+    *,
+    request: Request,
+    current_user: AuthUser | None,
+) -> AuthUser | Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    if not browser_auth_user_is_allowlisted_operator(
+        current_user,
+        settings=_request_settings(request),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="operator queue not found",
+        )
+
+    return current_user
 
 
 def _account_support_request_response(

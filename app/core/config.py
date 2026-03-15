@@ -19,6 +19,7 @@ DEFAULT_MAGIC_LINK_EMAIL_PROVIDER = "stub"
 DEFAULT_MAGIC_LINK_BASE_URL = "http://localhost:8000"
 DEFAULT_MAGIC_LINK_EMAIL_FROM_EMAIL = "no-reply@example.com"
 DEFAULT_MAGIC_LINK_EMAIL_FROM_NAME = "Creator Compass"
+DEFAULT_OPERATOR_EMAIL_ALLOWLIST = ""
 SUPPORTED_MAGIC_LINK_EMAIL_PROVIDERS = frozenset({"stub", "smtp"})
 
 
@@ -32,6 +33,19 @@ def is_local_app_env(app_env: str) -> bool:
 
 def _cleaned_value(value: str) -> str:
     return value.strip()
+
+
+def _split_csv_values(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _normalized_email(value: str) -> str:
+    return _cleaned_value(value).lower()
+
+
+def _looks_like_email(value: str) -> bool:
+    local_part, separator, domain = value.partition("@")
+    return bool(separator and local_part and domain)
 
 
 def _normalized_host(value: str) -> str | None:
@@ -180,9 +194,21 @@ class Settings(BaseSettings):
     magic_link_email_smtp_starttls: bool = True
     magic_link_email_smtp_use_ssl: bool = False
     magic_link_email_smtp_timeout_seconds: int = 10
+    operator_email_allowlist: str = DEFAULT_OPERATOR_EMAIL_ALLOWLIST
 
     def is_local_env(self) -> bool:
         return is_local_app_env(self.app_env)
+
+    def operator_email_allowlist_values(self) -> tuple[str, ...]:
+        normalized_values: list[str] = []
+        for raw_email in _split_csv_values(self.operator_email_allowlist):
+            normalized_email = _normalized_email(raw_email)
+            if normalized_email and normalized_email not in normalized_values:
+                normalized_values.append(normalized_email)
+        return tuple(normalized_values)
+
+    def is_operator_email_allowed(self, email: str) -> bool:
+        return _normalized_email(email) in frozenset(self.operator_email_allowlist_values())
 
     def validate_runtime(self) -> None:
         errors: list[str] = []
@@ -281,6 +307,16 @@ class Settings(BaseSettings):
             forbid_local_host=True,
             forbid_example_host=True,
         )
+        operator_allowlist = self.operator_email_allowlist_values()
+        if not operator_allowlist:
+            errors.append("operator_email_allowlist must include at least one email in non-local environments")
+        else:
+            if any(not _looks_like_email(email) for email in operator_allowlist):
+                errors.append("operator_email_allowlist must contain valid email addresses")
+            if any(_email_domain_is_example(email) for email in operator_allowlist):
+                errors.append(
+                    "operator_email_allowlist must not use example placeholder domains in non-local environments"
+                )
         if normalized_email_provider == "stub":
             errors.append("magic_link_email_provider must be configured to a live provider in non-local environments")
 

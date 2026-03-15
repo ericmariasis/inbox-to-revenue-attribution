@@ -101,6 +101,11 @@ def _support_requests_for_creator(*, creator_id: str, request_type: str | None =
     return [dict(row) for row in rows]
 
 
+def _operator_allowlist_settings(*emails: str):
+    settings = getattr(app.state, "settings", get_settings())
+    return settings.model_copy(update={"operator_email_allowlist": ",".join(emails)})
+
+
 def _insert_creator_user(
     *,
     email: str,
@@ -3114,7 +3119,7 @@ def test_account_page_reset_submit_sends_support_request_and_shows_requested_sta
     assert len(support_requests) == 1
     assert support_request["requester_email"] == inserted["email"]
     assert support_request["creator_name_snapshot"] == "Reset Submit Creator"
-    assert support_request["status"] == "pending"
+    assert support_request["status"] == "submitted"
     assert support_request["notification_attempted_at"] is not None
     assert support_request["notification_sent_at"] is not None
     assert support_request["notification_failed_at"] is None
@@ -3127,7 +3132,9 @@ def test_account_page_reset_submit_sends_support_request_and_shows_requested_sta
     assert f"Request id: {request_id}" in captured["body"]
     assert "Request type: workspace-reset" in captured["body"]
     assert "Current request" in page_response.text
-    assert "Pending review" in page_response.text
+    assert "Submitted" in page_response.text
+    assert "Email delivery" in page_response.text
+    assert "Delivered" in page_response.text
     assert request_id in page_response.text
     assert "Support email notification succeeded" in page_response.text
     assert 'href="/app/account?confirm=workspace-reset#danger-zone"' not in page_response.text
@@ -3174,7 +3181,7 @@ def test_account_page_deletion_submit_sends_support_request_and_shows_requested_
     assert "Account deletion requested" in page_response.text
     assert "No local data has been removed yet." in page_response.text
     assert len(support_requests) == 1
-    assert support_request["status"] == "pending"
+    assert support_request["status"] == "submitted"
     assert support_request["notification_sent_at"] is not None
     assert support_request["notification_failed_at"] is None
     assert captured["support_email"] == "eric@careercodepro.com"
@@ -3185,7 +3192,8 @@ def test_account_page_deletion_submit_sends_support_request_and_shows_requested_
     assert captured["subject"] == f"Account deletion request for {inserted['email']}"
     assert f"Request id: {request_id}" in captured["body"]
     assert "Request type: account-deletion" in captured["body"]
-    assert "Pending review" in page_response.text
+    assert "Submitted" in page_response.text
+    assert "Delivered" in page_response.text
     assert request_id in page_response.text
 
 
@@ -3233,7 +3241,7 @@ def test_account_page_duplicate_active_request_reuses_existing_row_without_secon
     assert "Workspace reset already pending" in page_response.text
     assert "one active workspace reset request during beta" in page_response.text
     assert str(support_requests[0]["id"]) in page_response.text
-    assert "Pending review" in page_response.text
+    assert "Submitted" in page_response.text
 
 
 def test_account_page_support_request_failure_keeps_saved_request_visible():
@@ -3274,16 +3282,197 @@ def test_account_page_support_request_failure_keeps_saved_request_visible():
     assert submit_response.headers["location"] == "/app/account?status=workspace-reset-retry#danger-zone"
     assert page_response.status_code == 200
     assert len(support_requests) == 1
-    assert support_request["status"] == "notification_failed"
+    assert support_request["status"] == "submitted"
     assert support_request["notification_attempted_at"] is not None
     assert support_request["notification_sent_at"] is None
     assert support_request["notification_failed_at"] is not None
     assert "Workspace reset saved, but notification failed" in page_response.text
     assert "We recorded your workspace reset request" in page_response.text
-    assert "Notification failed" in page_response.text
+    assert "Submitted" in page_response.text
+    assert "Email delivery" in page_response.text
+    assert "Failed" in page_response.text
     assert str(support_request["id"]) in page_response.text
     assert "Support email notification failed" in page_response.text
     assert 'action="/app/account/requests/workspace-reset"' not in page_response.text
+
+
+def test_operator_support_queue_denies_non_allowlisted_browser_user():
+    inserted = _insert_creator_user(
+        email=f"ui_operator_denied_{uuid.uuid4().hex}@example.com",
+        name="Denied Operator User",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with _override_app_state("settings", _operator_allowlist_settings("ops@creatortrust.co")):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get(
+                "/app/operator/support-requests",
+                headers=HTML_ACCEPT_HEADERS,
+            )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "operator queue not found"}
+
+
+def test_operator_support_queue_lists_requests_and_transitions_statuses():
+    requester_one = _insert_creator_user(
+        email=f"ui_operator_requester_one_{uuid.uuid4().hex}@example.com",
+        name="Operator Queue One",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_operator_queue_one",
+    )
+    requester_two = _insert_creator_user(
+        email=f"ui_operator_requester_two_{uuid.uuid4().hex}@example.com",
+        name="Operator Queue Two",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_operator_queue_two",
+    )
+    operator_user = _insert_creator_user(
+        email="ops@creatortrust.co",
+        name="Operator Reviewer",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_operator_queue_reviewer",
+    )
+
+    requester_one_token = _access_token(
+        user_id=requester_one["user_id"],
+        creator_id=requester_one["creator_id"],
+        email=requester_one["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    requester_two_token = _access_token(
+        user_id=requester_two["user_id"],
+        creator_id=requester_two["creator_id"],
+        email=requester_two["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    operator_token = _access_token(
+        user_id=operator_user["user_id"],
+        creator_id=operator_user["creator_id"],
+        email=operator_user["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as requester_client:
+        requester_client.cookies.set(SESSION_COOKIE_NAME, requester_one_token)
+        first_submit = requester_client.post(
+            "/app/account/requests/workspace-reset",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+    failing_provider = _FailingEmailProvider(error_text="operator queue notification failure")
+    with _override_app_state("email_provider", failing_provider):
+        with TestClient(app) as requester_client:
+            requester_client.cookies.set(SESSION_COOKIE_NAME, requester_two_token)
+            second_submit = requester_client.post(
+                "/app/account/requests/account-deletion",
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+
+    requester_one_request = _support_requests_for_creator(
+        creator_id=requester_one["creator_id"],
+        request_type="workspace-reset",
+    )[0]
+    requester_two_request = _support_requests_for_creator(
+        creator_id=requester_two["creator_id"],
+        request_type="account-deletion",
+    )[0]
+
+    with _override_app_state("settings", _operator_allowlist_settings(operator_user["email"])):
+        with TestClient(app) as operator_client:
+            operator_client.cookies.set(SESSION_COOKIE_NAME, operator_token)
+            queue_response = operator_client.get(
+                "/app/operator/support-requests",
+                headers=HTML_ACCEPT_HEADERS,
+            )
+            detail_response = operator_client.get(
+                f"/app/operator/support-requests/{requester_one_request['id']}",
+                headers=HTML_ACCEPT_HEADERS,
+            )
+            in_review_response = operator_client.post(
+                f"/app/operator/support-requests/{requester_one_request['id']}/status",
+                data={"status": "in_review"},
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+            completed_response = operator_client.post(
+                f"/app/operator/support-requests/{requester_one_request['id']}/status",
+                data={"status": "completed"},
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+            invalid_transition_response = operator_client.post(
+                f"/app/operator/support-requests/{requester_one_request['id']}/status",
+                data={"status": "submitted"},
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+            invalid_transition_page = operator_client.get(
+                invalid_transition_response.headers["location"],
+                headers=HTML_ACCEPT_HEADERS,
+            )
+
+    with TestClient(app) as requester_client:
+        requester_client.cookies.set(SESSION_COOKIE_NAME, requester_one_token)
+        requester_one_account_response = requester_client.get(
+            "/app/account",
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    with TestClient(app) as requester_client:
+        requester_client.cookies.set(SESSION_COOKIE_NAME, requester_two_token)
+        requester_two_account_response = requester_client.get(
+            "/app/account",
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    requester_one_request_rows = _support_requests_for_creator(
+        creator_id=requester_one["creator_id"],
+        request_type="workspace-reset",
+    )
+
+    assert first_submit.status_code == 303
+    assert first_submit.headers["location"] == "/app/account?status=workspace-reset-requested#danger-zone"
+    assert second_submit.status_code == 303
+    assert second_submit.headers["location"] == "/app/account?status=account-deletion-retry#danger-zone"
+    assert queue_response.status_code == 200
+    assert "Support request queue" in queue_response.text
+    assert str(requester_one_request["id"]) in queue_response.text
+    assert str(requester_two_request["id"]) in queue_response.text
+    assert "Workspace reset" in queue_response.text
+    assert "Account deletion" in queue_response.text
+    assert "Delivered" in queue_response.text
+    assert "Failed" in queue_response.text
+    assert detail_response.status_code == 200
+    assert "Request context" in detail_response.text
+    assert requester_one["creator_id"] in detail_response.text
+    assert requester_one["email"] in detail_response.text
+    assert "Allowed transitions" in detail_response.text
+    assert in_review_response.status_code == 303
+    assert in_review_response.headers["location"] == f"/app/operator/support-requests/{requester_one_request['id']}?status=status-updated"
+    assert completed_response.status_code == 303
+    assert completed_response.headers["location"] == f"/app/operator/support-requests/{requester_one_request['id']}?status=status-updated"
+    assert invalid_transition_response.status_code == 303
+    assert invalid_transition_response.headers["location"] == f"/app/operator/support-requests/{requester_one_request['id']}?status=invalid-transition"
+    assert invalid_transition_page.status_code == 200
+    assert "Request status was not changed" in invalid_transition_page.text
+    assert "That review transition is not allowed from the current saved state." in invalid_transition_page.text
+    assert requester_one_request_rows[0]["status"] == "completed"
+    assert requester_one_request_rows[0]["closed_at"] is not None
+    assert "Completed" in requester_one_account_response.text
+    assert "Support email notification succeeded" in requester_one_account_response.text
+    assert str(requester_one_request["id"]) in requester_one_account_response.text
+    assert "Submitted" in requester_two_account_response.text
+    assert "Failed" in requester_two_account_response.text
+    assert str(requester_two_request["id"]) in requester_two_account_response.text
 
 
 def test_account_page_support_request_submit_uses_shared_rate_limit_state():

@@ -19,6 +19,10 @@ For the underlying beta environment and operator workflows, use:
 - [Render public-beta operations](./render-public-beta-operations.md)
 - [Render public-beta migration and recovery](./render-public-beta-migration-recovery.md)
 
+For broader creator-facing browser QA beyond the launch gate itself, use:
+
+- [Render public-beta UX QA packet](./render-public-beta-ux-qa-packet.md)
+
 ## What Story 76 Includes
 
 - one explicit Render launch checklist

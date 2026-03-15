@@ -72,3 +72,8 @@ class Creator(Base):
         back_populates="creator",
         cascade="all, delete-orphan",
     )
+    support_requests = relationship(
+        "SupportRequestRecord",
+        back_populates="creator",
+        cascade="all, delete-orphan",
+    )

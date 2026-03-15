@@ -26,6 +26,7 @@ class MagicLinkEmailMessage:
 
 @dataclass(frozen=True)
 class SupportRequestEmailMessage:
+    request_id: str
     support_email: str
     request_type: str
     requester_email: str
@@ -51,6 +52,7 @@ class StubEmailProvider:
 
     def send_support_request(self, message: SupportRequestEmailMessage) -> None:
         send_support_request_email(
+            request_id=message.request_id,
             support_email=message.support_email,
             request_type=message.request_type,
             requester_email=message.requester_email,

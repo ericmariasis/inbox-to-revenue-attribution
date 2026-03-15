@@ -32,6 +32,7 @@ def send_magic_link_email(email: str, token: str, *, magic_link_url: str | None 
 
 def send_support_request_email(
     *,
+    request_id: str,
     support_email: str,
     request_type: str,
     requester_email: str,
@@ -43,6 +44,7 @@ def send_support_request_email(
 ) -> None:
     _support_request_outbox.append(
         {
+            "request_id": request_id,
             "support_email": support_email,
             "request_type": request_type,
             "requester_email": requester_email,

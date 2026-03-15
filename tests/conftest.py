@@ -30,6 +30,7 @@ def isolate_test_data():
             "creator_experiment_runs",
             "creator_claim_paid_evidence_refs",
             "creator_claim_snapshots",
+            "support_requests",
             "calendly_webhook_events",
             "content_topic_candidates",
             "content_confirmed_topics",

@@ -18,4 +18,5 @@ from app.models.invoice_payment_event import InvoicePaymentEvent
 from app.models.magic_link_token import MagicLinkToken
 from app.models.pending_magic_link_issuance import PendingMagicLinkIssuance
 from app.models.shared_rate_limit_event import SharedRateLimitEvent
+from app.models.support_request import SupportRequestRecord
 

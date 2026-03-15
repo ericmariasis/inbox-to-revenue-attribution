@@ -10,7 +10,9 @@ from sqlalchemy import create_engine, text
 
 from app.main import app
 from app.services.auth_magic_link import START_RETRY_DETAIL
+from app.services.click_events import hash_ip_address
 from app.services.email_provider import MagicLinkEmailDeliveryError
+from app.services.rate_limit import MAGIC_LINK_CLIENT_POLICY, MAGIC_LINK_EMAIL_POLICY
 
 
 def _engine():
@@ -55,6 +57,17 @@ def _identity_counts_for_email(conn, email: str) -> dict[str, int]:
         "auth_users": row["auth_user_count"],
         "creators": row["creator_count"],
     }
+
+
+def _shared_rate_limit_event_count(conn, *, namespace: str, bucket_key: str) -> int:
+    return conn.execute(
+        text(
+            "SELECT count(*) "
+            "FROM shared_rate_limit_events "
+            "WHERE namespace = :namespace AND bucket_key = :bucket_key"
+        ),
+        {"namespace": namespace, "bucket_key": bucket_key},
+    ).scalar_one()
 
 
 @contextmanager
@@ -228,8 +241,9 @@ def test_token_is_hashed_not_plaintext(monkeypatch):
 
 def test_rate_limit_max_5_per_hour_per_email():
     email = f"ratelimit_{uuid.uuid4().hex}@example.com"
+    client_ip = "203.0.113.41"
 
-    with TestClient(app) as client:
+    with TestClient(app, client=(client_ip, 50011)) as client:
         responses = [
             client.post("/auth/magic-link/start", json={"email": email})
             for _ in range(6)
@@ -244,8 +258,79 @@ def test_rate_limit_max_5_per_hour_per_email():
 
     with _engine().connect() as conn:
         token_count = _issuance_count_for_email(conn, email)
+        hashed_client = hash_ip_address(ip_address=client_ip)
+        email_bucket_count = _shared_rate_limit_event_count(
+            conn,
+            namespace=MAGIC_LINK_EMAIL_POLICY.namespace,
+            bucket_key=email,
+        )
+        client_bucket_count = _shared_rate_limit_event_count(
+            conn,
+            namespace=MAGIC_LINK_CLIENT_POLICY.namespace,
+            bucket_key=hashed_client,
+        )
 
     assert token_count == 5
+    assert email_bucket_count == 5
+    assert client_bucket_count == 5
+
+
+def test_rate_limit_max_5_per_hour_per_hashed_client_across_emails_and_app_contexts():
+    client_ip = "203.0.113.42"
+    emails = [f"ratelimit_client_{index}_{uuid.uuid4().hex}@example.com" for index in range(6)]
+
+    with TestClient(app, client=(client_ip, 50012)) as client:
+        first_wave = [
+            client.post("/auth/magic-link/start", json={"email": email})
+            for email in emails[:3]
+        ]
+
+    with TestClient(app, client=(client_ip, 50013)) as client:
+        second_wave = [
+            client.post("/auth/magic-link/start", json={"email": email})
+            for email in emails[3:]
+        ]
+
+    responses = first_wave + second_wave
+    assert all(response.status_code == 200 for response in responses)
+
+    blocked_email = emails[-1]
+    hashed_client = hash_ip_address(ip_address=client_ip)
+
+    with _engine().connect() as conn:
+        assert _count_rows(conn, "pending_magic_link_issuances") == 5
+        assert _issuance_count_for_email(conn, blocked_email) == 0
+        assert _shared_rate_limit_event_count(
+            conn,
+            namespace=MAGIC_LINK_CLIENT_POLICY.namespace,
+            bucket_key=hashed_client,
+        ) == 5
+        assert _shared_rate_limit_event_count(
+            conn,
+            namespace=MAGIC_LINK_EMAIL_POLICY.namespace,
+            bucket_key=blocked_email,
+        ) == 0
+
+
+def test_rate_limit_hit_log_uses_hashed_client_without_raw_ip():
+    email = f"ratelimit_log_{uuid.uuid4().hex}@example.com"
+    client_ip = "203.0.113.43"
+    hashed_client = hash_ip_address(ip_address=client_ip)
+
+    with patch("app.services.auth_magic_link.logger.info") as info_log:
+        with TestClient(app, client=(client_ip, 50014)) as client:
+            responses = [
+                client.post("/auth/magic-link/start", json={"email": email})
+                for _ in range(6)
+            ]
+
+    assert all(response.status_code == 200 for response in responses)
+
+    call_text = "\n".join(str(call) for call in info_log.call_args_list)
+    assert MAGIC_LINK_EMAIL_POLICY.namespace in call_text
+    assert email in call_text
+    assert hashed_client in call_text
+    assert client_ip not in call_text
 
 
 def test_start_provider_failure_returns_generic_retry_guidance(monkeypatch):

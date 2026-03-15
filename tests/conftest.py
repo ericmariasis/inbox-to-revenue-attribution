@@ -41,6 +41,7 @@ def isolate_test_data():
             "bookings",
             "content",
             "booking_links",
+            "pending_magic_link_issuances",
             "magic_link_tokens",
             "auth_users",
             "creators",

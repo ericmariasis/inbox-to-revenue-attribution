@@ -16,4 +16,5 @@ from app.models.content_topic_candidate import ContentTopicCandidate
 from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
 from app.models.magic_link_token import MagicLinkToken
+from app.models.pending_magic_link_issuance import PendingMagicLinkIssuance
 

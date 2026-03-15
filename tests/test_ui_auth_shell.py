@@ -39,6 +39,29 @@ def _engine():
     return create_engine(os.environ["TEST_DATABASE_URL"])
 
 
+def _auth_state_for_email(email: str) -> dict[str, int]:
+    with _engine().connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT "
+                "  (SELECT count(*) FROM auth_users WHERE email = :email) AS auth_user_count, "
+                "  ("
+                "    SELECT count(*) "
+                "    FROM creators c "
+                "    JOIN auth_users au ON au.creator_id = c.id "
+                "    WHERE au.email = :email"
+                "  ) AS creator_count, "
+                "  (SELECT count(*) FROM pending_magic_link_issuances WHERE email = :email) AS pending_count"
+            ),
+            {"email": email},
+        ).mappings().one()
+    return {
+        "auth_users": row["auth_user_count"],
+        "creators": row["creator_count"],
+        "pending": row["pending_count"],
+    }
+
+
 def _latest_magic_link_token_for_email(email: str) -> str:
     for message in reversed(get_magic_link_outbox()):
         if message["email"] == email:
@@ -832,6 +855,7 @@ def test_sign_in_start_redirects_to_confirmation_without_echoing_email():
     assert response.headers["location"] == "/sign-in?status=sent"
     assert email not in response.headers["location"]
     assert _latest_magic_link_token_for_email(email)
+    assert _auth_state_for_email(email) == {"auth_users": 0, "creators": 0, "pending": 1}
 
 
 def test_sign_in_start_provider_failure_redirects_to_retry_without_echoing_provider_details():
@@ -992,6 +1016,7 @@ def test_browser_magic_link_verify_sets_session_cookie_and_lands_in_app_shell():
             follow_redirects=False,
         )
         raw_token = _latest_magic_link_token_for_email(email)
+        assert _auth_state_for_email(email) == {"auth_users": 0, "creators": 0, "pending": 1}
 
         verify_response = client.get(
             "/auth/magic-link/verify",
@@ -1015,6 +1040,7 @@ def test_browser_magic_link_verify_sets_session_cookie_and_lands_in_app_shell():
     assert "Creator Home" in shell_response.text
     assert email in shell_response.text
     assert raw_token not in shell_response.text
+    assert _auth_state_for_email(email) == {"auth_users": 1, "creators": 1, "pending": 1}
 
 
 def test_browser_magic_link_verify_failure_redirects_without_echoing_token():

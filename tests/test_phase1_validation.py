@@ -26,11 +26,39 @@ def _creator_id_for_email(email: str) -> str:
     return str(creator_id)
 
 
+def _identity_counts_for_email(email: str) -> dict[str, int]:
+    with _engine().connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT "
+                "  (SELECT count(*) FROM auth_users WHERE email = :email) AS auth_user_count, "
+                "  ("
+                "    SELECT count(*) "
+                "    FROM creators c "
+                "    JOIN auth_users au ON au.creator_id = c.id "
+                "    WHERE au.email = :email"
+                "  ) AS creator_count, "
+                "  (SELECT count(*) FROM pending_magic_link_issuances WHERE email = :email) AS pending_count"
+            ),
+            {"email": email},
+        ).mappings().one()
+    return {
+        "auth_users": row["auth_user_count"],
+        "creators": row["creator_count"],
+        "pending": row["pending_count"],
+    }
+
+
 def test_phase1_magic_link_flow_end_to_end():
     email = f"phase1_{uuid.uuid4().hex}@example.com"
 
     with TestClient(app) as client:
         start_response = client.post("/auth/magic-link/start", json={"email": email})
+        assert _identity_counts_for_email(email) == {
+            "auth_users": 0,
+            "creators": 0,
+            "pending": 1,
+        }
 
         outbox = get_magic_link_outbox()
         assert len(outbox) == 1
@@ -50,6 +78,11 @@ def test_phase1_magic_link_flow_end_to_end():
         unauthenticated_me_response = client.get("/me")
 
     creator_id = _creator_id_for_email(email)
+    assert _identity_counts_for_email(email) == {
+        "auth_users": 1,
+        "creators": 1,
+        "pending": 1,
+    }
 
     assert start_response.status_code == 200
     assert start_response.json() == {"status": "ok"}

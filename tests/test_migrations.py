@@ -14,26 +14,66 @@ def test_migrations_upgrade_and_downgrade():
     try:
         with engine.connect() as conn:
             inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
             calendly_columns = {
                 column["name"] for column in inspector.get_columns("calendly_webhook_events")
             }
-            assert "creator_experiment_run_cards" in inspector.get_table_names(schema="public")
-            assert "creator_experiment_runs" in inspector.get_table_names(schema="public")
-            assert "creator_claim_paid_evidence_refs" in inspector.get_table_names(schema="public")
-            assert "creator_claim_snapshots" in inspector.get_table_names(schema="public")
-            assert "calendly_webhook_events" in inspector.get_table_names(schema="public")
-            assert "content_topic_candidates" in inspector.get_table_names(schema="public")
-            assert "content_confirmed_topics" in inspector.get_table_names(schema="public")
-            assert "content_extraction_artifacts" in inspector.get_table_names(schema="public")
-            assert "content_fetch_snapshots" in inspector.get_table_names(schema="public")
-            assert "blocked_billing_cases" in inspector.get_table_names(schema="public")
-            assert "invoice_payment_events" in inspector.get_table_names(schema="public")
-            assert "invoices" in inspector.get_table_names(schema="public")
-            assert "bookings" in inspector.get_table_names(schema="public")
-            assert "content" in inspector.get_table_names(schema="public")
-            assert "booking_links" in inspector.get_table_names(schema="public")
+            assert "pending_magic_link_issuances" in table_names
+            assert "creator_experiment_run_cards" in table_names
+            assert "creator_experiment_runs" in table_names
+            assert "creator_claim_paid_evidence_refs" in table_names
+            assert "creator_claim_snapshots" in table_names
+            assert "calendly_webhook_events" in table_names
+            assert "content_topic_candidates" in table_names
+            assert "content_confirmed_topics" in table_names
+            assert "content_extraction_artifacts" in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
+            assert "authoritative_extraction_artifact_id" in content_columns
+            assert "attribution_status" in booking_columns
+            assert "unattributed_reason" in booking_columns
+            assert "reducer_key" in calendly_columns
+            assert "reducer_attempt_count" in calendly_columns
+            assert "frozen_billing_amount_cents" in booking_columns
+            assert "frozen_billing_currency" in booking_columns
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
+            content_columns = {column["name"] for column in inspector.get_columns("content")}
+            calendly_columns = {
+                column["name"] for column in inspector.get_columns("calendly_webhook_events")
+            }
+            assert "pending_magic_link_issuances" not in table_names
+            assert "creator_experiment_run_cards" in table_names
+            assert "creator_experiment_runs" in table_names
+            assert "creator_claim_paid_evidence_refs" in table_names
+            assert "creator_claim_snapshots" in table_names
+            assert "calendly_webhook_events" in table_names
+            assert "content_topic_candidates" in table_names
+            assert "content_confirmed_topics" in table_names
+            assert "content_extraction_artifacts" in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
             assert "authoritative_extraction_artifact_id" in content_columns
             assert "attribution_status" in booking_columns
             assert "unattributed_reason" in booking_columns
@@ -695,6 +735,40 @@ def test_creator_experiment_run_cards_table_has_expected_columns_fk_indexes_and_
         assert any(
             constraint["name"] == "uq_creator_experiment_run_cards_run_claim_snapshot"
             and constraint["column_names"] == ["run_id", "claim_snapshot_id"]
+            for constraint in unique_constraints
+        )
+
+
+def test_pending_magic_link_issuances_table_has_expected_columns_index_and_unique_constraint():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {column["name"] for column in inspector.get_columns("pending_magic_link_issuances")}
+        assert columns == {
+            "id",
+            "email",
+            "token_hash",
+            "expires_at",
+            "used_at",
+            "created_at",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("pending_magic_link_issuances")
+        assert foreign_keys == []
+
+        indexes = inspector.get_indexes("pending_magic_link_issuances")
+        assert any(
+            index["name"] == "ix_pending_magic_link_issuances_email"
+            and index["column_names"] == ["email"]
+            for index in indexes
+        )
+
+        unique_constraints = inspector.get_unique_constraints("pending_magic_link_issuances")
+        assert any(
+            constraint["name"] == "uq_pending_magic_link_issuances_token_hash"
+            and constraint["column_names"] == ["token_hash"]
             for constraint in unique_constraints
         )
 

@@ -3,6 +3,7 @@ import hashlib
 import re
 import uuid
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from http.cookies import SimpleCookie
@@ -12,7 +13,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 from app.main import app
-from app.services.rate_limit import RedirectSoftRateLimiter
+from app.services.rate_limit import (
+    REDIRECT_SOFT_LIMIT_POLICY,
+    SharedRateLimiter,
+    build_redirect_rate_limit_bucket_key,
+)
 
 
 def _engine():
@@ -339,17 +344,21 @@ def test_redirect_lookup_soft_rate_limit_tracks_repeated_bucket_without_blocking
         created_at=datetime(2026, 3, 6, 15, 7, tzinfo=timezone.utc),
     )
     capture_publisher = _CaptureClickEventPublisher()
-    rate_limiter = RedirectSoftRateLimiter(max_attempts=2)
+    redirect_soft_limit_policy = replace(REDIRECT_SOFT_LIMIT_POLICY, max_attempts=2)
     client_ip = "203.0.113.13"
 
     with patch("app.api.redirects.logger.info") as info_log:
         with _override_app_state("click_event_publisher", capture_publisher):
-            with _override_app_state("redirect_rate_limiter", rate_limiter):
+            with _override_app_state("redirect_soft_limit_policy", redirect_soft_limit_policy):
                 with TestClient(app, client=(client_ip, 50004)) as client:
-                    responses = [
+                    first_responses = [
                         client.get(f"/r/{tid}", follow_redirects=False)
-                        for _ in range(3)
+                        for _ in range(2)
                     ]
+                with TestClient(app, client=(client_ip, 50006)) as client:
+                    third_response = client.get(f"/r/{tid}", follow_redirects=False)
+
+    responses = first_responses + [third_response]
 
     assert all(response.status_code == 302 for response in responses)
     assert all(
@@ -358,25 +367,50 @@ def test_redirect_lookup_soft_rate_limit_tracks_repeated_bucket_without_blocking
     )
     assert len(capture_publisher.events) == 3
 
-    state = rate_limiter.snapshot_bucket(
-        hashed_ip=hashlib.sha256(client_ip.encode("utf-8")).hexdigest(),
-        tid=tid,
+    hashed_ip = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()
+    state = SharedRateLimiter().snapshot_bucket(
+        policy=redirect_soft_limit_policy,
+        bucket_key=build_redirect_rate_limit_bucket_key(
+            hashed_ip=hashed_ip,
+            tid=tid,
+        ),
     )
     assert state.attempt_count == 3
     assert state.soft_limited is True
     assert state.limit == 2
 
-    assert info_log.call_count == 3
-    last_call = info_log.call_args_list[-1]
+    resolved_calls = [
+        call for call in info_log.call_args_list if call.args[0].startswith("redirect_resolved")
+    ]
+    limited_calls = [
+        call for call in info_log.call_args_list if call.args[0].startswith("redirect_rate_limited")
+    ]
+
+    assert len(resolved_calls) == 3
+    assert len(limited_calls) == 1
+
+    last_resolved_call = resolved_calls[-1]
     assert (
-        last_call.args[0]
+        last_resolved_call.args[0]
         == "redirect_resolved tid=%s click_event_id=%s soft_limited=%s attempt_count=%s limit=%s"
     )
-    assert last_call.args[1] == tid
-    assert re.fullmatch(r"[0-9a-f]{32}", last_call.args[2])
-    assert last_call.args[3] is True
-    assert last_call.args[4] == 3
-    assert last_call.args[5] == 2
+    assert last_resolved_call.args[1] == tid
+    assert re.fullmatch(r"[0-9a-f]{32}", last_resolved_call.args[2])
+    assert last_resolved_call.args[3] is True
+    assert last_resolved_call.args[4] == 3
+    assert last_resolved_call.args[5] == 2
+
+    limited_call = limited_calls[0]
+    assert (
+        limited_call.args[0]
+        == "redirect_rate_limited namespace=%s tid=%s hashed_ip=%s attempt_count=%s limit=%s window_seconds=%s"
+    )
+    assert limited_call.args[1] == redirect_soft_limit_policy.namespace
+    assert limited_call.args[2] == tid
+    assert limited_call.args[3] == hashed_ip
+    assert limited_call.args[4] == 3
+    assert limited_call.args[5] == 2
+    assert limited_call.args[6] == int(redirect_soft_limit_policy.window.total_seconds())
     assert client_ip not in "\n".join(str(call) for call in info_log.call_args_list)
 
 
@@ -403,10 +437,10 @@ def test_redirect_lookup_soft_rate_limit_state_is_tracked_separately_per_tid():
         tid=second_tid,
         created_at=datetime(2026, 3, 6, 15, 9, tzinfo=timezone.utc),
     )
-    rate_limiter = RedirectSoftRateLimiter(max_attempts=2)
+    redirect_soft_limit_policy = replace(REDIRECT_SOFT_LIMIT_POLICY, max_attempts=2)
     client_ip = "203.0.113.14"
 
-    with _override_app_state("redirect_rate_limiter", rate_limiter):
+    with _override_app_state("redirect_soft_limit_policy", redirect_soft_limit_policy):
         with TestClient(app, client=(client_ip, 50005)) as client:
             responses = [
                 client.get(f"/r/{first_tid}", follow_redirects=False),
@@ -418,8 +452,21 @@ def test_redirect_lookup_soft_rate_limit_state_is_tracked_separately_per_tid():
     assert all(response.status_code == 302 for response in responses)
 
     hashed_ip = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()
-    first_state = rate_limiter.snapshot_bucket(hashed_ip=hashed_ip, tid=first_tid)
-    second_state = rate_limiter.snapshot_bucket(hashed_ip=hashed_ip, tid=second_tid)
+    fresh_rate_limiter = SharedRateLimiter()
+    first_state = fresh_rate_limiter.snapshot_bucket(
+        policy=redirect_soft_limit_policy,
+        bucket_key=build_redirect_rate_limit_bucket_key(
+            hashed_ip=hashed_ip,
+            tid=first_tid,
+        ),
+    )
+    second_state = fresh_rate_limiter.snapshot_bucket(
+        policy=redirect_soft_limit_policy,
+        bucket_key=build_redirect_rate_limit_bucket_key(
+            hashed_ip=hashed_ip,
+            tid=second_tid,
+        ),
+    )
 
     assert first_state.attempt_count == 3
     assert first_state.soft_limited is True

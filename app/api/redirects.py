@@ -14,7 +14,13 @@ from app.db.session import get_db
 from app.models.booking_link import BookingLink
 from app.models.content import Content
 from app.services.click_events import DEFAULT_CLICK_EVENT_PUBLISHER, ClickEventPublisher, build_click_event
-from app.services.rate_limit import RedirectSoftRateLimiter
+from app.services.rate_limit import (
+    DEFAULT_SHARED_RATE_LIMITER,
+    REDIRECT_SOFT_LIMIT_POLICY,
+    RateLimitPolicy,
+    SharedRateLimiter,
+    build_redirect_rate_limit_bucket_key,
+)
 
 router = APIRouter(tags=["redirects"])
 logger = logging.getLogger(__name__)
@@ -89,8 +95,12 @@ def _click_event_publisher(request: Request) -> ClickEventPublisher:
     return getattr(request.app.state, "click_event_publisher", DEFAULT_CLICK_EVENT_PUBLISHER)
 
 
-def _redirect_rate_limiter(request: Request) -> RedirectSoftRateLimiter:
-    return getattr(request.app.state, "redirect_rate_limiter", RedirectSoftRateLimiter())
+def _shared_rate_limiter(request: Request) -> SharedRateLimiter:
+    return getattr(request.app.state, "shared_rate_limiter", DEFAULT_SHARED_RATE_LIMITER)
+
+
+def _redirect_soft_limit_policy(request: Request) -> RateLimitPolicy:
+    return getattr(request.app.state, "redirect_soft_limit_policy", REDIRECT_SOFT_LIMIT_POLICY)
 
 
 def _request_client_ip(request: Request) -> str | None:
@@ -138,9 +148,13 @@ def redirect_by_tid(
         session_id=session_id,
         ip_address=_request_client_ip(request),
     )
-    rate_limit_state = _redirect_rate_limiter(request).record_attempt(
-        hashed_ip=click_event.hashed_ip,
-        tid=canonical_tid,
+    redirect_soft_limit_policy = _redirect_soft_limit_policy(request)
+    rate_limit_state = _shared_rate_limiter(request).record_attempt(
+        policy=redirect_soft_limit_policy,
+        bucket_key=build_redirect_rate_limit_bucket_key(
+            hashed_ip=click_event.hashed_ip,
+            tid=canonical_tid,
+        ),
     )
     logger.info(
         "redirect_resolved tid=%s click_event_id=%s soft_limited=%s attempt_count=%s limit=%s",
@@ -150,6 +164,16 @@ def redirect_by_tid(
         rate_limit_state.attempt_count,
         rate_limit_state.limit,
     )
+    if rate_limit_state.soft_limited:
+        logger.info(
+            "redirect_rate_limited namespace=%s tid=%s hashed_ip=%s attempt_count=%s limit=%s window_seconds=%s",
+            redirect_soft_limit_policy.namespace,
+            canonical_tid,
+            click_event.hashed_ip,
+            rate_limit_state.attempt_count,
+            rate_limit_state.limit,
+            rate_limit_state.window_seconds,
+        )
     try:
         _click_event_publisher(request).publish(click_event)
     except Exception as exc:

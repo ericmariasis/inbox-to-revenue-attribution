@@ -246,6 +246,7 @@ async def sign_in_start(
             db,
             payload.email,
             provider=request.app.state.email_provider,
+            client_ip=request.client.host if request.client is not None else None,
         )
     except MagicLinkEmailDeliveryError:
         return _redirect("/sign-in?status=retry")

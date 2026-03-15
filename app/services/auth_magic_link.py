@@ -15,8 +15,15 @@ from app.models.auth_user import AuthUser
 from app.models.creator import Creator
 from app.models.magic_link_token import MagicLinkToken
 from app.models.pending_magic_link_issuance import PendingMagicLinkIssuance
+from app.services.click_events import hash_ip_address
 from app.services.email_provider import EmailProvider, MagicLinkEmailDeliveryError, MagicLinkEmailMessage
-from app.services.rate_limit import allow_magic_link_start, release_magic_link_start
+from app.services.rate_limit import (
+    DEFAULT_SHARED_RATE_LIMITER,
+    MAGIC_LINK_CLIENT_POLICY,
+    MAGIC_LINK_EMAIL_POLICY,
+    SharedRateLimitState,
+    SharedRateLimiter,
+)
 
 logger = logging.getLogger(__name__)
 VERIFY_FAILURE_DETAIL = "invalid or expired token"
@@ -43,13 +50,50 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def start_magic_link(db: Session, email: str, *, provider: EmailProvider) -> None:
+def start_magic_link(
+    db: Session,
+    email: str,
+    *,
+    provider: EmailProvider,
+    client_ip: str | None,
+    limiter: SharedRateLimiter = DEFAULT_SHARED_RATE_LIMITER,
+) -> None:
     normalized_email = _normalize_email(email)
+    hashed_client = hash_ip_address(ip_address=client_ip)
     settings = get_settings()
+    attempt_ids = []
 
-    if not allow_magic_link_start(normalized_email):
-        logger.info("magic_link_start_rate_limited email=%s", normalized_email)
+    email_limit_state = limiter.try_acquire(
+        policy=MAGIC_LINK_EMAIL_POLICY,
+        bucket_key=normalized_email,
+    )
+    if email_limit_state.limited:
+        _log_magic_link_rate_limit_hit(
+            namespace=MAGIC_LINK_EMAIL_POLICY.namespace,
+            email=normalized_email,
+            hashed_client=hashed_client,
+            state=email_limit_state,
+        )
         return
+    attempt_ids.append(email_limit_state.attempt_id)
+
+    client_limit_state = limiter.try_acquire(
+        policy=MAGIC_LINK_CLIENT_POLICY,
+        bucket_key=hashed_client,
+    )
+    if client_limit_state.limited:
+        _release_magic_link_rate_limit_attempts(
+            limiter=limiter,
+            attempt_ids=attempt_ids,
+        )
+        _log_magic_link_rate_limit_hit(
+            namespace=MAGIC_LINK_CLIENT_POLICY.namespace,
+            email=normalized_email,
+            hashed_client=hashed_client,
+            state=client_limit_state,
+        )
+        return
+    attempt_ids.append(client_limit_state.attempt_id)
 
     user = db.execute(
         select(AuthUser).where(AuthUser.email == normalized_email)
@@ -60,23 +104,31 @@ def start_magic_link(db: Session, email: str, *, provider: EmailProvider) -> Non
     expires_at = datetime.now(timezone.utc) + timedelta(
         minutes=settings.magic_link_token_ttl_minutes
     )
-    if user is None:
-        db.add(
-            PendingMagicLinkIssuance(
-                email=normalized_email,
-                token_hash=token_hash,
-                expires_at=expires_at,
+    try:
+        if user is None:
+            db.add(
+                PendingMagicLinkIssuance(
+                    email=normalized_email,
+                    token_hash=token_hash,
+                    expires_at=expires_at,
+                )
             )
-        )
-    else:
-        db.add(
-            MagicLinkToken(
-                user_id=user.id,
-                token_hash=token_hash,
-                expires_at=expires_at,
+        else:
+            db.add(
+                MagicLinkToken(
+                    user_id=user.id,
+                    token_hash=token_hash,
+                    expires_at=expires_at,
+                )
             )
+        db.commit()
+    except Exception:
+        db.rollback()
+        _release_magic_link_rate_limit_attempts(
+            limiter=limiter,
+            attempt_ids=attempt_ids,
         )
-    db.commit()
+        raise
 
     try:
         provider.send_magic_link(
@@ -88,18 +140,50 @@ def start_magic_link(db: Session, email: str, *, provider: EmailProvider) -> Non
             )
         )
     except MagicLinkEmailDeliveryError:
-        release_magic_link_start(normalized_email)
+        _release_magic_link_rate_limit_attempts(
+            limiter=limiter,
+            attempt_ids=attempt_ids,
+        )
         logger.warning(
-            "magic_link_start_delivery_failed email=%s provider=%s",
+            "magic_link_start_delivery_failed email=%s provider=%s hashed_client=%s",
             normalized_email,
             type(provider).__name__,
+            hashed_client,
         )
         raise
 
     logger.info(
-        "magic_link_start_issued email=%s provider=%s",
+        "magic_link_start_issued email=%s provider=%s hashed_client=%s",
         normalized_email,
         type(provider).__name__,
+        hashed_client,
+    )
+
+
+def _release_magic_link_rate_limit_attempts(
+    *,
+    limiter: SharedRateLimiter,
+    attempt_ids: list,
+) -> None:
+    for attempt_id in attempt_ids:
+        limiter.release(attempt_id=attempt_id)
+
+
+def _log_magic_link_rate_limit_hit(
+    *,
+    namespace: str,
+    email: str,
+    hashed_client: str,
+    state: SharedRateLimitState,
+) -> None:
+    logger.info(
+        "magic_link_start_rate_limited namespace=%s email=%s hashed_client=%s attempt_count=%s limit=%s window_seconds=%s",
+        namespace,
+        email,
+        hashed_client,
+        state.attempt_count,
+        state.limit,
+        state.window_seconds,
     )
 
 

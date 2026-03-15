@@ -27,6 +27,12 @@ me_router = APIRouter(tags=["auth"])
 logger = logging.getLogger(__name__)
 
 
+def _request_client_ip(request: Request) -> str | None:
+    if request.client is None:
+        return None
+    return request.client.host
+
+
 @router.post("/magic-link/start", response_model=GenericOkResponse)
 def magic_link_start(
     request: Request,
@@ -38,6 +44,7 @@ def magic_link_start(
             db,
             payload.email,
             provider=request.app.state.email_provider,
+            client_ip=_request_client_ip(request),
         )
     except MagicLinkEmailDeliveryError as exc:
         raise HTTPException(

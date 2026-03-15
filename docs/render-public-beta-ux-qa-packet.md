@@ -34,6 +34,7 @@ Use this UX packet for:
 
 - first-impression clarity and product-promise comprehension
 - cold-start creator setup through the browser
+- signed-in account-management clarity and danger-zone trust checks
 - realistic content setup using a real public article URL
 - tracked-link usage understanding
 - warm-path reporting and trust surfaces
@@ -58,6 +59,8 @@ Prefer using two creator workspaces if possible:
    - connected Stripe
    - one tracked content row
    - one paid result or one honest empty state
+
+If you test the `/app/account` danger-zone submit flow on Render, use a dedicated test workspace where one real support-review request is acceptable. That flow sends a real support email; it is not a stub-only local interaction.
 
 Have at least one realistic public content URL ready.
 
@@ -142,7 +145,47 @@ Expected result:
 - blocked or incomplete setup states explain what is still missing
 - the creator can reach a "core setup is ready" state without needing DB or operator help
 
-### 3. Real Content Source Fit
+### 3. Account Management And Danger-Zone Trust
+
+Goal:
+
+- confirm the signed-in account surface is understandable and the beta destructive-action boundary feels honest
+
+Steps:
+
+1. Open `/app/account`.
+2. Confirm the page clearly separates:
+   - `Current workspace`
+   - `Session`
+   - `Stripe connection`
+   - `Booking links`
+   - `Danger zone`
+3. Confirm the self-serve actions still make sense:
+   - `Sign out`
+   - Stripe connect or reconnect
+   - `Manage booking links`
+4. In `Danger zone`, click `Request workspace reset`.
+5. Confirm the page stays anchored near the danger zone and the confirmation state is easy to find.
+6. Confirm the reset confirmation copy makes clear:
+   - this is a manual review request
+   - no destructive changes happen immediately
+   - earlier tracked or reported history may stop working from this workspace if a reset is later approved
+7. Repeat the same review for `Request account deletion`.
+8. On one dedicated test workspace, submit one of the two requests.
+9. Confirm the app returns to `/app/account` with the matching requested state.
+10. Confirm the request was actually recorded through one of these deployment-safe proofs:
+   - the support inbox receives the message
+   - Render logs show successful support-request delivery
+
+Expected result:
+
+- the account page feels like a coherent settings surface rather than a dump of unrelated controls
+- the creator can tell which actions are self-serve versus support-assisted
+- the danger-zone confirmation step is easy to find and does not snap the tester back to an unrelated part of the page
+- the requested state is honest about manual review and does not imply immediate destructive execution
+- at least one real Render-side request can be proven delivered without operator guesswork
+
+### 4. Real Content Source Fit
 
 Goal:
 
@@ -170,7 +213,7 @@ Important interpretation:
 - the tracked link is the redirect URL the creator should place in the booking CTA, button, or call-to-action they share from that content
 - the beta does not retroactively attribute past traffic that did not go through the tracked link
 
-### 4. Tracked-Link Usage Understanding
+### 5. Tracked-Link Usage Understanding
 
 Goal:
 
@@ -192,7 +235,7 @@ Expected result:
 - the tester understands that the tracked link belongs in the outbound booking CTA path
 - the tester does not confuse the tracked link with the page URL they are publishing
 
-### 5. Warm-Path Reporting And Trust
+### 6. Warm-Path Reporting And Trust
 
 Goal:
 
@@ -216,7 +259,7 @@ Expected result:
 - the next action is understandable when attention items exist
 - the page feels evidence-backed rather than vague
 
-### 6. Experiments Helper Honesty
+### 7. Experiments Helper Honesty
 
 Goal:
 
@@ -239,7 +282,7 @@ Expected result:
 - `ready` does not look like generic advice
 - the evidence page clearly ties the suggestion back to authoritative content and settled paid results
 
-### 7. Empty States And Failure States
+### 8. Empty States And Failure States
 
 Goal:
 
@@ -253,6 +296,7 @@ Check these states where possible:
 - no paid results yet
 - blocked billing visible in attention
 - unmatched payment visible in attention or reports
+- support-request retry state if email delivery failure can be tested safely in a preview or non-launch environment
 - unsupported content URL or fetch failure
 
 Expected result:
@@ -267,6 +311,7 @@ Treat the UX packet as a pass when all of these are true:
 
 - a tester can explain the product benefit in plain language
 - a cold-start creator can complete the core browser setup without operator translation
+- the tester can distinguish normal self-serve settings changes from support-assisted destructive actions
 - a realistic public blog or Substack URL works as a tracked content source, or any failure is clearly explained
 - the tester understands where to place the tracked link
 - reporting makes paid truth and not-yet-counted states understandable
@@ -277,6 +322,7 @@ Treat the UX packet as a pass when all of these are true:
 Treat a UX finding as a real beta blocker only if it crosses one of these lines:
 
 - the creator cannot understand what the product does after normal browser setup
+- the creator cannot understand how to request support-assisted reset or deletion without thinking it is immediate or self-serve
 - the creator cannot tell how to use the tracked link
 - a normal public blog or Substack post consistently fails despite meeting the stated public-URL assumptions
 - reporting materially misleads the creator about what counted as paid truth
@@ -294,6 +340,7 @@ Beta UX QA result:
 - Real source URL(s) used:
 - Product promise understood: yes/no
 - Cold-start setup pass: yes/no
+- Account/danger-zone pass: yes/no
 - Real content source fit pass: yes/no
 - Tracked-link usage understood: yes/no
 - Reporting/trust pass: yes/no

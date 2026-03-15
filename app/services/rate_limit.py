@@ -12,6 +12,8 @@ MAGIC_LINK_WINDOW = timedelta(hours=1)
 MAGIC_LINK_MAX_ATTEMPTS = 5
 REDIRECT_SOFT_LIMIT_WINDOW = timedelta(minutes=5)
 REDIRECT_SOFT_LIMIT_MAX_ATTEMPTS = 10
+SUPPORT_REQUEST_SUBMIT_WINDOW = timedelta(minutes=15)
+SUPPORT_REQUEST_SUBMIT_MAX_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,11 @@ REDIRECT_SOFT_LIMIT_POLICY = RateLimitPolicy(
     namespace="redirect_soft_limit",
     window=REDIRECT_SOFT_LIMIT_WINDOW,
     max_attempts=REDIRECT_SOFT_LIMIT_MAX_ATTEMPTS,
+)
+SUPPORT_REQUEST_SUBMIT_POLICY = RateLimitPolicy(
+    namespace="support_request_submit",
+    window=SUPPORT_REQUEST_SUBMIT_WINDOW,
+    max_attempts=SUPPORT_REQUEST_SUBMIT_MAX_ATTEMPTS,
 )
 
 
@@ -224,3 +231,7 @@ DEFAULT_SHARED_RATE_LIMITER = SharedRateLimiter()
 
 def build_redirect_rate_limit_bucket_key(*, hashed_ip: str, tid: str) -> str:
     return f"{hashed_ip}:{tid}"
+
+
+def build_support_request_rate_limit_bucket_key(*, creator_id: str, request_type: str) -> str:
+    return f"{creator_id}:{request_type}"

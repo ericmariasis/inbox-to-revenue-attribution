@@ -89,6 +89,7 @@ def test_smtp_provider_sends_support_request_email_without_live_network():
 
     smtp_client = MagicMock()
     message = SupportRequestEmailMessage(
+        request_id="6ba7b810-9dad-11d1-80b4-00c04fd430c8",
         support_email="eric@careercodepro.com",
         request_type="workspace-reset",
         requester_email="creator@example.com",
@@ -99,6 +100,7 @@ def test_smtp_provider_sends_support_request_email_without_live_network():
         body=(
             "Workspace reset request\n\n"
             "This beta request was submitted from the signed-in account page.\n\n"
+            "Request id: 6ba7b810-9dad-11d1-80b4-00c04fd430c8\n"
             "Request type: workspace-reset\n"
             "Signed-in email: creator@example.com\n"
         ),
@@ -118,6 +120,7 @@ def test_smtp_provider_sends_support_request_email_without_live_network():
     sent_message = smtp_client.send_message.call_args.args[0]
     assert sent_message["To"] == "eric@careercodepro.com"
     assert sent_message["Subject"] == "Workspace reset request for creator@example.com"
+    assert "Request id: 6ba7b810-9dad-11d1-80b4-00c04fd430c8" in sent_message.get_content()
     assert "Request type: workspace-reset" in sent_message.get_content()
     assert "Signed-in email: creator@example.com" in sent_message.get_content()
 
@@ -125,6 +128,7 @@ def test_smtp_provider_sends_support_request_email_without_live_network():
 def test_smtp_provider_wraps_support_request_delivery_errors():
     provider = SmtpEmailProvider(settings=_smtp_settings())
     message = SupportRequestEmailMessage(
+        request_id="6ba7b811-9dad-11d1-80b4-00c04fd430c8",
         support_email="eric@careercodepro.com",
         request_type="account-deletion",
         requester_email="creator@example.com",

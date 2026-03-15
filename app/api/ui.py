@@ -1,6 +1,6 @@
 import html
 import uuid
-from datetime import date, timezone
+from datetime import date, datetime, timezone
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -35,6 +35,7 @@ from app.api.stripe import (
 from app.core.config import get_settings
 from app.db.session import SessionLocal, get_db
 from app.models.auth_user import AuthUser
+from app.models.support_request import SupportRequestRecord
 from app.schemas.booking_link import BookingLinkCreateRequest, BookingLinkResponse
 from app.schemas.auth import MagicLinkStartRequest
 from app.schemas.content import (
@@ -94,6 +95,11 @@ from app.services.next_content_experiments import (
     get_current_creator_next_content_experiments_unsupported_explanation,
     get_latest_creator_next_content_experiments_run,
 )
+from app.services.rate_limit import (
+    DEFAULT_SHARED_RATE_LIMITER,
+    SUPPORT_REQUEST_SUBMIT_POLICY,
+    build_support_request_rate_limit_bucket_key,
+)
 from app.services.reporting import (
     CreatorPaidAttributionExplanation,
     CreatorReportsSummary,
@@ -104,10 +110,15 @@ from app.services.reporting import (
     get_creator_reports_summary,
 )
 from app.services.support_requests import (
-    SupportRequestSubmission,
-    send_support_request_email,
     SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION,
     SUPPORT_REQUEST_TYPE_WORKSPACE_RESET,
+    create_or_get_active_support_request,
+    list_active_support_requests_for_creator,
+    mark_support_request_notification_failed,
+    mark_support_request_notification_succeeded,
+    send_support_request_email,
+    support_request_public_id,
+    support_request_status_display,
 )
 from app.services.stripe_provider import build_default_stripe_provider
 
@@ -184,13 +195,33 @@ ACCOUNT_REQUEST_STATUS_MESSAGES = {
         "notice_class": "notice success",
     },
     "workspace-reset-retry": {
-        "title": "Try again in a moment",
-        "body": "We could not send your workspace reset request just now. Try again in a few minutes.",
+        "title": "Workspace reset saved, but notification failed",
+        "body": "We recorded your workspace reset request, but we could not send the support email just now. The saved request remains visible below.",
         "notice_class": "notice error",
     },
     "account-deletion-retry": {
-        "title": "Try again in a moment",
-        "body": "We could not send your account deletion request just now. Try again in a few minutes.",
+        "title": "Account deletion saved, but notification failed",
+        "body": "We recorded your account deletion request, but we could not send the support email just now. The saved request remains visible below.",
+        "notice_class": "notice error",
+    },
+    "workspace-reset-active": {
+        "title": "Workspace reset already pending",
+        "body": "You already have one active workspace reset request during beta. Review the saved request details below instead of opening another one.",
+        "notice_class": "notice error",
+    },
+    "account-deletion-active": {
+        "title": "Account deletion already pending",
+        "body": "You already have one active account deletion request during beta. Review the saved request details below instead of opening another one.",
+        "notice_class": "notice error",
+    },
+    "workspace-reset-throttled": {
+        "title": "Too many workspace reset attempts",
+        "body": "We recorded too many recent workspace reset submit attempts. Wait a few minutes before trying again.",
+        "notice_class": "notice error",
+    },
+    "account-deletion-throttled": {
+        "title": "Too many account deletion attempts",
+        "body": "We recorded too many recent account deletion submit attempts. Wait a few minutes before trying again.",
         "notice_class": "notice error",
     },
 }
@@ -315,10 +346,15 @@ def creator_account_page(
         creator_id=current_user.creator_id,
         db=db,
     )
+    active_support_requests = list_active_support_requests_for_creator(
+        db,
+        creator_id=current_user.creator_id,
+    )
     return _html_response(
         _render_account_page(
             current_user=current_user,
             booking_links=booking_links,
+            active_support_requests=active_support_requests,
             status_value=status_value,
             confirm_value=confirm_value,
         )
@@ -329,10 +365,12 @@ def creator_account_page(
 def creator_workspace_reset_request(
     request: Request,
     current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
 ) -> Response:
     return _account_support_request_response(
         request=request,
         current_user=current_user,
+        db=db,
         request_type=SUPPORT_REQUEST_TYPE_WORKSPACE_RESET,
     )
 
@@ -341,10 +379,12 @@ def creator_workspace_reset_request(
 def creator_account_deletion_request(
     request: Request,
     current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
 ) -> Response:
     return _account_support_request_response(
         request=request,
         current_user=current_user,
+        db=db,
         request_type=SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION,
     )
 
@@ -1470,6 +1510,7 @@ def _render_account_page(
     *,
     current_user: AuthUser,
     booking_links: list[BookingLinkResponse],
+    active_support_requests: dict[str, SupportRequestRecord],
     status_value: str | None,
     confirm_value: str | None,
 ) -> str:
@@ -1580,9 +1621,13 @@ def _render_account_page(
           <p><strong>What reset may change</strong></p>
           <p>A reset can break tracked links, remove local setup state, and make earlier reports or history unavailable from this workspace. Reset does not delete or reverse anything in Stripe or Calendly automatically.</p>
           <p>If your workspace already has booking, billing, or payment history, we may not be able to reset it safely.</p>
+          {_render_account_request_current_state(
+              request_record=active_support_requests.get(SUPPORT_REQUEST_TYPE_WORKSPACE_RESET),
+          )}
           {_render_account_request_call_to_action(
               request_type=SUPPORT_REQUEST_TYPE_WORKSPACE_RESET,
               confirm_value=confirm_value,
+              active_request=active_support_requests.get(SUPPORT_REQUEST_TYPE_WORKSPACE_RESET),
           )}
         </article>
         <article class="topic-summary stack">
@@ -1594,9 +1639,13 @@ def _render_account_page(
           <p><strong>Before you request deletion</strong></p>
           <p>Deleting this account can remove local workspace data and end access to tracked links, reports, and historical workspace views. Some detached diagnostics may remain without workspace links, and Stripe or Calendly accounts are not deleted automatically.</p>
           <p>After deletion is complete, you may sign up again later with the same email, but it will be treated as a new workspace.</p>
+          {_render_account_request_current_state(
+              request_record=active_support_requests.get(SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION),
+          )}
           {_render_account_request_call_to_action(
               request_type=SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION,
               confirm_value=confirm_value,
+              active_request=active_support_requests.get(SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION),
           )}
         </article>
       </div>
@@ -1635,10 +1684,17 @@ def _render_account_request_call_to_action(
     *,
     request_type: str,
     confirm_value: str | None,
+    active_request: SupportRequestRecord | None,
 ) -> str:
     flow = _account_request_flow(request_type)
     if flow is None:
         return ""
+
+    if active_request is not None:
+        return (
+            "<p><strong>This request is already active.</strong> During beta, "
+            "we keep one active request per request type until manual review closes it.</p>"
+        )
 
     if confirm_value == request_type:
         return f"""
@@ -1659,6 +1715,50 @@ def _render_account_request_call_to_action(
         f'<p><a href="/app/account?confirm={quote(request_type, safe="")}{ACCOUNT_DANGER_ZONE_FRAGMENT}" class="inline-link">'
         f"{html.escape(flow['action_label'])}</a></p>"
     )
+
+
+def _render_account_request_current_state(*, request_record: SupportRequestRecord | None) -> str:
+    if request_record is None:
+        return ""
+
+    state = support_request_status_display(request_record)
+    created_at_copy = _format_account_request_created_at(request_record.created_at)
+    notification_copy = _account_request_notification_copy(request_record)
+    return f"""
+    <section class="topic-summary stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Current request</p>
+          <h2>{html.escape(state['label'])}</h2>
+        </div>
+        <span class="status-pill {html.escape(state['badge_class'])}">{html.escape(state['label'])}</span>
+      </div>
+      <p>{html.escape(state['body'])}</p>
+      <p><strong>Request ID</strong>: <code>{html.escape(support_request_public_id(request_record))}</code></p>
+      <p><strong>Submitted</strong>: {html.escape(created_at_copy)}</p>
+      <p>{html.escape(notification_copy)}</p>
+    </section>
+    """
+
+
+def _format_account_request_created_at(created_at: datetime | None) -> str:
+    if created_at is None:
+        return "Saved recently"
+    return created_at.astimezone(timezone.utc).strftime("%B %d, %Y at %H:%M UTC")
+
+
+def _account_request_notification_copy(request_record: SupportRequestRecord) -> str:
+    if request_record.notification_sent_at is not None:
+        sent_at = request_record.notification_sent_at.astimezone(timezone.utc).strftime(
+            "%B %d, %Y at %H:%M UTC"
+        )
+        return f"Support email notification succeeded on {sent_at}."
+    if request_record.notification_failed_at is not None:
+        failed_at = request_record.notification_failed_at.astimezone(timezone.utc).strftime(
+            "%B %d, %Y at %H:%M UTC"
+        )
+        return f"Support email notification failed on {failed_at}, but the request is still saved."
+    return "Support email delivery has not finished yet."
 
 
 def _render_setup_progress_section(*, setup_progress: dict[str, object]) -> str:
@@ -4358,7 +4458,9 @@ def _account_request_flow(request_type: str) -> dict[str, str] | None:
             "cancel_button": "Keep workspace",
             "submit_path": "/app/account/requests/workspace-reset",
             "success_status": "workspace-reset-requested",
-            "retry_status": "workspace-reset-retry",
+            "failure_status": "workspace-reset-retry",
+            "duplicate_status": "workspace-reset-active",
+            "throttled_status": "workspace-reset-throttled",
         }
     if request_type == SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION:
         return {
@@ -4373,15 +4475,26 @@ def _account_request_flow(request_type: str) -> dict[str, str] | None:
             "cancel_button": "Keep account",
             "submit_path": "/app/account/requests/account-deletion",
             "success_status": "account-deletion-requested",
-            "retry_status": "account-deletion-retry",
+            "failure_status": "account-deletion-retry",
+            "duplicate_status": "account-deletion-active",
+            "throttled_status": "account-deletion-throttled",
         }
     return None
+
+
+def _support_request_rate_limiter(request: Request):
+    return getattr(request.app.state, "support_request_rate_limiter", DEFAULT_SHARED_RATE_LIMITER)
+
+
+def _support_request_submit_policy(request: Request):
+    return getattr(request.app.state, "support_request_submit_policy", SUPPORT_REQUEST_SUBMIT_POLICY)
 
 
 def _account_support_request_response(
     *,
     request: Request,
     current_user: AuthUser | None,
+    db: Session,
     request_type: str,
 ) -> Response:
     should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
@@ -4395,22 +4508,57 @@ def _account_support_request_response(
             detail="account request type not found",
         )
 
-    submission = SupportRequestSubmission(
+    existing_request = list_active_support_requests_for_creator(
+        db,
+        creator_id=current_user.creator_id,
+    ).get(request_type)
+    if existing_request is not None:
+        return _redirect(
+            f"/app/account?status={quote(flow['duplicate_status'], safe='')}{ACCOUNT_DANGER_ZONE_FRAGMENT}"
+        )
+
+    rate_limit_state = _support_request_rate_limiter(request).try_acquire(
+        policy=_support_request_submit_policy(request),
+        bucket_key=build_support_request_rate_limit_bucket_key(
+            creator_id=str(current_user.creator_id),
+            request_type=request_type,
+        ),
+    )
+    if rate_limit_state.limited:
+        return _redirect(
+            f"/app/account?status={quote(flow['throttled_status'], safe='')}{ACCOUNT_DANGER_ZONE_FRAGMENT}"
+        )
+
+    upsert_result = create_or_get_active_support_request(
+        db,
+        creator_id=current_user.creator_id,
         request_type=request_type,
-        creator_id=str(current_user.creator_id),
         creator_name=current_user.creator.name,
         requester_email=current_user.email,
     )
+    if not upsert_result.created:
+        return _redirect(
+            f"/app/account?status={quote(flow['duplicate_status'], safe='')}{ACCOUNT_DANGER_ZONE_FRAGMENT}"
+        )
+
     try:
         send_support_request_email(
             provider=request.app.state.email_provider,
-            submission=submission,
+            request_record=upsert_result.request_record,
         )
     except SupportRequestEmailDeliveryError:
+        mark_support_request_notification_failed(
+            db,
+            request_record=upsert_result.request_record,
+        )
         return _redirect(
-            f"/app/account?status={quote(flow['retry_status'], safe='')}&confirm={quote(request_type, safe='')}{ACCOUNT_DANGER_ZONE_FRAGMENT}"
+            f"/app/account?status={quote(flow['failure_status'], safe='')}{ACCOUNT_DANGER_ZONE_FRAGMENT}"
         )
 
+    mark_support_request_notification_succeeded(
+        db,
+        request_record=upsert_result.request_record,
+    )
     return _redirect(f"/app/account?status={quote(flow['success_status'], safe='')}{ACCOUNT_DANGER_ZONE_FRAGMENT}")
 
 

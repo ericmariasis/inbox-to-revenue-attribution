@@ -2,6 +2,7 @@ import json
 import os
 import uuid
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
@@ -25,6 +26,11 @@ from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
 )
 from app.services.next_content_experiments import UNSUPPORTED_EXPERIMENTS_SUMMARY
+from app.services.rate_limit import (
+    DEFAULT_SHARED_RATE_LIMITER,
+    SUPPORT_REQUEST_SUBMIT_POLICY,
+    build_support_request_rate_limit_bucket_key,
+)
 from app.services.stripe_provider import (
     StripeAccountReadiness,
     StripeInvoiceCreateResult,
@@ -74,6 +80,25 @@ def _latest_support_request(request_type: str) -> dict[str, str]:
         if message["request_type"] == request_type:
             return message
     raise AssertionError(f"No support-request email found for {request_type}")
+
+
+def _support_requests_for_creator(*, creator_id: str, request_type: str | None = None) -> list[dict[str, object]]:
+    query = (
+        "SELECT id, creator_id, request_type, requester_email, creator_name_snapshot, status, "
+        "notification_attempted_at, notification_sent_at, notification_failed_at, closed_at, "
+        "created_at, updated_at "
+        "FROM support_requests WHERE creator_id = :creator_id"
+    )
+    params: dict[str, object] = {"creator_id": creator_id}
+    if request_type is not None:
+        query += " AND request_type = :request_type"
+        params["request_type"] = request_type
+    query += " ORDER BY created_at ASC, id ASC"
+
+    with _engine().connect() as conn:
+        rows = conn.execute(text(query), params).mappings().all()
+
+    return [dict(row) for row in rows]
 
 
 def _insert_creator_user(
@@ -3074,18 +3099,39 @@ def test_account_page_reset_submit_sends_support_request_and_shows_requested_sta
         )
 
     captured = _latest_support_request("workspace-reset")
+    support_requests = _support_requests_for_creator(
+        creator_id=inserted["creator_id"],
+        request_type="workspace-reset",
+    )
+    support_request = support_requests[0]
+    request_id = str(support_request["id"])
 
     assert submit_response.status_code == 303
     assert submit_response.headers["location"] == "/app/account?status=workspace-reset-requested#danger-zone"
     assert page_response.status_code == 200
     assert "Workspace reset requested" in page_response.text
     assert "Keep using this workspace unless support confirms that reset work is complete." in page_response.text
+    assert len(support_requests) == 1
+    assert support_request["requester_email"] == inserted["email"]
+    assert support_request["creator_name_snapshot"] == "Reset Submit Creator"
+    assert support_request["status"] == "pending"
+    assert support_request["notification_attempted_at"] is not None
+    assert support_request["notification_sent_at"] is not None
+    assert support_request["notification_failed_at"] is None
     assert captured["support_email"] == "eric@careercodepro.com"
+    assert captured["request_id"] == request_id
     assert captured["requester_email"] == inserted["email"]
     assert captured["creator_name"] == "Reset Submit Creator"
     assert captured["creator_id"] == inserted["creator_id"]
     assert captured["subject"] == f"Workspace reset request for {inserted['email']}"
+    assert f"Request id: {request_id}" in captured["body"]
     assert "Request type: workspace-reset" in captured["body"]
+    assert "Current request" in page_response.text
+    assert "Pending review" in page_response.text
+    assert request_id in page_response.text
+    assert "Support email notification succeeded" in page_response.text
+    assert 'href="/app/account?confirm=workspace-reset#danger-zone"' not in page_response.text
+    assert 'action="/app/account/requests/workspace-reset"' not in page_response.text
 
 
 def test_account_page_deletion_submit_sends_support_request_and_shows_requested_state():
@@ -3115,21 +3161,82 @@ def test_account_page_deletion_submit_sends_support_request_and_shows_requested_
         )
 
     captured = _latest_support_request("account-deletion")
+    support_requests = _support_requests_for_creator(
+        creator_id=inserted["creator_id"],
+        request_type="account-deletion",
+    )
+    support_request = support_requests[0]
+    request_id = str(support_request["id"])
 
     assert submit_response.status_code == 303
     assert submit_response.headers["location"] == "/app/account?status=account-deletion-requested#danger-zone"
     assert page_response.status_code == 200
     assert "Account deletion requested" in page_response.text
     assert "No local data has been removed yet." in page_response.text
+    assert len(support_requests) == 1
+    assert support_request["status"] == "pending"
+    assert support_request["notification_sent_at"] is not None
+    assert support_request["notification_failed_at"] is None
     assert captured["support_email"] == "eric@careercodepro.com"
+    assert captured["request_id"] == request_id
     assert captured["requester_email"] == inserted["email"]
     assert captured["creator_name"] == "Deletion Submit Creator"
     assert captured["creator_id"] == inserted["creator_id"]
     assert captured["subject"] == f"Account deletion request for {inserted['email']}"
+    assert f"Request id: {request_id}" in captured["body"]
     assert "Request type: account-deletion" in captured["body"]
+    assert "Pending review" in page_response.text
+    assert request_id in page_response.text
 
 
-def test_account_page_support_request_failure_shows_retry_without_false_success():
+def test_account_page_duplicate_active_request_reuses_existing_row_without_second_email():
+    inserted = _insert_creator_user(
+        email=f"ui_account_request_duplicate_{uuid.uuid4().hex}@example.com",
+        name="Duplicate Request Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_request_duplicate",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        first_submit = client.post(
+            "/app/account/requests/workspace-reset",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        second_submit = client.post(
+            "/app/account/requests/workspace-reset",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        page_response = client.get(
+            second_submit.headers["location"],
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    support_requests = _support_requests_for_creator(
+        creator_id=inserted["creator_id"],
+        request_type="workspace-reset",
+    )
+
+    assert first_submit.status_code == 303
+    assert second_submit.status_code == 303
+    assert second_submit.headers["location"] == "/app/account?status=workspace-reset-active#danger-zone"
+    assert len(support_requests) == 1
+    assert len(get_support_request_outbox()) == 1
+    assert "Workspace reset already pending" in page_response.text
+    assert "one active workspace reset request during beta" in page_response.text
+    assert str(support_requests[0]["id"]) in page_response.text
+    assert "Pending review" in page_response.text
+
+
+def test_account_page_support_request_failure_keeps_saved_request_visible():
     inserted = _insert_creator_user(
         email=f"ui_account_request_failure_{uuid.uuid4().hex}@example.com",
         name="Failure Creator",
@@ -3157,14 +3264,76 @@ def test_account_page_support_request_failure_shows_retry_without_false_success(
                 headers=HTML_ACCEPT_HEADERS,
             )
 
-    assert submit_response.status_code == 303
-    assert submit_response.headers["location"] == (
-        "/app/account?status=workspace-reset-retry&confirm=workspace-reset#danger-zone"
+    support_requests = _support_requests_for_creator(
+        creator_id=inserted["creator_id"],
+        request_type="workspace-reset",
     )
+    support_request = support_requests[0]
+
+    assert submit_response.status_code == 303
+    assert submit_response.headers["location"] == "/app/account?status=workspace-reset-retry#danger-zone"
     assert page_response.status_code == 200
-    assert "We could not send your workspace reset request just now." in page_response.text
-    assert "Request workspace reset?" in page_response.text
-    assert "Workspace reset requested" not in page_response.text
+    assert len(support_requests) == 1
+    assert support_request["status"] == "notification_failed"
+    assert support_request["notification_attempted_at"] is not None
+    assert support_request["notification_sent_at"] is None
+    assert support_request["notification_failed_at"] is not None
+    assert "Workspace reset saved, but notification failed" in page_response.text
+    assert "We recorded your workspace reset request" in page_response.text
+    assert "Notification failed" in page_response.text
+    assert str(support_request["id"]) in page_response.text
+    assert "Support email notification failed" in page_response.text
+    assert 'action="/app/account/requests/workspace-reset"' not in page_response.text
+
+
+def test_account_page_support_request_submit_uses_shared_rate_limit_state():
+    inserted = _insert_creator_user(
+        email=f"ui_account_request_throttled_{uuid.uuid4().hex}@example.com",
+        name="Throttled Request Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_request_throttled",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    throttled_policy = replace(SUPPORT_REQUEST_SUBMIT_POLICY, max_attempts=1)
+    bucket_key = build_support_request_rate_limit_bucket_key(
+        creator_id=inserted["creator_id"],
+        request_type="account-deletion",
+    )
+    DEFAULT_SHARED_RATE_LIMITER.try_acquire(
+        policy=throttled_policy,
+        bucket_key=bucket_key,
+    )
+
+    with _override_app_state("support_request_submit_policy", throttled_policy):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            submit_response = client.post(
+                "/app/account/requests/account-deletion",
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+            page_response = client.get(
+                submit_response.headers["location"],
+                headers=HTML_ACCEPT_HEADERS,
+            )
+
+    support_requests = _support_requests_for_creator(
+        creator_id=inserted["creator_id"],
+        request_type="account-deletion",
+    )
+
+    assert submit_response.status_code == 303
+    assert submit_response.headers["location"] == "/app/account?status=account-deletion-throttled#danger-zone"
+    assert page_response.status_code == 200
+    assert support_requests == []
+    assert get_support_request_outbox() == []
+    assert "Too many account deletion attempts" in page_response.text
+    assert "Wait a few minutes before trying again." in page_response.text
 
 
 def test_setup_home_connect_cta_redirects_to_stripe_and_callback_returns_to_app():

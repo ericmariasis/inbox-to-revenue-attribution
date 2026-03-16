@@ -103,6 +103,33 @@ If raw JSON is needed and a Bearer token is already available:
 GET /reports/health
 ```
 
+## Backlog Ownership And Review Cadence
+
+The beta keeps unmatched-payment and blocked-billing handling intentionally lightweight, but it still needs one explicit owner and review rhythm.
+
+Owner:
+
+- the designated beta operator for the active launch window or support rotation owns review of non-zero payment backlog and blocked-billing backlog
+
+Minimum review cadence:
+
+1. after any deploy that touches webhook, billing, reporting, or setup flows
+2. once per active beta day when creator traffic is expected
+3. before marking a launch check, warm-path QA pass, or creator issue as fully clear
+
+Escalate beyond normal backlog handling when any of these are true:
+
+- the same non-zero payment backlog or blocked-billing count is still present on the next scheduled review
+- the combined current backlog reaches `3+` items across unmatched payments and blocked billing
+- the same creator, booking, or Stripe invoice keeps appearing across two reviews after the underlying setup or provider condition was supposedly fixed
+
+When an escalation threshold is hit:
+
+1. assign one operator to the case explicitly
+2. capture the `request_id` plus the relevant creator, booking, invoice, and provider ids
+3. work the matching failure playbook below until the backlog is reduced or the remaining reason is explicitly recorded
+4. do not describe the beta path as fully clear while the escalated backlog condition remains unexplained
+
 ## Failure Playbooks
 
 ## Deploy Or Bootstrap Failure
@@ -193,6 +220,7 @@ Actions:
 2. Search logs by `stripe_event_id`, `stripe_invoice_id`, and `stripe_account_id`.
 3. Treat duplicate and noop signals as idempotent safety outcomes, not immediate incidents.
 4. Treat unmatched signals as backlog until the local invoice or booking linkage is repaired.
+5. If unmatched payment backlog is still non-zero on the next scheduled review or the combined backlog threshold is hit, assign one operator and keep the issue in active review until the reason is recorded or the count clears.
 
 ## Blocked Billing
 
@@ -217,6 +245,7 @@ POST /app/attention/blocked-billing/{case_id}/retry
 ```
 
 5. Confirm the case moves to recovered or still-blocked without creating duplicate invoices.
+6. If blocked billing is still present on the next scheduled review or the combined backlog threshold is hit, assign one operator and keep the issue in active review until the case is resolved or the remaining cause is explicitly recorded.
 
 ## Helper Unsupported Or Degraded State
 

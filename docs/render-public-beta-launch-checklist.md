@@ -124,7 +124,8 @@ GET /reports/health
 ```
 
 3. Confirm the returned health snapshot is coherent with the browser surfaces.
-4. Confirm Render or app logs are sufficient to trace at least one representative request or issue using `request_id` and the relevant creator, booking, invoice, or provider identifiers.
+4. If `payment_provenance.current_backlog_event_count` or blocked-billing counts are non-zero, record the designated operator owner and next review time using the backlog-ownership contract in the operations runbook before marking the operator path complete.
+5. Confirm Render or app logs are sufficient to trace at least one representative request or issue using `request_id` and the relevant creator, booking, invoice, or provider identifiers.
 
 ### 4. Story 60 Launch Gate Status
 

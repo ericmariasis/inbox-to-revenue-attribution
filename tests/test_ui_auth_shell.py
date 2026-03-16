@@ -1167,9 +1167,45 @@ def test_setup_home_missing_billing_defaults_state_shows_blocked_next_action():
     assert response.status_code == 200
     assert "2 of 4 setup steps done" in response.text
     assert "Billing-ready links" in response.text
-    assert "At least one saved booking link still needs both amount and currency before invoicing can run safely." in response.text
-    assert "Add billing defaults" in response.text
+    assert "At least one saved booking link still needs both amount and currency before this workspace is billable now." in response.text
+    assert "Become billable now" in response.text
     assert 'href="/app/booking-links"' in response.text
+
+
+def test_setup_and_account_pages_reuse_connected_but_not_billable_now_vocabulary():
+    inserted = _insert_creator_user(
+        email=f"ui_connected_not_billable_{uuid.uuid4().hex}@example.com",
+        name="Connected Not Billable Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_connected_not_billable",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Connected Not Billable Call",
+        calendly_url="https://calendly.com/example/connected-not-billable",
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        setup_response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+        account_response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert setup_response.status_code == 200
+    assert account_response.status_code == 200
+    assert "Connected, but not billable now" in setup_response.text
+    assert "Connected, but not billable now" in account_response.text
+    assert "Connected</strong>: Done. Stripe is connected to this workspace." in setup_response.text
+    assert "Connected</strong>: Done. Stripe is connected to this workspace." in account_response.text
+    assert "Billable now</strong>: Not yet. Add amount and currency to at least one saved booking link." in setup_response.text
+    assert "Billable now</strong>: Not yet. Add amount and currency to at least one saved booking link." in account_response.text
+    assert "Ready to track</strong>: Not yet. This milestone starts after the workspace is billable now." in setup_response.text
+    assert "Ready to track</strong>: Not yet. This milestone starts after the workspace is billable now." in account_response.text
 
 
 def test_booking_links_page_empty_state_renders_form_and_next_step_copy():
@@ -2648,9 +2684,9 @@ def test_reports_page_without_tracked_content_explains_prerequisite():
         response = client.get("/app/reports", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Create tracked content first" in response.text
-    assert 'href="/app/content"' in response.text
-    assert "No paid results yet" in response.text
+    assert "Billable now comes before paid results" in response.text
+    assert "Stripe is connected, but this workspace is not billable now yet." in response.text
+    assert 'href="/app/booking-links"' in response.text
 
 
 def test_reports_page_with_tracked_content_but_no_paid_invoices_shows_empty_paid_state():
@@ -2670,6 +2706,8 @@ def test_reports_page_with_tracked_content_but_no_paid_invoices_shows_empty_paid
         creator_id=inserted["creator_id"],
         name="No Paid Strategy",
         calendly_url="https://calendly.com/example/no-paid-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
     )
     _insert_content(
         creator_id=inserted["creator_id"],
@@ -2683,8 +2721,8 @@ def test_reports_page_with_tracked_content_but_no_paid_invoices_shows_empty_paid
         response = client.get("/app/reports", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "No paid results yet" in response.text
-    assert "nothing is counted here until a matching invoice is marked paid" in response.text
+    assert "Waiting for first paid result" in response.text
+    assert "This workspace is ready to track. Reports fills in after tracked content leads to a booking and the matching invoice is marked paid." in response.text
     assert 'href="/app/content"' in response.text
 
 
@@ -3018,7 +3056,7 @@ def test_account_page_connected_state_renders_entry_points_and_policy_copy():
     assert inserted["email"] in response.text
     assert "Signing out ends this browser session only." in response.text
     assert 'action="/sign-out"' in response.text
-    assert "This workspace is connected to Stripe for future invoicing." in response.text
+    assert "This workspace is connected to Stripe and billable now for future invoicing." in response.text
     assert "Changing the Stripe connection affects future billing readiness." in response.text
     assert "acct_ui_account_connected" in response.text
     assert "Reconnect Stripe" in response.text
@@ -3033,6 +3071,52 @@ def test_account_page_connected_state_renders_entry_points_and_policy_copy():
     assert 'href="/app/account?confirm=account-deletion#danger-zone"' in response.text
     assert "Submit reset request" not in response.text
     assert "Submit deletion request" not in response.text
+
+
+def test_setup_and_account_pages_reuse_waiting_for_first_paid_result_vocabulary():
+    inserted = _insert_creator_user(
+        email=f"ui_waiting_first_paid_{uuid.uuid4().hex}@example.com",
+        name="Waiting First Paid Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_waiting_first_paid",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Waiting First Paid Strategy",
+        calendly_url="https://calendly.com/example/waiting-first-paid",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/waiting-first-paid",
+        tid=f"uiwaitingfirstpaid{uuid.uuid4().hex[:8]}",
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        setup_response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+        account_response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+        reports_response = client.get("/app/reports", headers=HTML_ACCEPT_HEADERS)
+
+    assert setup_response.status_code == 200
+    assert account_response.status_code == 200
+    assert reports_response.status_code == 200
+    assert "Ready to track and waiting for first paid result" in setup_response.text
+    assert "Ready to track and waiting for first paid result" in account_response.text
+    assert "Ready to track</strong>: Done. At least one tracked link is ready to share on a billable setup." in setup_response.text
+    assert "Ready to track</strong>: Done. At least one tracked link is ready to share on a billable setup." in account_response.text
+    assert "Waiting for first paid result</strong>: Current. This workspace is ready to track; first value lands after a tracked booking leads to a paid invoice." in setup_response.text
+    assert "Waiting for first paid result</strong>: Current. This workspace is ready to track; first value lands after a tracked booking leads to a paid invoice." in account_response.text
+    assert "Waiting for first paid result" in reports_response.text
+    assert "Reports fills in after tracked content leads to a booking and the matching invoice is marked paid." in reports_response.text
 
 
 def test_account_page_disconnected_state_renders_reconnect_copy_without_destructive_forms():

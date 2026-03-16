@@ -486,8 +486,9 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
 
     assert setup_complete_response.status_code == 200
     assert "4 of 4 setup steps done" in setup_complete_response.text
-    assert "Core setup is ready for real activity." in setup_complete_response.text
-    assert "Start using your tracked link" in setup_complete_response.text
+    assert "This workspace is ready to track and waiting for the first paid result." in setup_complete_response.text
+    assert "Ready to track and waiting for first paid result" in setup_complete_response.text
+    assert "Waiting for first paid result" in setup_complete_response.text
     assert "Connected account" in setup_complete_response.text
     assert provider.account_id in setup_complete_response.text
 

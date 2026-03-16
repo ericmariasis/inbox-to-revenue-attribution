@@ -138,7 +138,7 @@ router = APIRouter(include_in_schema=False)
 STATUS_MESSAGES = {
     "sent": {
         "title": "Check your inbox",
-        "body": "If the address is valid, we sent a fresh sign-in link. If it expires, request another one here.",
+        "body": "If the address is valid, we sent a fresh sign-in link. Open it on this same device and browser. If you opened the email somewhere else or the link expires, come back here and request another one.",
         "notice_class": "notice success",
     },
     "invalid-email": {
@@ -148,7 +148,7 @@ STATUS_MESSAGES = {
     },
     "invalid-link": {
         "title": "That sign-in link is invalid or expired",
-        "body": "Enter your email below and we will send a fresh link so you can keep going.",
+        "body": "This usually means the link expired or it was opened on a different device or browser than the one where sign-in started. Enter your email below and we will send a fresh link for this same device and browser.",
         "notice_class": "notice error",
     },
     "retry": {
@@ -1516,14 +1516,14 @@ def _render_sign_in_page(status_value: str | None) -> str:
     <section class="hero">
       <p class="eyebrow">Self-serve setup</p>
       <h1>Sign in to your creator workspace</h1>
-      <p class="lede">Use your email to get a secure sign-in link, then finish Stripe, Calendly, and tracked-link setup inside the app.</p>
+      <p class="lede">Use your email to get a secure sign-in link, then open it on this same device and browser to finish Stripe, Calendly, and tracked-link setup inside the app.</p>
       {message_block}
       <form action="/sign-in" method="post" class="card">
         <label for="email">Email</label>
         <input id="email" name="email" type="email" autocomplete="email" placeholder="creator@example.com" required />
         <button type="submit">Send magic link</button>
       </form>
-      <p class="footnote">If the last link expired or the setup tab was closed, request another email here and continue from setup home.</p>
+      <p class="footnote">If the last link expired, the setup tab was closed, or you opened the email on another device, request another email here and continue from this browser.</p>
     </section>
     """
     return _page_layout(title="Creator sign in", body=body)

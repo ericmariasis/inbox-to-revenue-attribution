@@ -4278,6 +4278,53 @@ def _render_reports_results(
     return f'<div class="content-list">{items}</div>'
 
 
+def _render_illustrative_first_value_proof() -> str:
+    return """
+    <div class="topic-summary accent stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Illustrative preview</p>
+          <p><strong>What first value will look like</strong></p>
+        </div>
+        <p class="pill-note">Illustrative only</p>
+      </div>
+      <p>This read-only preview is illustrative only. It does not use live bookings, invoices, or paid revenue from this workspace.</p>
+      <div class="stat-grid">
+        <article class="stat-tile">
+          <p class="eyebrow">Tracked content</p>
+          <p class="stat-value">1</p>
+          <p>An example post shares one tracked link.</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Attributed booking</p>
+          <p class="stat-value">1</p>
+          <p>An example booking keeps that tracking ID.</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Counted paid result</p>
+          <p class="stat-value">195.00</p>
+          <p>Reports counts it only after the matching invoice is marked paid.</p>
+        </article>
+      </div>
+      <div class="stack">
+        <p><strong>Illustrative flow</strong></p>
+        <ol class="reason-list">
+          <li><strong>Share tracked content.</strong> A visitor uses the tracked link attached to one saved content item.</li>
+          <li><strong>Capture the booking.</strong> The booking keeps that tracking ID, so the content-to-booking chain stays intact.</li>
+          <li><strong>Count real paid revenue.</strong> Reports only fills in after the real matching invoice is marked paid.</li>
+        </ol>
+      </div>
+      <div class="content-card stack">
+        <p class="eyebrow">Illustrative sample outcome</p>
+        <p><strong>Source URL</strong>: Example coaching breakdown post.</p>
+        <p><strong>Tracking ID</strong>: Example tracked link.</p>
+        <p><strong>Paid result</strong>: 1 paid booking, USD 195.00.</p>
+        <p><strong>Why it counts</strong>: The booking kept the tracking ID from content through payment, and the matching invoice was paid.</p>
+      </div>
+    </div>
+    """
+
+
 def _render_reports_empty_state(*, readiness: dict[str, object], filters_active: bool) -> str:
     if filters_active:
         return """
@@ -4290,11 +4337,12 @@ def _render_reports_empty_state(*, readiness: dict[str, object], filters_active:
         """
 
     if bool(readiness["waiting_for_first_paid_result"]):
-        return """
-        <section class="empty-state">
+        return f"""
+        <section class="empty-state stack">
           <p class="eyebrow">Waiting for first paid result</p>
           <h2>Waiting for first paid result</h2>
-          <p>This workspace is ready to track. Reports fills in after tracked content leads to a booking and the matching invoice is marked paid.</p>
+          <p>This workspace is ready to track. Reports stays empty until real tracked content leads to a booking and the matching invoice is marked paid.</p>
+          {_render_illustrative_first_value_proof()}
           <a href="/app/content" class="inline-link">Review tracked content</a>
         </section>
         """

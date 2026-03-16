@@ -1952,6 +1952,8 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
     assert "195.00" in response.text
     assert "1 paid invoice" in response.text
     assert "1 paid booking" in response.text
+    assert "Illustrative preview" not in response.text
+    assert "This read-only preview is illustrative only." not in response.text
     assert "Missing tracking ID" in response.text
     assert (
         "1 event diagnostic only and still outside paid totals while the attribution chain is incomplete."
@@ -2727,7 +2729,12 @@ def test_reports_page_with_tracked_content_but_no_paid_invoices_shows_empty_paid
 
     assert response.status_code == 200
     assert "Waiting for first paid result" in response.text
-    assert "This workspace is ready to track. Reports fills in after tracked content leads to a booking and the matching invoice is marked paid." in response.text
+    assert "This workspace is ready to track. Reports stays empty until real tracked content leads to a booking and the matching invoice is marked paid." in response.text
+    assert "Illustrative preview" in response.text
+    assert "What first value will look like" in response.text
+    assert "This read-only preview is illustrative only. It does not use live bookings, invoices, or paid revenue from this workspace." in response.text
+    assert "Illustrative sample outcome" in response.text
+    assert "USD 195.00" in response.text
     assert 'href="/app/content"' in response.text
 
 
@@ -3121,7 +3128,8 @@ def test_setup_and_account_pages_reuse_waiting_for_first_paid_result_vocabulary(
     assert "Waiting for first paid result</strong>: Current. This workspace is ready to track; first value lands after a tracked booking leads to a paid invoice." in setup_response.text
     assert "Waiting for first paid result</strong>: Current. This workspace is ready to track; first value lands after a tracked booking leads to a paid invoice." in account_response.text
     assert "Waiting for first paid result" in reports_response.text
-    assert "Reports fills in after tracked content leads to a booking and the matching invoice is marked paid." in reports_response.text
+    assert "Reports stays empty until real tracked content leads to a booking and the matching invoice is marked paid." in reports_response.text
+    assert "Illustrative preview" in reports_response.text
 
 
 def test_account_page_disconnected_state_renders_reconnect_copy_without_destructive_forms():

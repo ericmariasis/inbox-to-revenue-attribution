@@ -370,8 +370,8 @@ def test_phase9_reporting_flow_end_to_end():
     assert "Why this revenue counted" in reports_response.text
     assert "Why some payments are not counted yet" in reports_response.text
     assert "Unknown booking" in reports_response.text
-    assert "Blocked billing cases" in reports_response.text
-    assert "no tracked bookings are blocked before invoicing right now." in reports_response.text
+    assert "Blocked billing backlog" in reports_response.text
+    assert "No tracked bookings are blocked before invoicing right now." in reports_response.text
     assert 'href="/app/attention"' in reports_response.text
     assert (
         f'href="/app/reports/explanations/paid/{content["tid"]}?start_date=2026-03-08&amp;end_date=2026-03-08"'
@@ -397,10 +397,10 @@ def test_phase9_reporting_flow_end_to_end():
 
     assert unattributed_response.status_code == 200
     assert "Why some payments are not counted yet" in unattributed_response.text
-    assert "counts and reasons only" in unattributed_response.text
+    assert "This page is diagnostic only. It shows counts, causes, and next steps" in unattributed_response.text
     assert "Unknown booking" in unattributed_response.text
-    assert "could not find the matching booking yet" in unattributed_response.text
-    assert "does not change the paid totals or CSV export" in unattributed_response.text
+    assert "matching booking is still missing from the current creator-scoped chain" in unattributed_response.text
+    assert "Only repaired chains move into paid totals, CSV export, and the main paid-results table." in unattributed_response.text
     assert (
         'href="/app/reports?start_date=2026-03-08&amp;end_date=2026-03-08"'
         in unattributed_response.text

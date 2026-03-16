@@ -1953,8 +1953,11 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
     assert "1 paid invoice" in response.text
     assert "1 paid booking" in response.text
     assert "Missing tracking ID" in response.text
-    assert "1 event waiting on more attribution context" in response.text
-    assert "These backlog events are separate from the paid content rows below" in response.text
+    assert (
+        "1 event diagnostic only and still outside paid totals while the attribution chain is incomplete."
+        in response.text
+    )
+    assert "These unmatched events are diagnostic only, not a second revenue total" in response.text
     assert (
         'href="/app/reports/export.csv?start_date=2026-03-08&amp;end_date=2026-03-08"'
         in response.text
@@ -1967,7 +1970,7 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
         f'href="/app/reports/explanations/paid/{current_content_tid}?start_date=2026-03-08&amp;end_date=2026-03-08"'
         in response.text
     )
-    assert "no tracked bookings are blocked before invoicing right now." in response.text
+    assert "No tracked bookings are blocked before invoicing right now." in response.text
     assert 'href="/app/attention"' in response.text
 
 
@@ -2038,11 +2041,13 @@ def test_attention_page_renders_blocked_and_unmatched_cases():
     assert booking_uuid in response.text
     assert "Creator not billable" in response.text
     assert "creator_not_billable" in response.text
+    assert "Finish the Stripe or billing setup and then retry invoice creation." in response.text
     assert "Retry invoice creation" in response.text
     assert f'/app/attention/blocked-billing/{case_id}/retry' in response.text
     assert stripe_event_id in response.text
     assert stripe_invoice_id in response.text
     assert "Missing tracking ID" in response.text
+    assert "Use the tracked link consistently going forward." in response.text
 
 
 def test_health_page_renders_creator_scoped_snapshot():
@@ -2524,9 +2529,9 @@ def test_reports_unattributed_explanation_page_renders_current_backlog_reason():
 
     assert response.status_code == 200
     assert "Why some payments are not counted yet" in response.text
-    assert "counts and reasons only" in response.text
+    assert "This page is diagnostic only. It shows counts, causes, and next steps" in response.text
     assert "Missing tracking ID" in response.text
-    assert "stays out of paid totals until that creator-scoped link can be repaired" in response.text
+    assert "Use the tracked link consistently going forward." in response.text
     assert (
         'href="/app/reports?start_date=2026-03-08&amp;end_date=2026-03-08"'
         in response.text

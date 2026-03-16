@@ -1,5 +1,6 @@
 import html
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
@@ -3904,18 +3905,19 @@ def _render_reports_page(
       <article class="card accent stack">
         <div>
           <p class="eyebrow">What is not counted yet</p>
-          <h2>Keep pending fixes separate from paid totals</h2>
+          <h2>Keep diagnostic backlog separate from paid totals</h2>
         </div>
         <p>Paid totals on this page come only from invoices that are marked paid and matched back to your tracked content through the stored booking chain.</p>
-        <p><strong>Current unmatched backlog</strong>: {html.escape(_count_copy(summary.unattributed_current_backlog.event_count, "event"))} waiting on more attribution context.</p>
+        <p><strong>Current unmatched backlog</strong>: {html.escape(_unmatched_payment_backlog_copy(summary.unattributed_current_backlog.event_count))}</p>
         {_render_reports_unmatched_explainer(summary)}
         {_render_reports_unmatched_reasons(summary)}
         {_render_reports_unmatched_explanation_link(
             summary=summary,
             filter_values=filter_values,
         )}
-        <p><strong>Blocked billing cases</strong>: {html.escape(_reports_blocked_case_copy(summary.blocked_summary.open_case_count))}</p>
-        <p><a href="/app/attention" class="inline-link">Review blocked billing and unresolved payment details</a></p>
+        <p><strong>Blocked billing backlog</strong>: {html.escape(_blocked_billing_backlog_copy(summary.blocked_summary.open_case_count))}</p>
+        {_render_reports_blocked_reasons(summary)}
+        <p><a href="/app/attention" class="inline-link">Open Attention for case details and retry actions</a></p>
       </article>
     </section>
     <section class="card stack">
@@ -3955,7 +3957,7 @@ def _render_attention_page(
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Attention</h1>
-        <p class="lede">Review bookings that are blocked before invoicing and payment events still waiting on attribution repair.</p>
+        <p class="lede">Review diagnostic items that are still outside paid totals: bookings blocked before invoicing and verified payments whose attribution chain is still incomplete.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -3967,17 +3969,19 @@ def _render_attention_page(
       <article class="card stack">
         <div>
           <p class="eyebrow">Blocked billing</p>
-          <h2>Bookings waiting for invoice recovery</h2>
+          <h2>Bookings blocked before invoicing</h2>
           <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
-        <p>{html.escape(_count_copy(blocked_count, "booking"))} currently waiting on invoice creation or retry.</p>
+        <p>{html.escape(_blocked_billing_backlog_copy(blocked_count))}</p>
+        <p>Some blocked cases are creator-fixable setup gaps. Others reflect provider ambiguity and stay diagnostic until retry succeeds.</p>
       </article>
       <article class="card accent stack">
         <div>
           <p class="eyebrow">Unresolved payments</p>
-          <h2>Payment events still outside paid totals</h2>
+          <h2>Verified payments still unmatched</h2>
         </div>
-        <p>{html.escape(_count_copy(unmatched_count, "event"))} still waiting on canonical attribution links before they can be counted.</p>
+        <p>{html.escape(_unmatched_payment_backlog_copy(unmatched_count))}</p>
+        <p>Some unmatched events point to missing tracking. Others reflect provider or system ambiguity and may not be something you can fix directly.</p>
       </article>
     </section>
     <section class="card stack">
@@ -4333,7 +4337,7 @@ def _render_blocked_billing_case_list(
         <section class="empty-state">
           <p class="eyebrow">Clear</p>
           <h2>No blocked billing cases are waiting right now</h2>
-          <p>When invoice creation is deferred for a tracked booking, it will appear here with the frozen billing inputs and the latest retry-safe reason.</p>
+          <p>If invoice creation is deferred for a tracked booking, it will appear here with the reason, likely cause, and a safe next step.</p>
         </section>
         """
 
@@ -4345,6 +4349,7 @@ def _render_blocked_billing_case_list(
 
 
 def _render_blocked_billing_case_card(*, blocked_case: BlockedBillingCaseSummary) -> str:
+    reason_copy = _blocked_billing_reason_copy(blocked_case.reason_code)
     invoice_copy = "Not created yet"
     if blocked_case.invoice_id is not None or blocked_case.stripe_invoice_id is not None:
         invoice_copy = (
@@ -4373,8 +4378,10 @@ def _render_blocked_billing_case_card(*, blocked_case: BlockedBillingCaseSummary
         </div>
         <span class="status-pill pending">Blocked</span>
       </div>
-      <p><strong>Reason</strong>: {html.escape(_blocked_billing_reason_label(blocked_case.reason_code))} (<code>{html.escape(blocked_case.reason_code)}</code>)</p>
-      <p>{html.escape(_blocked_billing_reason_explanation(blocked_case.reason_code))}</p>
+      <p><strong>Reason</strong>: {html.escape(reason_copy.label)} (<code>{html.escape(blocked_case.reason_code)}</code>)</p>
+      <p>{html.escape(reason_copy.summary)}</p>
+      <p><strong>Likely cause</strong>: {html.escape(reason_copy.likely_cause)}</p>
+      <p><strong>What to do next</strong>: {html.escape(reason_copy.next_step)}</p>
       <p><strong>Booking</strong>: <code>{html.escape(str(blocked_case.booking_id))}</code> ({html.escape(blocked_case.booking_status)})</p>
       <p><strong>TID</strong>: <code>{html.escape(blocked_case.tid)}</code></p>
       <p><strong>Invoice</strong>: {invoice_copy}</p>
@@ -4399,7 +4406,7 @@ def _render_unmatched_payment_event_list(
         <section class="empty-state">
           <p class="eyebrow">Clear</p>
           <h2>No unmatched payment events are waiting right now</h2>
-          <p>When a paid Stripe event cannot be linked back to canonical local booking or invoice state yet, it will appear here with the current reason and lifecycle timestamps.</p>
+          <p>If a paid Stripe event cannot be linked back to canonical local booking or invoice state yet, it will appear here with the reason, likely cause, and next step.</p>
         </section>
         """
 
@@ -4411,6 +4418,7 @@ def _render_unmatched_payment_event_list(
 
 
 def _render_unmatched_payment_event_card(*, payment_event: UnmatchedPaymentEventSummary) -> str:
+    reason_copy = _unmatched_payment_reason_copy(payment_event.unattributed_reason)
     booking_copy = (
         f'<code>{html.escape(str(payment_event.booking_id))}</code> / '
         f'<code>{html.escape(payment_event.booking_uuid or "missing")}</code>'
@@ -4438,11 +4446,13 @@ def _render_unmatched_payment_event_card(*, payment_event: UnmatchedPaymentEvent
       <div class="content-card-header">
         <div>
           <p class="eyebrow">Unresolved payment</p>
-          <h2>{html.escape(_reports_reason_label(payment_event.unattributed_reason))}</h2>
+          <h2>{html.escape(reason_copy.label)}</h2>
         </div>
         <span class="status-pill pending">{html.escape(_reports_payment_event_status_label(payment_event.status))}</span>
       </div>
-      <p>{html.escape(_reports_reason_explanation(payment_event.unattributed_reason))}</p>
+      <p>{html.escape(reason_copy.summary)}</p>
+      <p><strong>Likely cause</strong>: {html.escape(reason_copy.likely_cause)}</p>
+      <p><strong>What to do next</strong>: {html.escape(reason_copy.next_step)}</p>
       <p><strong>Stripe event</strong>: <code>{html.escape(payment_event.stripe_event_id)}</code></p>
       <p><strong>Stripe invoice</strong>: <code>{html.escape(payment_event.stripe_invoice_id)}</code></p>
       <p><strong>Stripe account</strong>: <code>{html.escape(payment_event.stripe_account_id or "unknown")}</code></p>
@@ -4678,8 +4688,8 @@ def _render_reports_unattributed_explanation_page(
           <h2>Unmatched payments stay separate from paid totals</h2>
           <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
-        <p>This page shows counts and reasons only. It does not estimate revenue for unmatched events because the missing content, booking, or invoice link has not been repaired yet.</p>
-        <p><strong>Current unmatched backlog</strong>: {html.escape(_count_copy(backlog.event_count, "event"))} waiting on more attribution context.</p>
+        <p>This page is diagnostic only. It shows counts, causes, and next steps, but it does not estimate revenue for unmatched events.</p>
+        <p><strong>Current unmatched backlog</strong>: {html.escape(_unmatched_payment_backlog_copy(backlog.event_count))}</p>
         <a href="{back_href}" class="inline-link">Back to reports</a>
       </article>
       <article class="card accent stack">
@@ -4687,8 +4697,8 @@ def _render_reports_unattributed_explanation_page(
           <p class="eyebrow">What happens next</p>
           <h2>Only repaired chains move into paid totals</h2>
         </div>
-        <p>Once the missing tracking, booking, or invoice link is restored in canonical local data, the payment can be reconciled and counted through the same reporting path as the paid content rows.</p>
-        <p>Until then, this backlog remains explanatory only and does not change the paid totals or CSV export.</p>
+        <p>Some unmatched reasons are creator-fixable, like missing tracked-link setup. Others stay ambiguous because the provider or local system never produced enough booking or invoice context to trust them as revenue yet.</p>
+        <p>Only repaired chains move into paid totals, CSV export, and the main paid-results table. Until then, this backlog stays diagnostic only.</p>
       </article>
     </section>
     <section class="card stack">
@@ -4717,33 +4727,37 @@ def _render_reports_unattributed_reason_cards(summary: CreatorReportsSummary) ->
         """
 
     items = "".join(
-        f"""
-        <article class="content-card stack">
-          <div class="content-card-header">
-            <div>
-              <p class="eyebrow">Unmatched reason</p>
-              <h2>{html.escape(_reports_reason_label(reason.reason))}</h2>
-            </div>
-            <p class="pill-note">{html.escape(_count_copy(reason.event_count, "event"))}</p>
-          </div>
-          <p>{html.escape(_reports_reason_explanation(reason.reason))}</p>
-        </article>
-        """
+        _render_reports_unattributed_reason_card(reason=reason.reason, event_count=reason.event_count)
         for reason in backlog.reasons
     )
     return f'<div class="content-list">{items}</div>'
 
 
+def _render_reports_unattributed_reason_card(*, reason: str | None, event_count: int) -> str:
+    reason_copy = _unmatched_payment_reason_copy(reason)
+    return f"""
+        <article class="content-card stack">
+          <div class="content-card-header">
+            <div>
+              <p class="eyebrow">Unmatched reason</p>
+              <h2>{html.escape(reason_copy.label)}</h2>
+            </div>
+            <p class="pill-note">{html.escape(_count_copy(event_count, "event"))}</p>
+          </div>
+          <p>{html.escape(reason_copy.summary)}</p>
+          <p><strong>Likely cause</strong>: {html.escape(reason_copy.likely_cause)}</p>
+          <p><strong>What to do next</strong>: {html.escape(reason_copy.next_step)}</p>
+        </article>
+        """
+
+
 def _render_reports_unmatched_reasons(summary: CreatorReportsSummary) -> str:
     backlog = summary.unattributed_current_backlog
     if backlog.event_count == 0:
-        return "<p>No current unmatched payment backlog is waiting to be repaired.</p>"
+        return "<p>No unmatched payment backlog is waiting right now.</p>"
 
     items = "".join(
-        (
-            f"<li><strong>{html.escape(_reports_reason_label(reason.reason))}</strong>: "
-            f"{html.escape(_count_copy(reason.event_count, 'event'))}</li>"
-        )
+        _render_reports_unmatched_reason_item(reason=reason.reason, event_count=reason.event_count)
         for reason in backlog.reasons
     )
     return f'<ul class="reason-list">{items}</ul>'
@@ -4755,9 +4769,9 @@ def _render_reports_unmatched_explainer(summary: CreatorReportsSummary) -> str:
         return ""
 
     return (
-        "<p>These backlog events are separate from the paid content rows below. "
-        "You can still see an attributed paid result while a different payment is "
-        "waiting for its tracking details to be repaired.</p>"
+        "<p>These unmatched events are diagnostic only, not a second revenue total. "
+        "Some point to creator-fixable tracking gaps, while others reflect provider "
+        "or system ambiguity until more booking or invoice context arrives.</p>"
     )
 
 
@@ -5245,35 +5259,20 @@ def _reports_paid_window_copy(row: ReportsSummaryRow) -> str:
     )
 
 
+@dataclass(frozen=True)
+class _DiagnosticCopy:
+    label: str
+    summary: str
+    likely_cause: str
+    next_step: str
+
+
 def _reports_reason_label(reason: str | None) -> str:
-    if reason == UNATTRIBUTED_REASON_MISSING_TID:
-        return "Missing tracking ID"
-    if reason == UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID:
-        return "Unknown booking"
-    if reason == UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID:
-        return "Unknown invoice"
-    return (reason or "Unknown reason").replace("_", " ").title()
+    return _unmatched_payment_reason_copy(reason).label
 
 
 def _reports_reason_explanation(reason: str | None) -> str:
-    if reason == UNATTRIBUTED_REASON_MISSING_TID:
-        return (
-            "A verified payment event arrived, but the tracking ID needed to connect it back "
-            "to a tracked content row was missing. The payment stays out of paid totals until "
-            "that creator-scoped link can be repaired."
-        )
-    if reason == UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID:
-        return (
-            "The payment event carried invoice context, but the current creator-scoped chain "
-            "could not find the matching booking yet. Until the booking is linked, the payment "
-            "cannot be trusted as paid content revenue."
-        )
-    if reason == UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID:
-        return (
-            "The payment event could not be matched to a canonical stored invoice yet. Until "
-            "that invoice link exists, the event stays explanatory instead of changing paid totals."
-        )
-    return "The payment event is missing canonical attribution context, so it stays out of paid totals for now."
+    return _unmatched_payment_reason_copy(reason).summary
 
 
 def _reports_payment_event_status_label(status_value: str | None) -> str:
@@ -5290,10 +5289,57 @@ def _reports_currency_amount_copy(currency: str, amount_cents: int) -> str:
     return f"{currency} {_format_billing_amount(amount_cents)}"
 
 
-def _reports_blocked_case_copy(blocked_billing_count: int) -> str:
+def _blocked_billing_backlog_copy(blocked_billing_count: int) -> str:
     if blocked_billing_count == 0:
-        return "no tracked bookings are blocked before invoicing right now."
-    return f"{_count_copy(blocked_billing_count, 'booking')} waiting on invoice recovery or retry."
+        return "No tracked bookings are blocked before invoicing right now."
+    return (
+        f"{_count_copy(blocked_billing_count, 'booking')} still blocked before invoicing "
+        "and outside paid totals."
+    )
+
+
+def _unmatched_payment_backlog_copy(event_count: int) -> str:
+    if event_count == 0:
+        return "No unmatched payment events are waiting right now."
+    return (
+        f"{_count_copy(event_count, 'event')} diagnostic only and still outside paid totals "
+        "while the attribution chain is incomplete."
+    )
+
+
+def _render_reports_unmatched_reason_item(*, reason: str | None, event_count: int) -> str:
+    reason_copy = _unmatched_payment_reason_copy(reason)
+    return (
+        f"<li><strong>{html.escape(reason_copy.label)}</strong> "
+        f"({html.escape(_count_copy(event_count, 'event'))}): "
+        f"{html.escape(reason_copy.summary)} "
+        f"What to do next: {html.escape(reason_copy.next_step)}</li>"
+    )
+
+
+def _render_reports_blocked_reasons(summary: CreatorReportsSummary) -> str:
+    blocked_summary = summary.blocked_summary
+    if blocked_summary.open_case_count == 0:
+        return "<p>No blocked billing backlog is waiting right now.</p>"
+
+    items = "".join(
+        _render_reports_blocked_reason_item(
+            reason_code=item.reason_code,
+            case_count=item.case_count,
+        )
+        for item in blocked_summary.reasons
+    )
+    return f'<ul class="reason-list">{items}</ul>'
+
+
+def _render_reports_blocked_reason_item(*, reason_code: str, case_count: int) -> str:
+    reason_copy = _blocked_billing_reason_copy(reason_code)
+    return (
+        f"<li><strong>{html.escape(reason_copy.label)}</strong> "
+        f"({html.escape(_count_copy(case_count, 'open case'))}): "
+        f"{html.escape(reason_copy.summary)} "
+        f"What to do next: {html.escape(reason_copy.next_step)}</li>"
+    )
 
 
 def _render_health_reason_list(
@@ -5340,25 +5386,114 @@ def _health_payment_state_label(state: str) -> str:
 
 
 def _blocked_billing_reason_label(reason_code: str) -> str:
-    if reason_code == BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE:
-        return "Creator not billable"
-    if reason_code == BLOCKED_BILLING_REASON_PROVIDER_ERROR:
-        return "Provider error"
-    return reason_code.replace("_", " ").title()
+    return _blocked_billing_reason_copy(reason_code).label
 
 
 def _blocked_billing_reason_explanation(reason_code: str) -> str:
+    return _blocked_billing_reason_copy(reason_code).summary
+
+
+def _unmatched_payment_reason_copy(reason: str | None) -> _DiagnosticCopy:
+    if reason == UNATTRIBUTED_REASON_MISSING_TID:
+        return _DiagnosticCopy(
+            label="Missing tracking ID",
+            summary=(
+                "A verified payment event arrived without a usable tracking ID, so it stays "
+                "diagnostic and outside paid totals."
+            ),
+            likely_cause=(
+                "This often means the booking came through an untracked link, the tracking "
+                "parameter was stripped, or browser or provider privacy prevented the ID from arriving."
+            ),
+            next_step=(
+                "Use the tracked link consistently going forward. This event can move into paid "
+                "totals only if enough booking or invoice context is later recovered."
+            ),
+        )
+    if reason == UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID:
+        return _DiagnosticCopy(
+            label="Unknown booking",
+            summary=(
+                "The payment event carried invoice context, but the matching booking is still "
+                "missing from the current creator-scoped chain, so it stays diagnostic and outside paid totals."
+            ),
+            likely_cause=(
+                "This is usually provider or system ambiguity rather than proof that the payment "
+                "already belongs in counted revenue."
+            ),
+            next_step=(
+                "Treat it as unresolved until the booking link exists in local data. If it "
+                "persists, investigate the booking and invoice IDs shown here rather than counting it."
+            ),
+        )
+    if reason == UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID:
+        return _DiagnosticCopy(
+            label="Unknown invoice",
+            summary=(
+                "The payment event could not be matched to a canonical stored invoice yet, so it "
+                "stays diagnostic and outside paid totals."
+            ),
+            likely_cause=(
+                "This usually means provider or system ambiguity, or an invoice that did not "
+                "arrive through the canonical local invoice path."
+            ),
+            next_step=(
+                "Treat it as unresolved until the invoice link exists in local data. Later "
+                "reconciliation may recover it, but this page does not count it early."
+            ),
+        )
+    return _DiagnosticCopy(
+        label=(reason or "Unknown reason").replace("_", " ").title(),
+        summary=(
+            "The payment event is missing canonical attribution context, so it stays diagnostic "
+            "and outside paid totals for now."
+        ),
+        likely_cause="The available provider and local data still do not explain the missing link.",
+        next_step="Leave it outside paid totals until the booking and invoice chain is clear.",
+    )
+
+
+def _blocked_billing_reason_copy(reason_code: str) -> _DiagnosticCopy:
     if reason_code == BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE:
-        return (
-            "Stripe was not ready to create an invoice for this creator account yet, "
-            "so the booking was kept without guessing or dropping the invoice inputs."
+        return _DiagnosticCopy(
+            label="Creator not billable",
+            summary=(
+                "We kept this booking blocked before invoicing because the workspace was not "
+                "billable when invoice creation ran."
+            ),
+            likely_cause=(
+                "This is usually creator-fixable setup work: Stripe connection, billing "
+                "readiness, or required account details were not ready yet."
+            ),
+            next_step=(
+                "Finish the Stripe or billing setup and then retry invoice creation. Until an "
+                "invoice exists, this booking stays outside paid totals."
+            ),
         )
     if reason_code == BLOCKED_BILLING_REASON_PROVIDER_ERROR:
-        return (
-            "The provider failed during readiness or invoice creation, so the booking "
-            "stayed blocked with the latest provider context and frozen billing inputs."
+        return _DiagnosticCopy(
+            label="Provider error",
+            summary=(
+                "Invoice creation hit a provider error, so the booking stayed blocked instead "
+                "of creating an uncertain invoice record."
+            ),
+            likely_cause=(
+                "This is usually provider or system ambiguity, not proof that your setup is wrong."
+            ),
+            next_step=(
+                "Retry invoice creation after the provider issue clears. If it keeps happening, "
+                "use the provider context below to investigate."
+            ),
         )
-    return "This booking is blocked until the stored billing condition is repaired."
+    return _DiagnosticCopy(
+        label=reason_code.replace("_", " ").title(),
+        summary=(
+            "This booking is still blocked before invoicing, so it stays diagnostic and outside "
+            "paid totals."
+        ),
+        likely_cause="The stored billing condition is incomplete or still unclear.",
+        next_step="Review the stored billing condition and retry only after it is repaired.",
+    )
 
 
 def _health_authoritative_lag_reason_label(reason: str) -> str:

@@ -517,7 +517,7 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert "Why this revenue counted" in reports_response.text
     assert "Why some payments are not counted yet" in reports_response.text
     assert "Unknown booking" in reports_response.text
-    assert "1 booking waiting on invoice recovery or retry." in reports_response.text
+    assert "1 booking still blocked before invoicing and outside paid totals." in reports_response.text
     assert 'href="/app/attention"' in reports_response.text
 
     assert attention_response.status_code == 200
@@ -542,8 +542,8 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert recovered_reports_response.status_code == 200
     assert "195.00" in recovered_reports_response.text
     assert "1 paid invoice" in recovered_reports_response.text
-    assert "1 booking waiting on invoice recovery or retry." not in recovered_reports_response.text
-    assert "no tracked bookings are blocked before invoicing right now." in recovered_reports_response.text
+    assert "1 booking still blocked before invoicing and outside paid totals." not in recovered_reports_response.text
+    assert "No tracked bookings are blocked before invoicing right now." in recovered_reports_response.text
 
     assert provider.onboarding_calls == [{"creator_id": provider.onboarding_calls[0]["creator_id"], "state": connect_state}]
     assert provider.exchange_calls == [{"code": "auth_code_story60", "state": connect_state}]

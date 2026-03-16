@@ -440,7 +440,7 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
 
     assert invalid_link_page_response.status_code == 200
     assert "That sign-in link is invalid or expired" in invalid_link_page_response.text
-    assert "send a fresh link so you can keep going" in invalid_link_page_response.text
+    assert "different device or browser than the one where sign-in started" in invalid_link_page_response.text
 
     assert second_sign_in_response.status_code == 303
     assert second_sign_in_response.headers["location"] == "/sign-in?status=sent"

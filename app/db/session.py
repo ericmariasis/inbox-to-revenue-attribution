@@ -9,8 +9,13 @@ from app.db.url import normalize_database_url
 
 
 def _database_url() -> str:
-    # Prefer explicit test URL when present so integration tests hit migrated test DB.
-    return normalize_database_url(os.getenv("TEST_DATABASE_URL") or get_settings().database_url)
+    settings = get_settings()
+    test_database_url = os.getenv("TEST_DATABASE_URL")
+    # Keep test runs pinned to the migrated test DB, but never let non-local
+    # environments accidentally route live traffic to TEST_DATABASE_URL.
+    if test_database_url and settings.is_local_env():
+        return normalize_database_url(test_database_url)
+    return normalize_database_url(settings.database_url)
 
 
 ENGINE = create_engine(_database_url())

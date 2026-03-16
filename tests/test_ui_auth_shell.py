@@ -854,6 +854,8 @@ def test_sign_in_page_is_browser_accessible():
     assert 'action="/sign-in"' in response.text
     assert 'name="email"' in response.text
     assert "Sign in to your creator workspace" in response.text
+    assert "open it on this same device and browser" in response.text
+    assert "you opened the email on another device" in response.text
 
 
 def test_sign_in_page_invalid_link_notice_explains_how_to_recover():
@@ -866,7 +868,8 @@ def test_sign_in_page_invalid_link_notice_explains_how_to_recover():
 
     assert response.status_code == 200
     assert "That sign-in link is invalid or expired" in response.text
-    assert "Enter your email below and we will send a fresh link so you can keep going." in response.text
+    assert "This usually means the link expired or it was opened on a different device or browser" in response.text
+    assert "we will send a fresh link for this same device and browser." in response.text
     assert 'action="/sign-in"' in response.text
 
 
@@ -880,10 +883,18 @@ def test_sign_in_start_redirects_to_confirmation_without_echoing_email():
             headers=HTML_ACCEPT_HEADERS,
             follow_redirects=False,
         )
+        confirmation_response = client.get(
+            response.headers["location"],
+            headers=HTML_ACCEPT_HEADERS,
+        )
 
     assert response.status_code == 303
     assert response.headers["location"] == "/sign-in?status=sent"
     assert email not in response.headers["location"]
+    assert confirmation_response.status_code == 200
+    assert "Check your inbox" in confirmation_response.text
+    assert "Open it on this same device and browser." in confirmation_response.text
+    assert "If you opened the email somewhere else or the link expires" in confirmation_response.text
     assert _latest_magic_link_token_for_email(email)
     assert _auth_state_for_email(email) == {"auth_users": 0, "creators": 0, "pending": 1}
 
@@ -1083,11 +1094,17 @@ def test_browser_magic_link_verify_failure_redirects_without_echoing_token():
             headers=HTML_ACCEPT_HEADERS,
             follow_redirects=False,
         )
+        invalid_link_page = client.get(
+            response.headers["location"],
+            headers=HTML_ACCEPT_HEADERS,
+        )
 
     assert response.status_code == 303
     assert response.headers["location"] == "/sign-in?status=invalid-link"
     assert raw_token not in response.headers["location"]
     assert raw_token not in response.text
+    assert invalid_link_page.status_code == 200
+    assert "different device or browser than the one where sign-in started" in invalid_link_page.text
 
 
 def test_setup_home_pending_stripe_state_shows_connect_cta_and_checklist():

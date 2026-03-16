@@ -53,7 +53,6 @@ from app.services.blocked_billing import (
     BLOCKED_BILLING_REASON_PROVIDER_ERROR,
     BlockedBillingCaseSummary,
     BlockedBillingRetryService,
-    count_open_blocked_billing_cases,
     list_open_blocked_billing_cases,
 )
 from app.services.booking_attribution import (
@@ -330,24 +329,23 @@ def creator_app_shell(
         creator_id=current_user.creator_id,
         db=db,
     )
-    blocked_billing_count = count_open_blocked_billing_cases(
+    summary = get_creator_reports_summary(
         creator_id=current_user.creator_id,
         db=db,
     )
-    unmatched_payment_count = len(
-        list_current_unmatched_payment_events(
-            creator_id=current_user.creator_id,
-            db=db,
-        )
+    readiness = _build_creator_readiness(
+        raw_stripe_status=current_user.creator.stripe_connect_status,
+        booking_links=booking_links,
+        content_items=content_items,
+        paid_invoice_count=summary.paid_invoice_count,
     )
 
     return _html_response(
         _render_app_shell(
             current_user=current_user,
-            booking_links=booking_links,
-            content_items=content_items,
-            blocked_billing_count=blocked_billing_count,
-            unmatched_payment_count=unmatched_payment_count,
+            readiness=readiness,
+            blocked_billing_count=summary.blocked_summary.open_case_count,
+            unmatched_payment_count=summary.unattributed_current_backlog.event_count,
             status_value=status_value,
         )
     )
@@ -369,6 +367,20 @@ def creator_account_page(
         creator_id=current_user.creator_id,
         db=db,
     )
+    content_items = list_content_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    summary = get_creator_reports_summary(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    readiness = _build_creator_readiness(
+        raw_stripe_status=current_user.creator.stripe_connect_status,
+        booking_links=booking_links,
+        content_items=content_items,
+        paid_invoice_count=summary.paid_invoice_count,
+    )
     support_requests = list_latest_support_requests_for_creator(
         db,
         creator_id=current_user.creator_id,
@@ -381,6 +393,7 @@ def creator_account_page(
         _render_account_page(
             current_user=current_user,
             booking_links=booking_links,
+            readiness=readiness,
             support_requests=support_requests,
             active_support_requests=active_support_requests,
             status_value=status_value,
@@ -921,13 +934,18 @@ def creator_reports_page(
         creator_id=current_user.creator_id,
         db=db,
     )
-    filter_values = _reports_filter_values(dict(request.query_params))
-    start_date, end_date, field_errors = _reports_date_filters_from_values(filter_values)
-
-    summary = get_creator_reports_summary(
+    booking_links = list_booking_link_responses_for_creator(
         creator_id=current_user.creator_id,
         db=db,
     )
+    filter_values = _reports_filter_values(dict(request.query_params))
+    start_date, end_date, field_errors = _reports_date_filters_from_values(filter_values)
+
+    overall_summary = get_creator_reports_summary(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    summary = overall_summary
     if not field_errors:
         try:
             summary = get_creator_reports_summary(
@@ -939,10 +957,18 @@ def creator_reports_page(
         except ValueError:
             field_errors["date_range"] = "Start date must be on or before end date."
 
+    readiness = _build_creator_readiness(
+        raw_stripe_status=current_user.creator.stripe_connect_status,
+        booking_links=booking_links,
+        content_items=content_items,
+        paid_invoice_count=overall_summary.paid_invoice_count,
+    )
+
     return _html_response(
         _render_reports_page(
             current_user=current_user,
             content_items=content_items,
+            readiness=readiness,
             summary=summary,
             filter_values=filter_values,
             field_errors=field_errors,
@@ -1532,19 +1558,19 @@ def _render_sign_in_page(status_value: str | None) -> str:
 def _render_app_shell(
     *,
     current_user: AuthUser,
-    booking_links: list[BookingLinkResponse],
-    content_items: list[ContentResponse],
+    readiness: dict[str, object],
     blocked_billing_count: int,
     unmatched_payment_count: int,
     status_value: str | None,
 ) -> str:
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
-    stripe_status = _stripe_setup_home_state(current_user.creator.stripe_connect_status)
+    stripe_status = _stripe_setup_home_state(
+        raw_status=current_user.creator.stripe_connect_status,
+        readiness=readiness,
+    )
     setup_progress = _build_setup_home_progress(
-        raw_stripe_status=current_user.creator.stripe_connect_status,
-        booking_links=booking_links,
-        content_items=content_items,
+        readiness=readiness,
         blocked_billing_count=blocked_billing_count,
         unmatched_payment_count=unmatched_payment_count,
     )
@@ -1597,6 +1623,7 @@ def _render_app_shell(
         </div>
         <p>{html.escape(stripe_status['description'])}</p>
         {"".join(stripe_detail_lines)}
+        {_render_readiness_summary(readiness=readiness)}
         {stripe_action}
       </article>
     </section>
@@ -1627,6 +1654,7 @@ def _render_account_page(
     *,
     current_user: AuthUser,
     booking_links: list[BookingLinkResponse],
+    readiness: dict[str, object],
     support_requests: dict[str, SupportRequestRecord],
     active_support_requests: dict[str, SupportRequestRecord],
     status_value: str | None,
@@ -1635,7 +1663,8 @@ def _render_account_page(
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
     stripe_state = _account_stripe_management_state(
-        raw_status=current_user.creator.stripe_connect_status
+        raw_status=current_user.creator.stripe_connect_status,
+        readiness=readiness,
     )
     booking_links_count = len(booking_links)
     billing_ready_count = sum(
@@ -1705,6 +1734,7 @@ def _render_account_page(
         </div>
         <p>{html.escape(stripe_state['body'])}</p>
         {"".join(stripe_detail_lines)}
+        {_render_readiness_summary(readiness=readiness)}
         <p><strong>What this changes</strong></p>
         <p>Changing the Stripe connection affects future billing readiness. It does not erase local history already recorded for this workspace, and it does not delete anything from Stripe automatically.</p>
         <form action="/app/stripe/connect/start" method="post">
@@ -2142,13 +2172,12 @@ def _setup_attention_copy(attention_count: int) -> str:
     )
 
 
-def _build_setup_home_progress(
+def _build_creator_readiness(
     *,
     raw_stripe_status: str,
     booking_links: list[BookingLinkResponse],
     content_items: list[ContentResponse],
-    blocked_billing_count: int,
-    unmatched_payment_count: int,
+    paid_invoice_count: int,
 ) -> dict[str, object]:
     normalized_stripe_status = raw_stripe_status.strip().lower()
     booking_links_count = len(booking_links)
@@ -2159,12 +2188,203 @@ def _build_setup_home_progress(
         and booking_link.billing_currency is not None
     )
     tracked_content_count = len(content_items)
+    connected = normalized_stripe_status == "connected"
+    billable_now = connected and billing_ready_count > 0
+    ready_to_track = billable_now and tracked_content_count > 0
+    waiting_for_first_paid_result = ready_to_track and paid_invoice_count == 0
+
+    return {
+        "stripe_status": normalized_stripe_status,
+        "connected": connected,
+        "billable_now": billable_now,
+        "ready_to_track": ready_to_track,
+        "waiting_for_first_paid_result": waiting_for_first_paid_result,
+        "booking_links_count": booking_links_count,
+        "billing_ready_count": billing_ready_count,
+        "tracked_content_count": tracked_content_count,
+        "paid_invoice_count": paid_invoice_count,
+    }
+
+
+def _readiness_stage_summary(readiness: dict[str, object]) -> dict[str, str]:
+    if int(readiness["paid_invoice_count"]) > 0:
+        return {
+            "title": "Paid results are already landing",
+            "copy": (
+                "This workspace has moved past the first-value wait. Use Reports to review "
+                "what is already counted."
+            ),
+        }
+
+    if bool(readiness["waiting_for_first_paid_result"]):
+        return {
+            "title": "Ready to track and waiting for first paid result",
+            "copy": (
+                "First value lands only after tracked content leads to a booking and the "
+                "matching invoice is marked paid."
+            ),
+        }
+
+    if bool(readiness["billable_now"]):
+        return {
+            "title": "Billable now, but not ready to track",
+            "copy": (
+                "Create tracked content next so the shared link can carry attribution into "
+                "bookings and later paid results."
+            ),
+        }
+
+    if bool(readiness["connected"]):
+        return {
+            "title": "Connected, but not billable now",
+            "copy": (
+                "Add amount and currency to at least one booking link so new bookings can "
+                "move into invoicing."
+            ),
+        }
+
+    return {
+        "title": "Connected comes first",
+        "copy": (
+            "Value does not arrive right after sign-in. Connect Stripe first, then make one "
+            "booking link billable now, then create tracked content."
+        ),
+    }
+
+
+def _readiness_line_items(readiness: dict[str, object]) -> list[tuple[str, str, str]]:
+    stripe_status = str(readiness["stripe_status"])
+    booking_links_count = int(readiness["booking_links_count"])
+
+    if bool(readiness["connected"]):
+        connected_line = ("Connected", "Done", "Stripe is connected to this workspace.")
+    elif stripe_status == "disconnected":
+        connected_line = (
+            "Connected",
+            "Not yet",
+            "Reconnect Stripe before relying on new bookings.",
+        )
+    else:
+        connected_line = ("Connected", "Not yet", "Finish Stripe setup first.")
+
+    if bool(readiness["billable_now"]):
+        billable_line = (
+            "Billable now",
+            "Done",
+            "At least one booking link has amount and currency saved.",
+        )
+    elif bool(readiness["connected"]) and booking_links_count > 0:
+        billable_line = (
+            "Billable now",
+            "Not yet",
+            "Add amount and currency to at least one saved booking link.",
+        )
+    elif bool(readiness["connected"]):
+        billable_line = (
+            "Billable now",
+            "Not yet",
+            "Save a booking link, then add amount and currency.",
+        )
+    else:
+        billable_line = (
+            "Billable now",
+            "Not yet",
+            "Stripe must be connected before this workspace can be billable now.",
+        )
+
+    if bool(readiness["ready_to_track"]):
+        ready_to_track_line = (
+            "Ready to track",
+            "Done",
+            "At least one tracked link is ready to share on a billable setup.",
+        )
+    elif bool(readiness["billable_now"]):
+        ready_to_track_line = (
+            "Ready to track",
+            "Not yet",
+            "Create tracked content so shared links can lead to attributed bookings.",
+        )
+    else:
+        ready_to_track_line = (
+            "Ready to track",
+            "Not yet",
+            "This milestone starts after the workspace is billable now.",
+        )
+
+    if int(readiness["paid_invoice_count"]) > 0:
+        waiting_line = (
+            "Waiting for first paid result",
+            "Done",
+            "Reports already includes counted paid results for this workspace.",
+        )
+    elif bool(readiness["waiting_for_first_paid_result"]):
+        waiting_line = (
+            "Waiting for first paid result",
+            "Current",
+            "This workspace is ready to track; first value lands after a tracked booking leads to a paid invoice.",
+        )
+    else:
+        waiting_line = (
+            "Waiting for first paid result",
+            "Later",
+            "This milestone starts after the workspace is ready to track.",
+        )
+
+    return [
+        connected_line,
+        billable_line,
+        ready_to_track_line,
+        waiting_line,
+    ]
+
+
+def _render_readiness_summary(*, readiness: dict[str, object]) -> str:
+    stage_summary = _readiness_stage_summary(readiness)
+    line_items = "".join(
+        (
+            f"<p><strong>{html.escape(term)}</strong>: {html.escape(status)}. "
+            f"{html.escape(detail)}</p>"
+        )
+        for term, status, detail in _readiness_line_items(readiness)
+    )
+    return f"""
+    <section class="topic-summary stack">
+      <div>
+        <p class="eyebrow">Setup-to-value path</p>
+        <p><strong>{html.escape(stage_summary["title"])}</strong></p>
+      </div>
+      <p>{html.escape(stage_summary["copy"])}</p>
+      {line_items}
+    </section>
+    """
+
+
+def _build_setup_home_progress(
+    *,
+    readiness: dict[str, object],
+    blocked_billing_count: int,
+    unmatched_payment_count: int,
+) -> dict[str, object]:
+    normalized_stripe_status = str(readiness["stripe_status"])
+    booking_links_count = int(readiness["booking_links_count"])
+    billing_ready_count = int(readiness["billing_ready_count"])
+    tracked_content_count = int(readiness["tracked_content_count"])
+    billable_now = bool(readiness["billable_now"])
+    ready_to_track = bool(readiness["ready_to_track"])
+    paid_invoice_count = int(readiness["paid_invoice_count"])
     attention_count = blocked_billing_count + unmatched_payment_count
 
     if normalized_stripe_status == "connected":
         stripe_step = _setup_step(
             title="Connect Stripe",
-            copy_html="Stripe is connected. New bookings can use this workspace once the rest of setup is finished.",
+            copy_html=(
+                "Stripe is connected. "
+                + (
+                    "This workspace is already billable now while you finish the rest of setup."
+                    if billable_now
+                    else "The next milestone is billable now, which needs amount and currency on at least one booking link."
+                )
+            ),
             label="Done",
             badge_class="connected",
             item_class="done",
@@ -2234,7 +2454,14 @@ def _build_setup_home_progress(
     if billing_ready_count > 0:
         billing_defaults_step = _setup_step(
             title="Add billing defaults",
-            copy_html=f"{html.escape(_count_copy(billing_ready_count, 'billing-ready link'))} already has amount and currency saved for invoicing.",
+            copy_html=(
+                f"{html.escape(_count_copy(billing_ready_count, 'saved link'))} "
+                + (
+                    "already has amount and currency so this workspace is billable now."
+                    if billable_now
+                    else "already has amount and currency. Connect Stripe so this workspace becomes billable now."
+                )
+            ),
             label="Done",
             badge_class="connected",
             item_class="done",
@@ -2243,7 +2470,7 @@ def _build_setup_home_progress(
     elif booking_links_count > 0:
         billing_defaults_step = _setup_step(
             title="Add billing defaults",
-            copy_html='At least one saved booking link still needs both amount and currency before invoicing can run safely. <a href="/app/booking-links" class="inline-link">Add billing defaults</a>.',
+            copy_html='At least one saved booking link still needs both amount and currency before this workspace is billable now. <a href="/app/booking-links" class="inline-link">Add billing defaults</a>.',
             label="Blocked",
             badge_class="disconnected",
             item_class="todo",
@@ -2251,8 +2478,8 @@ def _build_setup_home_progress(
         )
         if next_action is None:
             next_action = {
-                "title": "Add billing defaults",
-                "copy_html": "This setup is blocked until at least one booking link has both amount and currency saved.",
+                "title": "Become billable now",
+                "copy_html": "Add amount and currency to at least one saved booking link so new tracked bookings can move into invoicing.",
                 "action_label": "Add billing defaults",
                 "action_href": "/app/booking-links",
                 "action_method": "get",
@@ -2270,16 +2497,25 @@ def _build_setup_home_progress(
     if tracked_content_count > 0:
         tracked_link_step = _setup_step(
             title="Create a tracked link",
-            copy_html=f"{html.escape(_count_copy(tracked_content_count, 'tracked link'))} ready to copy into the content you share.",
+            copy_html=(
+                f"{html.escape(_count_copy(tracked_content_count, 'tracked link'))} "
+                + (
+                    "is ready to share, so this workspace is ready to track."
+                    if tracked_content_count == 1 and ready_to_track
+                    else "are ready to share, so this workspace is ready to track."
+                    if ready_to_track
+                    else "saved, but this workspace still is not ready to track until it is billable now."
+                )
+            ),
             label="Done",
             badge_class="connected",
             item_class="done",
             is_complete=True,
         )
-    elif booking_links_count > 0:
+    elif billable_now:
         tracked_link_step = _setup_step(
             title="Create a tracked link",
-            copy_html='Create one tracked link so bookings can be tied back to the content that sent them. <a href="/app/content" class="inline-link">Open content</a>.',
+            copy_html='Create one tracked link so this workspace becomes ready to track. <a href="/app/content" class="inline-link">Open content</a>.',
             label="Needs action",
             badge_class="pending",
             item_class="todo",
@@ -2287,8 +2523,8 @@ def _build_setup_home_progress(
         )
         if next_action is None:
             next_action = {
-                "title": "Create your first tracked link",
-                "copy_html": "Save a source URL and copy the generated tracked link into the post, page, or CTA you share.",
+                "title": "Become ready to track",
+                "copy_html": "Create tracked content so the shared link can carry attribution into real bookings and later paid results.",
                 "action_label": "Open content",
                 "action_href": "/app/content",
                 "action_method": "get",
@@ -2296,7 +2532,7 @@ def _build_setup_home_progress(
     else:
         tracked_link_step = _setup_step(
             title="Create a tracked link",
-            copy_html="Booking links come first. After that, create a tracked link from a real source URL you plan to share.",
+            copy_html="Create tracked content after the workspace is billable now so the shared link can lead to attributable bookings.",
             label="Waiting",
             badge_class="pending",
             item_class="next",
@@ -2320,18 +2556,32 @@ def _build_setup_home_progress(
                 "action_href": "/app/attention",
                 "action_method": "get",
             }
+        elif paid_invoice_count > 0:
+            next_action = {
+                "title": "Review paid results",
+                "copy_html": "This workspace already has counted paid results. Use Reports to review what landed and keep sharing tracked links for more proof.",
+                "action_label": "Open Reports",
+                "action_href": "/app/reports",
+                "action_method": "get",
+            }
         else:
             next_action = {
-                "title": "Start using your tracked link",
-                "copy_html": "Core setup is ready. Copy the tracked link you want to share, then watch bookings and reports as real activity arrives.",
+                "title": "Waiting for first paid result",
+                "copy_html": "This workspace is ready to track. Share the tracked link, then wait for a real booking and a matching paid invoice before Reports fills in.",
                 "action_label": "Open content",
                 "action_href": "/app/content",
                 "action_method": "get",
             }
 
-    progress_copy = "Finish the next highlighted step to move this workspace forward."
-    if completed_count == len(steps):
-        progress_copy = "Core setup is ready for real activity."
+    progress_copy = "Connect Stripe first, then make one booking link billable now and create tracked content."
+    if bool(readiness["connected"]):
+        progress_copy = "Stripe is connected. The next milestone is billable now."
+    if billable_now:
+        progress_copy = "This workspace is billable now. Create tracked content next to become ready to track."
+    if ready_to_track and paid_invoice_count == 0:
+        progress_copy = "This workspace is ready to track and waiting for the first paid result."
+    if paid_invoice_count > 0:
+        progress_copy = "This workspace is ready to track and already has counted paid results."
 
     return {
         "steps": steps,
@@ -3562,6 +3812,7 @@ def _render_reports_page(
     *,
     current_user: AuthUser,
     content_items: list[ContentResponse],
+    readiness: dict[str, object],
     summary: CreatorReportsSummary,
     filter_values: dict[str, str],
     field_errors: dict[str, str],
@@ -3677,6 +3928,7 @@ def _render_reports_page(
       </div>
       {_render_reports_results(
           content_items=content_items,
+          readiness=readiness,
           summary=summary,
           filters_active=filters_active,
           filter_values=filter_values,
@@ -4001,13 +4253,14 @@ def _render_reports_notice(*, field_errors: dict[str, str]) -> str:
 def _render_reports_results(
     *,
     content_items: list[ContentResponse],
+    readiness: dict[str, object],
     summary: CreatorReportsSummary,
     filters_active: bool,
     filter_values: dict[str, str],
 ) -> str:
     if not summary.rows:
         return _render_reports_empty_state(
-            has_tracked_content=bool(content_items),
+            readiness=readiness,
             filters_active=filters_active,
         )
 
@@ -4021,17 +4274,7 @@ def _render_reports_results(
     return f'<div class="content-list">{items}</div>'
 
 
-def _render_reports_empty_state(*, has_tracked_content: bool, filters_active: bool) -> str:
-    if not has_tracked_content:
-        return """
-        <section class="empty-state">
-          <p class="eyebrow">No tracked content yet</p>
-          <h2>Create tracked content first</h2>
-          <p>This reporting page fills in only after you save a tracked link and a paid invoice is matched back to it.</p>
-          <a href="/app/content" class="inline-link">Create tracked content</a>
-        </section>
-        """
-
+def _render_reports_empty_state(*, readiness: dict[str, object], filters_active: bool) -> str:
     if filters_active:
         return """
         <section class="empty-state">
@@ -4042,12 +4285,42 @@ def _render_reports_empty_state(*, has_tracked_content: bool, filters_active: bo
         </section>
         """
 
+    if bool(readiness["waiting_for_first_paid_result"]):
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">Waiting for first paid result</p>
+          <h2>Waiting for first paid result</h2>
+          <p>This workspace is ready to track. Reports fills in after tracked content leads to a booking and the matching invoice is marked paid.</p>
+          <a href="/app/content" class="inline-link">Review tracked content</a>
+        </section>
+        """
+
+    if bool(readiness["billable_now"]):
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">Not ready to track yet</p>
+          <h2>Ready to track is the next milestone</h2>
+          <p>This workspace is billable now, but Reports stays empty until you create tracked content and that tracked link leads to a paid invoice.</p>
+          <a href="/app/content" class="inline-link">Create tracked content</a>
+        </section>
+        """
+
+    if bool(readiness["connected"]):
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">Not billable now</p>
+          <h2>Billable now comes before paid results</h2>
+          <p>Stripe is connected, but this workspace is not billable now yet. Save amount and currency on at least one booking link, then create tracked content.</p>
+          <a href="/app/booking-links" class="inline-link">Add billing defaults</a>
+        </section>
+        """
+
     return """
     <section class="empty-state">
-      <p class="eyebrow">No paid results yet</p>
-      <h2>No paid results yet</h2>
-      <p>You already have tracked content, but nothing is counted here until a matching invoice is marked paid.</p>
-    <a href="/app/content" class="inline-link">Review tracked content</a>
+      <p class="eyebrow">Not connected yet</p>
+      <h2>Connected comes before paid results</h2>
+      <p>Connect Stripe first. Then make one booking link billable now and create tracked content before Reports can fill in.</p>
+      <a href="/app" class="inline-link">Open setup home</a>
     </section>
     """
 
@@ -4627,18 +4900,35 @@ def _format_money_from_cents(amount_cents: int) -> str:
     return f"{amount_cents / 100:,.2f}"
 
 
-def _stripe_setup_home_state(raw_status: str) -> dict[str, str]:
+def _stripe_setup_home_state(*, raw_status: str, readiness: dict[str, object]) -> dict[str, str]:
     normalized_status = raw_status.strip().lower()
     if normalized_status == "connected":
+        description = (
+            "Stripe is connected, but this workspace is not billable now yet. Save amount "
+            "and currency on at least one booking link."
+        )
+        checklist_copy = (
+            "Stripe is connected. The next milestone is billable now, which needs amount "
+            "and currency on at least one booking link."
+        )
+        if bool(readiness["billable_now"]):
+            description = (
+                "Stripe is connected and this workspace is billable now. Keep going until "
+                "it is also ready to track."
+            )
+            checklist_copy = (
+                "Stripe is connected. This workspace is already billable now while you "
+                "finish the rest of setup."
+            )
         return {
             "label": "Connected",
             "heading": "Stripe is connected",
-            "description": "This workspace already has a connected Stripe account. Keep going with booking links, billing defaults, and tracked links.",
+            "description": description,
             "button_label": "",
             "badge_class": "connected",
             "item_class": "done",
             "checklist_label": "Done",
-            "checklist_copy": "Your Stripe account is connected. The next setup work is booking links, billing defaults, and tracked links.",
+            "checklist_copy": checklist_copy,
         }
 
     if normalized_status == "disconnected":
@@ -4665,16 +4955,27 @@ def _stripe_setup_home_state(raw_status: str) -> dict[str, str]:
     }
 
 
-def _account_stripe_management_state(raw_status: str) -> dict[str, str]:
+def _account_stripe_management_state(
+    *,
+    raw_status: str,
+    readiness: dict[str, object],
+) -> dict[str, str]:
     normalized_status = raw_status.strip().lower()
     if normalized_status == "connected":
+        body = (
+            "This workspace is connected to Stripe, but it is not billable now yet. Save "
+            "amount and currency on at least one booking link before new bookings can move "
+            "into invoicing."
+        )
+        if bool(readiness["billable_now"]):
+            body = (
+                "This workspace is connected to Stripe and billable now for future "
+                "invoicing. You can reconnect or replace that connection without deleting "
+                "your historical bookings, invoices, reports, or recovery history."
+            )
         return {
             "label": "Connected",
-            "body": (
-                "This workspace is connected to Stripe for future invoicing. You can "
-                "reconnect or replace that connection without deleting your historical "
-                "bookings, invoices, reports, or recovery history."
-            ),
+            "body": body,
             "action_label": "Reconnect Stripe",
             "badge_class": "connected",
         }
@@ -4738,10 +5039,10 @@ def _count_copy(count: int, singular: str, plural: str | None = None) -> str:
 
 def _account_billing_ready_summary_copy(billing_ready_count: int) -> str:
     if billing_ready_count == 1:
-        return "1 billing-ready link already has amount and currency saved."
+        return "1 saved link already has amount and currency so this workspace can be billable now."
     return (
-        f"{_count_copy(billing_ready_count, 'billing-ready link')} already have amount "
-        "and currency saved."
+        f"{_count_copy(billing_ready_count, 'saved link')} already have amount and currency "
+        "so this workspace can be billable now."
     )
 
 

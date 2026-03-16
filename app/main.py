@@ -27,7 +27,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
+    settings = (
+        app.state.settings
+        if getattr(app.state, "_settings_overridden", False)
+        else get_settings()
+    )
     settings.validate_runtime()
     app.state.settings = settings
     if not hasattr(app.state, "click_event_publisher"):

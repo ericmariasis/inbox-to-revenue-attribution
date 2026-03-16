@@ -33,6 +33,7 @@ SAFE_NON_LOCAL_ENV = {
     "MAGIC_LINK_BASE_URL": "https://creatortrust.test",
     "MAGIC_LINK_EMAIL_FROM_EMAIL": "auth@creatortrust.co",
     "MAGIC_LINK_EMAIL_SMTP_HOST": "smtp.creatortrust.co",
+    "OPERATOR_EMAIL_ALLOWLIST": "ops1@creatortrust.co,ops2@creatortrust.co",
 }
 
 
@@ -58,6 +59,7 @@ def _safe_non_local_settings(**overrides: str) -> Settings:
         "magic_link_base_url": SAFE_NON_LOCAL_ENV["MAGIC_LINK_BASE_URL"],
         "magic_link_email_from_email": SAFE_NON_LOCAL_ENV["MAGIC_LINK_EMAIL_FROM_EMAIL"],
         "magic_link_email_smtp_host": SAFE_NON_LOCAL_ENV["MAGIC_LINK_EMAIL_SMTP_HOST"],
+        "operator_email_allowlist": SAFE_NON_LOCAL_ENV["OPERATOR_EMAIL_ALLOWLIST"],
     }
     data.update(overrides)
     return Settings.model_validate(data)
@@ -71,13 +73,29 @@ def _set_non_local_env(monkeypatch: pytest.MonkeyPatch, **overrides: str) -> Non
 
 
 def test_local_defaults_pass_runtime_validation():
-    settings = Settings.model_validate({"app_env": "local"})
+    settings = Settings(_env_file=None, app_env="local")
 
     settings.validate_runtime()
 
 
-def test_non_local_defaults_fail_with_clear_field_names():
-    settings = Settings.model_validate({"app_env": "preview"})
+def test_non_local_defaults_fail_with_clear_field_names(monkeypatch: pytest.MonkeyPatch):
+    for env_name in (
+        "JWT_SECRET",
+        "STRIPE_WEBHOOK_SECRET",
+        "CALENDLY_WEBHOOK_SIGNING_KEY",
+        "STRIPE_CONNECT_CLIENT_ID",
+        "STRIPE_SECRET_KEY",
+        "STRIPE_CONNECT_REDIRECT_URI",
+        "TRACKED_LINK_BASE_URL",
+        "MAGIC_LINK_EMAIL_PROVIDER",
+        "MAGIC_LINK_BASE_URL",
+        "MAGIC_LINK_EMAIL_FROM_EMAIL",
+        "MAGIC_LINK_EMAIL_SMTP_HOST",
+        "OPERATOR_EMAIL_ALLOWLIST",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+    settings = Settings(_env_file=None, app_env="preview")
 
     with pytest.raises(SettingsValidationError) as exc_info:
         settings.validate_runtime()
@@ -90,6 +108,7 @@ def test_non_local_defaults_fail_with_clear_field_names():
     assert "stripe_secret_key" in message
     assert "stripe_connect_redirect_uri" in message
     assert "tracked_link_base_url" in message
+    assert "operator_email_allowlist" in message
     assert "magic_link_email_provider" in message or "magic_link_base_url" in message
     assert DEFAULT_JWT_SECRET not in message
     assert DEFAULT_STRIPE_WEBHOOK_SECRET not in message
@@ -132,3 +151,25 @@ def test_non_local_stub_email_provider_fails_runtime_validation():
 
     with pytest.raises(SettingsValidationError, match="magic_link_email_provider"):
         settings.validate_runtime()
+
+
+def test_non_local_missing_operator_allowlist_fails_runtime_validation():
+    settings = _safe_non_local_settings(operator_email_allowlist="")
+
+    with pytest.raises(SettingsValidationError, match="operator_email_allowlist"):
+        settings.validate_runtime()
+
+
+def test_operator_email_allowlist_parses_comma_separated_values():
+    settings = Settings.model_validate(
+        {
+            "app_env": "local",
+            "operator_email_allowlist": " Ops1@CreatorTrust.co, ops2@creatortrust.co , ops1@creatortrust.co ",
+        }
+    )
+
+    assert settings.operator_email_allowlist_values() == (
+        "ops1@creatortrust.co",
+        "ops2@creatortrust.co",
+    )
+    assert settings.is_operator_email_allowed("OPS2@CREATORTRUST.CO")

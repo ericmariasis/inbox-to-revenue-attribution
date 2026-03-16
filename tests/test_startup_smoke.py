@@ -30,6 +30,7 @@ SAFE_NON_LOCAL_ENV = {
     "MAGIC_LINK_EMAIL_SMTP_HOST": "smtp.creatorbeta.co",
     "MAGIC_LINK_EMAIL_SMTP_USERNAME": "smtp-user",
     "MAGIC_LINK_EMAIL_SMTP_PASSWORD": "smtp-password",
+    "OPERATOR_EMAIL_ALLOWLIST": "ops1@creatortrust.co,ops2@creatortrust.co",
 }
 
 

@@ -1,7 +1,8 @@
 import os
+import uuid
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 
 def test_migrations_upgrade_and_downgrade():
@@ -12,6 +13,46 @@ def test_migrations_upgrade_and_downgrade():
     command.upgrade(cfg, "head")
     engine = create_engine(db_url)
     try:
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
+            content_columns = {column["name"] for column in inspector.get_columns("content")}
+            calendly_columns = {
+                column["name"] for column in inspector.get_columns("calendly_webhook_events")
+            }
+            assert "support_requests" in table_names
+            assert "shared_rate_limit_events" in table_names
+            assert "pending_magic_link_issuances" in table_names
+            assert "creator_experiment_run_cards" in table_names
+            assert "creator_experiment_runs" in table_names
+            assert "creator_claim_paid_evidence_refs" in table_names
+            assert "creator_claim_snapshots" in table_names
+            assert "calendly_webhook_events" in table_names
+            assert "content_topic_candidates" in table_names
+            assert "content_confirmed_topics" in table_names
+            assert "content_extraction_artifacts" in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
+            assert "authoritative_extraction_artifact_id" in content_columns
+            assert "attribution_status" in booking_columns
+            assert "unattributed_reason" in booking_columns
+            assert "reducer_key" in calendly_columns
+            assert "reducer_attempt_count" in calendly_columns
+            assert "frozen_billing_amount_cents" in booking_columns
+            assert "frozen_billing_currency" in booking_columns
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
         with engine.connect() as conn:
             inspector = inspect(conn)
             table_names = inspector.get_table_names(schema="public")
@@ -928,6 +969,97 @@ def test_support_requests_table_has_expected_columns_fk_and_indexes():
             and index["unique"]
             for index in indexes
         )
+
+
+def test_support_request_status_migration_rewrites_story88_statuses_to_submitted():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", db_url)
+    engine = create_engine(db_url)
+
+    creator_one = str(uuid.uuid4())
+    creator_two = str(uuid.uuid4())
+    creator_three = str(uuid.uuid4())
+
+    command.downgrade(cfg, "2b3c4d5e6f7a")
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO creators (id, name, stripe_connect_status) VALUES "
+                    "(:id_one, 'Migration One', 'pending'), "
+                    "(:id_two, 'Migration Two', 'pending'), "
+                    "(:id_three, 'Migration Three', 'pending')"
+                ),
+                {
+                    "id_one": creator_one,
+                    "id_two": creator_two,
+                    "id_three": creator_three,
+                },
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO support_requests ("
+                    "id, creator_id, request_type, requester_email, creator_name_snapshot, status, "
+                    "notification_attempted_at, notification_sent_at, notification_failed_at, closed_at"
+                    ") VALUES "
+                    "("
+                    ":id_one, :creator_one, 'workspace-reset', 'pending@example.com', 'Migration One', 'notification_pending', "
+                    "NULL, NULL, NULL, NULL"
+                    "),"
+                    "("
+                    ":id_two, :creator_two, 'account-deletion', 'delivered@example.com', 'Migration Two', 'pending', "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, NULL"
+                    "),"
+                    "("
+                    ":id_three, :creator_three, 'workspace-reset', 'failed@example.com', 'Migration Three', 'notification_failed', "
+                    "CURRENT_TIMESTAMP, NULL, CURRENT_TIMESTAMP, NULL"
+                    ")"
+                ),
+                {
+                    "id_one": str(uuid.uuid4()),
+                    "creator_one": creator_one,
+                    "id_two": str(uuid.uuid4()),
+                    "creator_two": creator_two,
+                    "id_three": str(uuid.uuid4()),
+                    "creator_three": creator_three,
+                },
+            )
+
+        command.upgrade(cfg, "head")
+        with engine.connect() as conn:
+            upgraded_rows = conn.execute(
+                text(
+                    "SELECT requester_email, status "
+                    "FROM support_requests "
+                    "ORDER BY requester_email ASC"
+                )
+            ).mappings().all()
+
+        assert upgraded_rows == [
+            {"requester_email": "delivered@example.com", "status": "submitted"},
+            {"requester_email": "failed@example.com", "status": "submitted"},
+            {"requester_email": "pending@example.com", "status": "submitted"},
+        ]
+
+        command.downgrade(cfg, "2b3c4d5e6f7a")
+        with engine.connect() as conn:
+            downgraded_rows = conn.execute(
+                text(
+                    "SELECT requester_email, status "
+                    "FROM support_requests "
+                    "ORDER BY requester_email ASC"
+                )
+            ).mappings().all()
+
+        assert downgraded_rows == [
+            {"requester_email": "delivered@example.com", "status": "pending"},
+            {"requester_email": "failed@example.com", "status": "notification_failed"},
+            {"requester_email": "pending@example.com", "status": "notification_pending"},
+        ]
+    finally:
+        command.upgrade(cfg, "head")
+        engine.dispose()
 
 
 def test_creator_claim_snapshots_table_has_expected_columns_fk_and_indexes():

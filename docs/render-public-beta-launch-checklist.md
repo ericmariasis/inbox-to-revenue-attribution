@@ -2,6 +2,10 @@
 
 This checklist is the Story 76 closeout path for the first public beta on Render.
 
+For the top-level beta QA structure that decides when to use this checklist versus the creator UX or abuse/support regression lanes, use:
+
+- [Render public-beta master QA plan](./render-public-beta-master-qa-plan.md)
+
 It intentionally reuses the existing Story 73-75 surfaces instead of inventing a second launch workflow:
 
 - Render deploy status and logs

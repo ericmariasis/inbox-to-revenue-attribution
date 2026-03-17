@@ -2,6 +2,10 @@
 
 This packet complements the Render launch checklist.
 
+For the top-level beta QA structure that decides when this packet should run alongside launch, operator, and abuse/support lanes, use:
+
+- [Render public-beta master QA plan](./render-public-beta-master-qa-plan.md)
+
 Use it when you need confidence that the beta is understandable and usable through the actual creator UI, not only that the deploy, schema, and operator seams are healthy.
 
 The launch checklist remains the release gate. This packet answers a different question:
@@ -15,6 +19,7 @@ The launch checklist remains the release gate. This packet answers a different q
 
 Use this packet alongside:
 
+- [Render public-beta master QA plan](./render-public-beta-master-qa-plan.md)
 - [Render public-beta launch checklist](./render-public-beta-launch-checklist.md)
 
 Use the launch checklist for:
@@ -32,11 +37,14 @@ Use this UX packet for:
 
 ## What This Packet Covers
 
+- same-device browser sign-in comprehension
 - first-impression clarity and product-promise comprehension
 - cold-start creator setup through the browser
+- setup-to-value milestone clarity across setup surfaces
 - signed-in account-management clarity and danger-zone trust checks
 - realistic content setup using a real public article URL
 - tracked-link usage understanding
+- reports waiting-state and first-value proof honesty
 - warm-path reporting and trust surfaces
 - experiments helper honesty in both `ready` and `unsupported` states
 - key empty states and failure states a beta creator is likely to hit
@@ -51,10 +59,15 @@ Use this UX packet for:
 
 ## Test Setup
 
-Prefer using two creator workspaces if possible:
+Prefer using three creator workspaces if possible:
 
 1. a cold-start workspace with little or no existing data
-2. a warm-path workspace with at least:
+2. a ready-to-track workspace with:
+   - connected Stripe
+   - one booking link with amount and currency
+   - one tracked content row
+   - zero paid invoices
+3. a warm-path workspace with at least:
    - one booking link
    - connected Stripe
    - one tracked content row
@@ -105,9 +118,10 @@ Goal:
 
 Steps:
 
-1. Open the sign-in flow and complete browser sign-in.
-2. Land on `/app`.
-3. Ask the tester to explain, in their own words:
+1. Open the sign-in flow and confirm the page tells the tester to open the magic link on the same device and browser.
+2. Complete browser sign-in.
+3. Land on `/app`.
+4. Ask the tester to explain, in their own words:
    - what this product does
    - what setup is required before it becomes useful
    - what result would prove it is working
@@ -116,6 +130,7 @@ Expected result:
 
 - the tester can explain a version of:
   - "This tells me which posts led to bookings and paid revenue."
+- the tester understands the sign-in flow is meant to finish on the same device and browser where it started
 - the tester understands that setup depends on:
   - a booking link
   - Stripe connection
@@ -141,6 +156,7 @@ Steps:
 Expected result:
 
 - setup progress is legible
+- the same `Connected`, `Billable now`, `Ready to track`, and `Waiting for first paid result` vocabulary stays coherent across setup surfaces
 - the next step is obvious after each completed action
 - blocked or incomplete setup states explain what is still missing
 - the creator can reach a "core setup is ready" state without needing DB or operator help
@@ -235,7 +251,33 @@ Expected result:
 - the tester understands that the tracked link belongs in the outbound booking CTA path
 - the tester does not confuse the tracked link with the page URL they are publishing
 
-### 6. Warm-Path Reporting And Trust
+### 6. Reports Waiting State And First-Value Proof
+
+Goal:
+
+- confirm a ready-to-track creator with no paid data still understands what first value will look like
+
+Steps:
+
+1. Use a ready-to-track workspace with no paid invoices yet.
+2. Open `/app/reports`.
+3. Confirm the page says `Waiting for first paid result`.
+4. Confirm the page shows an `Illustrative preview` block that:
+   - is clearly labeled illustrative only
+   - does not claim to use live bookings, invoices, or paid revenue from this workspace
+   - explains the milestone flow from tracked content -> booking -> paid invoice
+5. Confirm the page still behaves like a real waiting state:
+   - the current workspace still has no counted paid results
+   - the next real action remains grounded in tracked content or waiting for real bookings
+   - there is no generate action, seeded account switch, or fake-data write path
+
+Expected result:
+
+- the waiting state explains first value without pretending the proof is live workspace data
+- the preview feels honest and read-only
+- the tester can explain what real event will eventually replace the illustrative state
+
+### 7. Warm-Path Reporting And Trust
 
 Goal:
 
@@ -259,7 +301,7 @@ Expected result:
 - the next action is understandable when attention items exist
 - the page feels evidence-backed rather than vague
 
-### 7. Experiments Helper Honesty
+### 8. Experiments Helper Honesty
 
 Goal:
 
@@ -282,7 +324,7 @@ Expected result:
 - `ready` does not look like generic advice
 - the evidence page clearly ties the suggestion back to authoritative content and settled paid results
 
-### 8. Empty States And Failure States
+### 9. Empty States And Failure States
 
 Goal:
 
@@ -311,9 +353,11 @@ Treat the UX packet as a pass when all of these are true:
 
 - a tester can explain the product benefit in plain language
 - a cold-start creator can complete the core browser setup without operator translation
+- the tester understands the same-device sign-in expectation and the shared readiness vocabulary
 - the tester can distinguish normal self-serve settings changes from support-assisted destructive actions
 - a realistic public blog or Substack URL works as a tracked content source, or any failure is clearly explained
 - the tester understands where to place the tracked link
+- a ready-to-track creator with no paid results can understand the waiting state and illustrative first-value proof without mistaking it for live data
 - reporting makes paid truth and not-yet-counted states understandable
 - the experiments helper is honest in both `ready` and `unsupported` states
 
@@ -322,8 +366,10 @@ Treat the UX packet as a pass when all of these are true:
 Treat a UX finding as a real beta blocker only if it crosses one of these lines:
 
 - the creator cannot understand what the product does after normal browser setup
+- the creator cannot tell that sign-in is meant to finish on the same device and browser where it started
 - the creator cannot understand how to request support-assisted reset or deletion without thinking it is immediate or self-serve
 - the creator cannot tell how to use the tracked link
+- the waiting-state proof looks like live creator data or hides what real milestone still has not happened
 - a normal public blog or Substack post consistently fails despite meeting the stated public-URL assumptions
 - reporting materially misleads the creator about what counted as paid truth
 - unsupported helper output looks like a broken or misleading AI feature rather than an intentional not-ready state
@@ -340,9 +386,11 @@ Beta UX QA result:
 - Real source URL(s) used:
 - Product promise understood: yes/no
 - Cold-start setup pass: yes/no
+- Same-device sign-in and readiness vocabulary pass: yes/no
 - Account/danger-zone pass: yes/no
 - Real content source fit pass: yes/no
 - Tracked-link usage understood: yes/no
+- Waiting-state and first-value proof pass: yes/no
 - Reporting/trust pass: yes/no
 - Experiments honesty pass: yes/no
 - Blockers found:

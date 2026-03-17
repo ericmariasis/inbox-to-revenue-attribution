@@ -65,6 +65,12 @@ from app.services.browser_session import (
     clear_browser_session_cookie,
     get_browser_session_token,
 )
+from app.services.creator_workspace_state import (
+    CreatorWorkspaceReadiness,
+    CreatorWorkspaceState,
+    build_creator_workspace_readiness,
+    build_creator_workspace_state,
+)
 from app.services.email_provider import (
     MagicLinkEmailDeliveryError,
     SupportRequestEmailDeliveryError,
@@ -334,19 +340,19 @@ def creator_app_shell(
         creator_id=current_user.creator_id,
         db=db,
     )
-    readiness = _build_creator_readiness(
+    workspace_state = build_creator_workspace_state(
         raw_stripe_status=current_user.creator.stripe_connect_status,
         booking_links=booking_links,
         content_items=content_items,
         paid_invoice_count=summary.paid_invoice_count,
+        blocked_billing_count=summary.blocked_summary.open_case_count,
+        unmatched_payment_count=summary.unattributed_current_backlog.event_count,
     )
 
     return _html_response(
         _render_app_shell(
             current_user=current_user,
-            readiness=readiness,
-            blocked_billing_count=summary.blocked_summary.open_case_count,
-            unmatched_payment_count=summary.unattributed_current_backlog.event_count,
+            workspace_state=workspace_state,
             status_value=status_value,
         )
     )
@@ -376,7 +382,7 @@ def creator_account_page(
         creator_id=current_user.creator_id,
         db=db,
     )
-    readiness = _build_creator_readiness(
+    readiness = build_creator_workspace_readiness(
         raw_stripe_status=current_user.creator.stripe_connect_status,
         booking_links=booking_links,
         content_items=content_items,
@@ -393,7 +399,6 @@ def creator_account_page(
     return _html_response(
         _render_account_page(
             current_user=current_user,
-            booking_links=booking_links,
             readiness=readiness,
             support_requests=support_requests,
             active_support_requests=active_support_requests,
@@ -958,7 +963,7 @@ def creator_reports_page(
         except ValueError:
             field_errors["date_range"] = "Start date must be on or before end date."
 
-    readiness = _build_creator_readiness(
+    readiness = build_creator_workspace_readiness(
         raw_stripe_status=current_user.creator.stripe_connect_status,
         booking_links=booking_links,
         content_items=content_items,
@@ -1559,21 +1564,15 @@ def _render_sign_in_page(status_value: str | None) -> str:
 def _render_app_shell(
     *,
     current_user: AuthUser,
-    readiness: dict[str, object],
-    blocked_billing_count: int,
-    unmatched_payment_count: int,
+    workspace_state: CreatorWorkspaceState,
     status_value: str | None,
 ) -> str:
+    readiness = workspace_state.readiness
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
-    stripe_status = _stripe_setup_home_state(
-        raw_status=current_user.creator.stripe_connect_status,
-        readiness=readiness,
-    )
+    stripe_status = _stripe_setup_home_state(readiness=readiness)
     setup_progress = _build_setup_home_progress(
-        readiness=readiness,
-        blocked_billing_count=blocked_billing_count,
-        unmatched_payment_count=unmatched_payment_count,
+        workspace_state=workspace_state,
     )
 
     stripe_detail_lines = []
@@ -1654,8 +1653,7 @@ def _render_app_shell(
 def _render_account_page(
     *,
     current_user: AuthUser,
-    booking_links: list[BookingLinkResponse],
-    readiness: dict[str, object],
+    readiness: CreatorWorkspaceReadiness,
     support_requests: dict[str, SupportRequestRecord],
     active_support_requests: dict[str, SupportRequestRecord],
     status_value: str | None,
@@ -1663,17 +1661,9 @@ def _render_account_page(
 ) -> str:
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
-    stripe_state = _account_stripe_management_state(
-        raw_status=current_user.creator.stripe_connect_status,
-        readiness=readiness,
-    )
-    booking_links_count = len(booking_links)
-    billing_ready_count = sum(
-        1
-        for booking_link in booking_links
-        if booking_link.billing_amount_cents is not None
-        and booking_link.billing_currency is not None
-    )
+    stripe_state = _account_stripe_management_state(readiness=readiness)
+    booking_links_count = readiness.booking_links_count
+    billing_ready_count = readiness.billing_ready_count
 
     stripe_detail_lines = []
     if current_user.creator.stripe_account_id:
@@ -2173,42 +2163,8 @@ def _setup_attention_copy(attention_count: int) -> str:
     )
 
 
-def _build_creator_readiness(
-    *,
-    raw_stripe_status: str,
-    booking_links: list[BookingLinkResponse],
-    content_items: list[ContentResponse],
-    paid_invoice_count: int,
-) -> dict[str, object]:
-    normalized_stripe_status = raw_stripe_status.strip().lower()
-    booking_links_count = len(booking_links)
-    billing_ready_count = sum(
-        1
-        for booking_link in booking_links
-        if booking_link.billing_amount_cents is not None
-        and booking_link.billing_currency is not None
-    )
-    tracked_content_count = len(content_items)
-    connected = normalized_stripe_status == "connected"
-    billable_now = connected and billing_ready_count > 0
-    ready_to_track = billable_now and tracked_content_count > 0
-    waiting_for_first_paid_result = ready_to_track and paid_invoice_count == 0
-
-    return {
-        "stripe_status": normalized_stripe_status,
-        "connected": connected,
-        "billable_now": billable_now,
-        "ready_to_track": ready_to_track,
-        "waiting_for_first_paid_result": waiting_for_first_paid_result,
-        "booking_links_count": booking_links_count,
-        "billing_ready_count": billing_ready_count,
-        "tracked_content_count": tracked_content_count,
-        "paid_invoice_count": paid_invoice_count,
-    }
-
-
-def _readiness_stage_summary(readiness: dict[str, object]) -> dict[str, str]:
-    if int(readiness["paid_invoice_count"]) > 0:
+def _readiness_stage_summary(readiness: CreatorWorkspaceReadiness) -> dict[str, str]:
+    if readiness.paid_invoice_count > 0:
         return {
             "title": "Paid results are already landing",
             "copy": (
@@ -2217,7 +2173,7 @@ def _readiness_stage_summary(readiness: dict[str, object]) -> dict[str, str]:
             ),
         }
 
-    if bool(readiness["waiting_for_first_paid_result"]):
+    if readiness.waiting_for_first_paid_result:
         return {
             "title": "Ready to track and waiting for first paid result",
             "copy": (
@@ -2226,7 +2182,7 @@ def _readiness_stage_summary(readiness: dict[str, object]) -> dict[str, str]:
             ),
         }
 
-    if bool(readiness["billable_now"]):
+    if readiness.billable_now:
         return {
             "title": "Billable now, but not ready to track",
             "copy": (
@@ -2235,7 +2191,7 @@ def _readiness_stage_summary(readiness: dict[str, object]) -> dict[str, str]:
             ),
         }
 
-    if bool(readiness["connected"]):
+    if readiness.connected:
         return {
             "title": "Connected, but not billable now",
             "copy": (
@@ -2253,11 +2209,11 @@ def _readiness_stage_summary(readiness: dict[str, object]) -> dict[str, str]:
     }
 
 
-def _readiness_line_items(readiness: dict[str, object]) -> list[tuple[str, str, str]]:
-    stripe_status = str(readiness["stripe_status"])
-    booking_links_count = int(readiness["booking_links_count"])
+def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[str, str, str]]:
+    stripe_status = readiness.stripe_status
+    booking_links_count = readiness.booking_links_count
 
-    if bool(readiness["connected"]):
+    if readiness.connected:
         connected_line = ("Connected", "Done", "Stripe is connected to this workspace.")
     elif stripe_status == "disconnected":
         connected_line = (
@@ -2268,19 +2224,19 @@ def _readiness_line_items(readiness: dict[str, object]) -> list[tuple[str, str, 
     else:
         connected_line = ("Connected", "Not yet", "Finish Stripe setup first.")
 
-    if bool(readiness["billable_now"]):
+    if readiness.billable_now:
         billable_line = (
             "Billable now",
             "Done",
             "At least one booking link has amount and currency saved.",
         )
-    elif bool(readiness["connected"]) and booking_links_count > 0:
+    elif readiness.connected and booking_links_count > 0:
         billable_line = (
             "Billable now",
             "Not yet",
             "Add amount and currency to at least one saved booking link.",
         )
-    elif bool(readiness["connected"]):
+    elif readiness.connected:
         billable_line = (
             "Billable now",
             "Not yet",
@@ -2293,13 +2249,13 @@ def _readiness_line_items(readiness: dict[str, object]) -> list[tuple[str, str, 
             "Stripe must be connected before this workspace can be billable now.",
         )
 
-    if bool(readiness["ready_to_track"]):
+    if readiness.ready_to_track:
         ready_to_track_line = (
             "Ready to track",
             "Done",
             "At least one tracked link is ready to share on a billable setup.",
         )
-    elif bool(readiness["billable_now"]):
+    elif readiness.billable_now:
         ready_to_track_line = (
             "Ready to track",
             "Not yet",
@@ -2312,13 +2268,13 @@ def _readiness_line_items(readiness: dict[str, object]) -> list[tuple[str, str, 
             "This milestone starts after the workspace is billable now.",
         )
 
-    if int(readiness["paid_invoice_count"]) > 0:
+    if readiness.paid_invoice_count > 0:
         waiting_line = (
             "Waiting for first paid result",
             "Done",
             "Reports already includes counted paid results for this workspace.",
         )
-    elif bool(readiness["waiting_for_first_paid_result"]):
+    elif readiness.waiting_for_first_paid_result:
         waiting_line = (
             "Waiting for first paid result",
             "Current",
@@ -2339,7 +2295,7 @@ def _readiness_line_items(readiness: dict[str, object]) -> list[tuple[str, str, 
     ]
 
 
-def _render_readiness_summary(*, readiness: dict[str, object]) -> str:
+def _render_readiness_summary(*, readiness: CreatorWorkspaceReadiness) -> str:
     stage_summary = _readiness_stage_summary(readiness)
     line_items = "".join(
         (
@@ -2362,18 +2318,17 @@ def _render_readiness_summary(*, readiness: dict[str, object]) -> str:
 
 def _build_setup_home_progress(
     *,
-    readiness: dict[str, object],
-    blocked_billing_count: int,
-    unmatched_payment_count: int,
+    workspace_state: CreatorWorkspaceState,
 ) -> dict[str, object]:
-    normalized_stripe_status = str(readiness["stripe_status"])
-    booking_links_count = int(readiness["booking_links_count"])
-    billing_ready_count = int(readiness["billing_ready_count"])
-    tracked_content_count = int(readiness["tracked_content_count"])
-    billable_now = bool(readiness["billable_now"])
-    ready_to_track = bool(readiness["ready_to_track"])
-    paid_invoice_count = int(readiness["paid_invoice_count"])
-    attention_count = blocked_billing_count + unmatched_payment_count
+    readiness = workspace_state.readiness
+    normalized_stripe_status = readiness.stripe_status
+    booking_links_count = readiness.booking_links_count
+    billing_ready_count = readiness.billing_ready_count
+    tracked_content_count = readiness.tracked_content_count
+    billable_now = readiness.billable_now
+    ready_to_track = readiness.ready_to_track
+    paid_invoice_count = readiness.paid_invoice_count
+    attention_count = workspace_state.attention_count
 
     if normalized_stripe_status == "connected":
         stripe_step = _setup_step(
@@ -2575,7 +2530,7 @@ def _build_setup_home_progress(
             }
 
     progress_copy = "Connect Stripe first, then make one booking link billable now and create tracked content."
-    if bool(readiness["connected"]):
+    if readiness.connected:
         progress_copy = "Stripe is connected. The next milestone is billable now."
     if billable_now:
         progress_copy = "This workspace is billable now. Create tracked content next to become ready to track."
@@ -4256,7 +4211,7 @@ def _render_reports_notice(*, field_errors: dict[str, str]) -> str:
 def _render_reports_results(
     *,
     content_items: list[ContentResponse],
-    readiness: dict[str, object],
+    readiness: CreatorWorkspaceReadiness,
     summary: CreatorReportsSummary,
     filters_active: bool,
     filter_values: dict[str, str],
@@ -4324,7 +4279,11 @@ def _render_illustrative_first_value_proof() -> str:
     """
 
 
-def _render_reports_empty_state(*, readiness: dict[str, object], filters_active: bool) -> str:
+def _render_reports_empty_state(
+    *,
+    readiness: CreatorWorkspaceReadiness,
+    filters_active: bool,
+) -> str:
     if filters_active:
         return """
         <section class="empty-state">
@@ -4335,7 +4294,7 @@ def _render_reports_empty_state(*, readiness: dict[str, object], filters_active:
         </section>
         """
 
-    if bool(readiness["waiting_for_first_paid_result"]):
+    if readiness.waiting_for_first_paid_result:
         return f"""
         <section class="empty-state stack">
           <p class="eyebrow">Waiting for first paid result</p>
@@ -4346,7 +4305,7 @@ def _render_reports_empty_state(*, readiness: dict[str, object], filters_active:
         </section>
         """
 
-    if bool(readiness["billable_now"]):
+    if readiness.billable_now:
         return """
         <section class="empty-state">
           <p class="eyebrow">Not ready to track yet</p>
@@ -4356,7 +4315,7 @@ def _render_reports_empty_state(*, readiness: dict[str, object], filters_active:
         </section>
         """
 
-    if bool(readiness["connected"]):
+    if readiness.connected:
         return """
         <section class="empty-state">
           <p class="eyebrow">Not billable now</p>
@@ -4961,8 +4920,8 @@ def _format_money_from_cents(amount_cents: int) -> str:
     return f"{amount_cents / 100:,.2f}"
 
 
-def _stripe_setup_home_state(*, raw_status: str, readiness: dict[str, object]) -> dict[str, str]:
-    normalized_status = raw_status.strip().lower()
+def _stripe_setup_home_state(*, readiness: CreatorWorkspaceReadiness) -> dict[str, str]:
+    normalized_status = readiness.stripe_status
     if normalized_status == "connected":
         description = (
             "Stripe is connected, but this workspace is not billable now yet. Save amount "
@@ -4972,7 +4931,7 @@ def _stripe_setup_home_state(*, raw_status: str, readiness: dict[str, object]) -
             "Stripe is connected. The next milestone is billable now, which needs amount "
             "and currency on at least one booking link."
         )
-        if bool(readiness["billable_now"]):
+        if readiness.billable_now:
             description = (
                 "Stripe is connected and this workspace is billable now. Keep going until "
                 "it is also ready to track."
@@ -5018,17 +4977,16 @@ def _stripe_setup_home_state(*, raw_status: str, readiness: dict[str, object]) -
 
 def _account_stripe_management_state(
     *,
-    raw_status: str,
-    readiness: dict[str, object],
+    readiness: CreatorWorkspaceReadiness,
 ) -> dict[str, str]:
-    normalized_status = raw_status.strip().lower()
+    normalized_status = readiness.stripe_status
     if normalized_status == "connected":
         body = (
             "This workspace is connected to Stripe, but it is not billable now yet. Save "
             "amount and currency on at least one booking link before new bookings can move "
             "into invoicing."
         )
-        if bool(readiness["billable_now"]):
+        if readiness.billable_now:
             body = (
                 "This workspace is connected to Stripe and billable now for future "
                 "invoicing. You can reconnect or replace that connection without deleting "

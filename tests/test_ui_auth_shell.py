@@ -1448,6 +1448,7 @@ def test_content_page_create_success_shows_tracked_link_and_saved_item():
     assert "Strategy Call" in page_response.text
     assert 'data-copy-source="created-tracked-url"' in page_response.text
     assert "1 saved" in page_response.text
+    assert "Review topics for this content" not in page_response.text
 
 
 def test_content_page_lists_only_current_creators_content():
@@ -1498,6 +1499,7 @@ def test_content_page_lists_only_current_creators_content():
     assert "creator-a-content" in response.text
     assert f"{tracked_base_url}/r/uiacontenttid" in response.text
     assert "Creator A Strategy" in response.text
+    assert "Review topics for this content" not in response.text
     assert "creator-b-content" not in response.text
     assert f"{tracked_base_url}/r/uibcontenttid" not in response.text
     assert "Creator B Strategy" not in response.text

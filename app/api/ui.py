@@ -3006,7 +3006,6 @@ def _render_content_card(
           label="Tracked link",
           value=content.tracked_url,
       )}
-      <a href="/app/content/{quote(content.tid, safe='')}/topics" class="inline-link">Review topics for this content</a>
     </article>
     """
 

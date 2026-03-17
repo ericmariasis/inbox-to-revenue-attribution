@@ -28,6 +28,11 @@ The safe default is:
 3. cherry-pick the exact approved fix commit(s) onto the beta branch
 4. deploy the beta branch to the existing Render beta service
 
+Tracked record requirement:
+
+- record every promoted or direct beta hotfix in [Render beta hotfix ledger](./render-beta-hotfix-ledger.md)
+- keep the `Main sync status` field current until the same fix is safely mirrored onto `main` or explicitly rejected
+
 ## One-Time Cutover To A Beta Branch
 
 Run this once when you freeze the current public beta build.
@@ -225,9 +230,14 @@ Capture:
 - promoted commit SHA(s)
 - reason for promotion
 - tests rerun locally
+- staging validation result
 - Render smoke results
 - whether a migration was involved
 - any follow-up to also apply back on `main`
+
+Preferred tracked location:
+
+- [Render beta hotfix ledger](./render-beta-hotfix-ledger.md)
 
 ## Emergency Hotfix Exception
 
@@ -239,6 +249,12 @@ If you must patch the beta branch directly first:
 4. immediately cherry-pick that same commit back onto `main`
 
 Do not leave beta-only code drifting away from `main`.
+
+When using this exception, also record:
+
+- the direct beta commit SHA
+- the matching `main` sync plan or resulting `main` commit SHA
+- whether the beta fix was first staging-validated before the public beta deploy
 
 ## Render Change Checklist
 

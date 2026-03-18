@@ -1352,13 +1352,17 @@ BOOKING_LINK_ROOT_ERROR_FIELD_MAP = {
 
 
 def _booking_link_form_values(raw_values: dict[str, str]) -> dict[str, str]:
+    destination_url = raw_values.get("destination_url", "").strip()
+    legacy_calendly_url = raw_values.get("calendly_url", "").strip()
     form_values = _empty_booking_link_form_values()
     form_values.update(
         {
             "provider": raw_values.get("provider", BOOKING_PROVIDER_CALENDLY).strip().lower()
             or BOOKING_PROVIDER_CALENDLY,
             "name": raw_values.get("name", "").strip(),
-            "destination_url": raw_values.get("destination_url", "").strip(),
+            # Keep the legacy browser form field working for older validation flows
+            # that still post `calendly_url` directly.
+            "destination_url": destination_url or legacy_calendly_url,
             "fullscope_supported_calendar_confirmed": (
                 "true"
                 if raw_values.get("fullscope_supported_calendar_confirmed", "").strip().lower()

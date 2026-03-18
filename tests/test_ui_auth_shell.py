@@ -1316,6 +1316,46 @@ def test_booking_links_page_create_success_shows_saved_link_and_billing_defaults
     assert "1 saved" in page_response.text
 
 
+def test_booking_links_page_accepts_legacy_calendly_url_browser_field():
+    inserted = _insert_creator_user(
+        email=f"ui_booking_links_legacy_calendly_{uuid.uuid4().hex}@example.com",
+        name="Legacy Calendly Form Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        create_response = client.post(
+            "/app/booking-links",
+            data={
+                "name": "Legacy Calendly Form",
+                "calendly_url": "https://calendly.com/example/legacy-browser-form",
+                "billing_amount_cents": "12500",
+                "billing_currency": " usd ",
+            },
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        page_response = client.get(
+            create_response.headers["location"],
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert create_response.status_code == 303
+    assert create_response.headers["location"] == "/app/booking-links?status=created"
+
+    assert page_response.status_code == 200
+    assert "Booking link saved" in page_response.text
+    assert "Legacy Calendly Form" in page_response.text
+    assert "https://calendly.com/example/legacy-browser-form" in page_response.text
+    assert "Amount and currency set: USD 125.00" in page_response.text
+
+
 def test_booking_links_page_validation_feedback_preserves_input_and_page_state():
     inserted = _insert_creator_user(
         email=f"ui_booking_links_invalid_{uuid.uuid4().hex}@example.com",

@@ -9,13 +9,18 @@ from app.services.creator_workspace_state import (
 def _booking_link(
     *,
     id: str = "booking-link-1",
+    provider: str = "calendly",
+    destination_url: str = "https://calendly.com/example/strategy-call",
+    calendly_url: str | None = "https://calendly.com/example/strategy-call",
     billing_amount_cents: int | None = None,
     billing_currency: str | None = None,
 ) -> BookingLinkResponse:
     return BookingLinkResponse(
         id=id,
         name="Strategy Call",
-        calendly_url="https://calendly.com/example/strategy-call",
+        provider=provider,
+        destination_url=destination_url,
+        calendly_url=calendly_url,
         billing_amount_cents=billing_amount_cents,
         billing_currency=billing_currency,
     )
@@ -45,6 +50,8 @@ def test_build_creator_workspace_readiness_connected_but_not_billable_now():
     assert readiness.ready_to_track is False
     assert readiness.waiting_for_first_paid_result is False
     assert readiness.booking_links_count == 1
+    assert readiness.trackable_booking_links_count == 1
+    assert readiness.setup_only_booking_links_count == 0
     assert readiness.billing_ready_count == 0
     assert readiness.tracked_content_count == 0
     assert readiness.paid_invoice_count == 0
@@ -63,6 +70,8 @@ def test_build_creator_workspace_readiness_ready_to_track_waiting_for_first_paid
     assert readiness.ready_to_track is True
     assert readiness.waiting_for_first_paid_result is True
     assert readiness.booking_links_count == 1
+    assert readiness.trackable_booking_links_count == 1
+    assert readiness.setup_only_booking_links_count == 0
     assert readiness.billing_ready_count == 1
     assert readiness.tracked_content_count == 1
     assert readiness.paid_invoice_count == 0
@@ -80,6 +89,30 @@ def test_build_creator_workspace_readiness_paid_results_clear_waiting_state():
     assert readiness.ready_to_track is True
     assert readiness.waiting_for_first_paid_result is False
     assert readiness.paid_invoice_count == 2
+
+
+def test_build_creator_workspace_readiness_excludes_setup_only_fullscope_links_from_billable_now():
+    readiness = build_creator_workspace_readiness(
+        raw_stripe_status="connected",
+        booking_links=[
+            _booking_link(
+                provider="fullscope",
+                destination_url="https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
+                calendly_url=None,
+                billing_amount_cents=15000,
+                billing_currency="USD",
+            )
+        ],
+        content_items=[],
+        paid_invoice_count=0,
+    )
+
+    assert readiness.booking_links_count == 1
+    assert readiness.trackable_booking_links_count == 0
+    assert readiness.setup_only_booking_links_count == 1
+    assert readiness.billing_ready_count == 0
+    assert readiness.billable_now is False
+    assert readiness.ready_to_track is False
 
 
 def test_build_creator_workspace_state_sums_attention_backlog_counts():

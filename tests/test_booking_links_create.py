@@ -64,7 +64,8 @@ def _booking_link_row(booking_link_id: str) -> dict[str, str | int | None]:
     with _engine().connect() as conn:
         row = conn.execute(
             text(
-                "SELECT id, creator_id, name, calendly_url, billing_amount_cents, billing_currency "
+                "SELECT id, creator_id, name, provider, destination_url, calendly_url, "
+                "billing_amount_cents, billing_currency "
                 "FROM booking_links "
                 "WHERE id = :id"
             ),
@@ -75,6 +76,8 @@ def _booking_link_row(booking_link_id: str) -> dict[str, str | int | None]:
         "id": str(row["id"]),
         "creator_id": str(row["creator_id"]),
         "name": row["name"],
+        "provider": row["provider"],
+        "destination_url": row["destination_url"],
         "calendly_url": row["calendly_url"],
         "billing_amount_cents": row["billing_amount_cents"],
         "billing_currency": row["billing_currency"],
@@ -118,6 +121,8 @@ def test_create_booking_link_returns_201_and_persists_for_authenticated_creator(
     assert response.headers.get("X-Request-Id")
     payload = response.json()
     assert payload["name"] == "Free Consultation"
+    assert payload["provider"] == "calendly"
+    assert payload["destination_url"] == "https://calendly.com/example/free-consult"
     assert payload["calendly_url"] == "https://calendly.com/example/free-consult"
     assert payload["billing_amount_cents"] is None
     assert payload["billing_currency"] is None
@@ -128,6 +133,8 @@ def test_create_booking_link_returns_201_and_persists_for_authenticated_creator(
         "id": payload["id"],
         "creator_id": inserted["creator_id"],
         "name": "Free Consultation",
+        "provider": "calendly",
+        "destination_url": "https://calendly.com/example/free-consult",
         "calendly_url": "https://calendly.com/example/free-consult",
         "billing_amount_cents": None,
         "billing_currency": None,
@@ -157,12 +164,16 @@ def test_create_booking_link_accepts_billing_defaults_and_normalizes_currency():
 
     assert response.status_code == 201
     payload = response.json()
+    assert payload["provider"] == "calendly"
+    assert payload["destination_url"] == "https://calendly.com/example/paid-deep-dive"
     assert payload["billing_amount_cents"] == 15000
     assert payload["billing_currency"] == "USD"
 
     persisted = _booking_link_row(payload["id"])
     assert persisted["billing_amount_cents"] == 15000
     assert persisted["billing_currency"] == "USD"
+    assert persisted["provider"] == "calendly"
+    assert persisted["destination_url"] == "https://calendly.com/example/paid-deep-dive"
 
 
 def test_create_booking_link_accepts_www_calendly_host():
@@ -186,7 +197,79 @@ def test_create_booking_link_accepts_www_calendly_host():
 
     assert response.status_code == 201
     payload = response.json()
+    assert payload["provider"] == "calendly"
+    assert payload["destination_url"] == "https://www.calendly.com/example/website-consult"
     assert payload["calendly_url"] == "https://www.calendly.com/example/website-consult"
+
+
+def test_create_booking_link_accepts_provider_aware_calendly_shape():
+    inserted = _insert_creator_user(email=f"booking_link_{uuid.uuid4().hex}@example.com")
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/booking-links",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "provider": "calendly",
+                "name": "Provider Aware Calendly",
+                "destination_url": "https://calendly.com/example/provider-aware-calendly",
+            },
+        )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["provider"] == "calendly"
+    assert payload["destination_url"] == "https://calendly.com/example/provider-aware-calendly"
+    assert payload["calendly_url"] == "https://calendly.com/example/provider-aware-calendly"
+
+
+def test_create_booking_link_accepts_fullscope_destination_with_confirmation():
+    inserted = _insert_creator_user(email=f"booking_link_{uuid.uuid4().hex}@example.com")
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    destination_url = "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar"
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/booking-links",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "provider": "fullscope",
+                "name": "FS1 Personal Calendar",
+                "destination_url": destination_url,
+                "fullscope_supported_calendar_confirmed": True,
+            },
+        )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["name"] == "FS1 Personal Calendar"
+    assert payload["provider"] == "fullscope"
+    assert payload["destination_url"] == destination_url
+    assert payload["calendly_url"] is None
+
+    persisted = _booking_link_row(payload["id"])
+    assert persisted == {
+        "id": payload["id"],
+        "creator_id": inserted["creator_id"],
+        "name": "FS1 Personal Calendar",
+        "provider": "fullscope",
+        "destination_url": destination_url,
+        "calendly_url": None,
+        "billing_amount_cents": None,
+        "billing_currency": None,
+    }
 
 
 def test_create_booking_link_ignores_client_creator_id_input():
@@ -253,6 +336,29 @@ def test_create_booking_link_rejects_invalid_billing_input(payload_overrides: di
     assert response.status_code == 422
 
 
+def test_create_booking_link_rejects_fullscope_without_confirmation():
+    inserted = _insert_creator_user(email=f"invalid_booking_link_{uuid.uuid4().hex}@example.com")
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/booking-links",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "provider": "fullscope",
+                "name": "Unconfirmed FullScope",
+                "destination_url": "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
+            },
+        )
+
+    assert response.status_code == 422
+
+
 @pytest.mark.parametrize(
     "invalid_url",
     [
@@ -279,6 +385,40 @@ def test_create_booking_link_rejects_invalid_calendly_urls(invalid_url: str):
             json={
                 "name": "Invalid Booking Link",
                 "calendly_url": invalid_url,
+            },
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "invalid_url",
+    [
+        "not-a-url",
+        "http://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
+        "https://example.com/widget/bookings/fs1-personal-calendar",
+        "https://links.fullscope.tools/widget/service-menus/fs1-service-menu-smoke",
+        "https://links.fullscope.tools/widget/booking/",
+    ],
+)
+def test_create_booking_link_rejects_invalid_fullscope_urls(invalid_url: str):
+    inserted = _insert_creator_user(email=f"invalid_booking_link_{uuid.uuid4().hex}@example.com")
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/booking-links",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "provider": "fullscope",
+                "name": "Invalid FullScope Source",
+                "destination_url": invalid_url,
+                "fullscope_supported_calendar_confirmed": True,
             },
         )
 

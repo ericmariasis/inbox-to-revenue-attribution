@@ -406,7 +406,7 @@ def test_phase65_creator_browser_workflow_end_to_end():
     assert "Booking link saved" in booking_links_page_response.text
     assert booking_link_name in booking_links_page_response.text
     assert "https://calendly.com/example/phase65-browser-validation" in booking_links_page_response.text
-    assert "Ready for invoice defaults: USD 150.00" in booking_links_page_response.text
+    assert "Amount and currency set: USD 150.00" in booking_links_page_response.text
 
     assert content_page_response.status_code == 200
     assert 'action="/app/content"' in content_page_response.text

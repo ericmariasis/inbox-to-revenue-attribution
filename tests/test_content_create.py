@@ -59,19 +59,30 @@ def _access_token(*, user_id: str, creator_id: str, email: str, expires_delta: t
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def _insert_booking_link(*, creator_id: str, name: str, calendly_url: str) -> str:
+def _insert_booking_link(
+    *,
+    creator_id: str,
+    name: str,
+    calendly_url: str | None = None,
+    provider: str | None = None,
+    destination_url: str | None = None,
+) -> str:
     booking_link_id = str(uuid.uuid4())
+    provider = provider or "calendly"
+    destination_url = destination_url or calendly_url
 
     with _engine().begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO booking_links (id, creator_id, name, calendly_url) "
-                "VALUES (:id, :creator_id, :name, :calendly_url)"
+                "INSERT INTO booking_links (id, creator_id, name, provider, destination_url, calendly_url) "
+                "VALUES (:id, :creator_id, :name, :provider, :destination_url, :calendly_url)"
             ),
             {
                 "id": booking_link_id,
                 "creator_id": creator_id,
                 "name": name,
+                "provider": provider,
+                "destination_url": destination_url,
                 "calendly_url": calendly_url,
             },
         )
@@ -257,3 +268,35 @@ def test_create_content_returns_same_404_for_unknown_and_not_owned_booking_link(
     assert not_owned_response.json() == {"detail": "booking link not found"}
     assert unknown_response.json() == {"detail": "booking link not found"}
     assert _content_tids_for_creator(creator_id=creator_b["creator_id"]) == []
+
+
+def test_create_content_rejects_fullscope_booking_links_until_bridge_lands():
+    inserted = _insert_creator_user(email=f"content_{uuid.uuid4().hex}@example.com")
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="FS1 Personal Calendar",
+        provider="fullscope",
+        destination_url="https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/content",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "source_url": "https://example.com/posts/fullscope-setup-only",
+                "booking_link_id": booking_link_id,
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "booking link provider not supported for tracked content"
+    }
+    assert _content_tids_for_creator(creator_id=inserted["creator_id"]) == []

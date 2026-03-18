@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
 from app.models.booking_link import BookingLink
+from app.models.booking_provider import BOOKING_PROVIDER_FULLSCOPE
 from app.models.content import Content
 from app.models.creator import Creator
 from app.services.booking_attribution import (
@@ -69,6 +70,9 @@ def test_booking_row_can_persist_against_creator_owned_content():
         assert fetched.booking_link_id == booking_link.id
         assert fetched.tid == content.tid
         assert fetched.email == "booked@example.com"
+        assert fetched.provider == "calendly"
+        assert fetched.provider_booking_id == "cal_booking_story31_primary"
+        assert fetched.calendly_booking_uuid == "cal_booking_story31_primary"
         assert fetched.status == "created"
         assert fetched.attribution_status == "attributed"
         assert fetched.unattributed_reason is None
@@ -158,3 +162,68 @@ def test_unattributed_booking_row_can_persist_with_explicit_reason():
         assert fetched.unattributed_reason == BOOKING_UNATTRIBUTED_REASON_MISSING_TID
         assert fetched.booked_at == booked_at
         assert fetched.content is None
+        assert fetched.provider == "calendly"
+        assert fetched.provider_booking_id == "cal_booking_story78_unattributed"
+
+
+def test_same_provider_booking_identifier_can_coexist_across_different_providers():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    shared_identifier = "shared_booking_identity_story_fs2"
+
+    with Session(engine) as session:
+        creator, booking_link, content = _create_creator_booking_link_and_content(session)
+        fullscope_booking_link = BookingLink(
+            creator_id=creator.id,
+            name="FullScope Service Calendar",
+            provider=BOOKING_PROVIDER_FULLSCOPE,
+            destination_url="https://links.fullscope.tools/widget/bookings/fs2-direct-service",
+            calendly_url=None,
+        )
+        session.add(fullscope_booking_link)
+        session.flush()
+
+        fullscope_content = Content(
+            creator_id=creator.id,
+            booking_link_id=fullscope_booking_link.id,
+            source_url="https://example.com/posts/story-31-fullscope-booking",
+            tid="story31_fullscope_tid",
+        )
+        session.add(fullscope_content)
+        session.flush()
+
+        session.add_all(
+            [
+                Booking(
+                    creator_id=creator.id,
+                    tid=content.tid,
+                    booking_link_id=booking_link.id,
+                    calendly_booking_uuid=shared_identifier,
+                    email="calendly@example.com",
+                    status="created",
+                    booked_at=datetime(2026, 3, 7, 18, 0, tzinfo=timezone.utc),
+                ),
+                Booking(
+                    creator_id=creator.id,
+                    tid=fullscope_content.tid,
+                    booking_link_id=fullscope_booking_link.id,
+                    provider=BOOKING_PROVIDER_FULLSCOPE,
+                    provider_booking_id=shared_identifier,
+                    calendly_booking_uuid=None,
+                    email="fullscope@example.com",
+                    status="created",
+                    booked_at=datetime(2026, 3, 7, 18, 30, tzinfo=timezone.utc),
+                ),
+            ]
+        )
+        session.commit()
+
+        rows = session.scalars(
+            select(Booking)
+            .where(Booking.provider_booking_id == shared_identifier)
+            .order_by(Booking.provider.asc())
+        ).all()
+
+    assert [(row.provider, row.provider_booking_id) for row in rows] == [
+        ("calendly", shared_identifier),
+        (BOOKING_PROVIDER_FULLSCOPE, shared_identifier),
+    ]

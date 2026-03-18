@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings, is_local_app_env
 from app.db.session import get_db
 from app.models.booking_link import BookingLink
-from app.models.booking_provider import BOOKING_PROVIDER_CALENDLY
+from app.models.booking_provider import (
+    BOOKING_PROVIDER_CALENDLY,
+    BOOKING_PROVIDER_FULLSCOPE,
+)
 from app.models.content import Content
 from app.services.click_events import DEFAULT_CLICK_EVENT_PUBLISHER, ClickEventPublisher, build_click_event
 from app.services.rate_limit import (
@@ -32,6 +35,7 @@ REDIRECT_SESSION_COOKIE_TTL = timedelta(days=14)
 REDIRECT_SESSION_COOKIE_TTL_SECONDS = int(REDIRECT_SESSION_COOKIE_TTL.total_seconds())
 _REDIRECT_SESSION_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _CALENDLY_TRACKING_QUERY_PARAM = "utm_content"
+_FULLSCOPE_TRACKING_QUERY_PARAM = "ccp_attribution_tid"
 _LEGACY_TID_QUERY_PARAM = "tid"
 
 
@@ -48,17 +52,20 @@ def _redirect_destination_query(*, tid: str) -> Select[tuple[str, str]]:
     )
 
 
-def _destination_with_canonical_tid(*, provider: str, destination_url: str, canonical_tid: str) -> str:
-    if provider != BOOKING_PROVIDER_CALENDLY:
-        return destination_url
-
+def _destination_with_query_param(
+    *,
+    destination_url: str,
+    query_param_name: str,
+    canonical_tid: str,
+    stale_query_param_names: set[str],
+) -> str:
     parsed = urlsplit(destination_url)
     query_params = [
         (key, value)
         for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if key not in {_CALENDLY_TRACKING_QUERY_PARAM, _LEGACY_TID_QUERY_PARAM}
+        if key not in stale_query_param_names
     ]
-    query_params.append((_CALENDLY_TRACKING_QUERY_PARAM, canonical_tid))
+    query_params.append((query_param_name, canonical_tid))
 
     return urlunsplit(
         (
@@ -69,6 +76,32 @@ def _destination_with_canonical_tid(*, provider: str, destination_url: str, cano
             parsed.fragment,
         )
     )
+
+
+def _destination_with_canonical_tid(*, provider: str, destination_url: str, canonical_tid: str) -> str:
+    if provider == BOOKING_PROVIDER_CALENDLY:
+        return _destination_with_query_param(
+            destination_url=destination_url,
+            query_param_name=_CALENDLY_TRACKING_QUERY_PARAM,
+            canonical_tid=canonical_tid,
+            stale_query_param_names={
+                _CALENDLY_TRACKING_QUERY_PARAM,
+                _LEGACY_TID_QUERY_PARAM,
+            },
+        )
+
+    if provider == BOOKING_PROVIDER_FULLSCOPE:
+        return _destination_with_query_param(
+            destination_url=destination_url,
+            query_param_name=_FULLSCOPE_TRACKING_QUERY_PARAM,
+            canonical_tid=canonical_tid,
+            stale_query_param_names={
+                _FULLSCOPE_TRACKING_QUERY_PARAM,
+                _LEGACY_TID_QUERY_PARAM,
+            },
+        )
+
+    return destination_url
 
 
 def _redirect_session_cookie_secure(*, app_env: str) -> bool:

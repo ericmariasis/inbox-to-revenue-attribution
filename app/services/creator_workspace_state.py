@@ -14,7 +14,7 @@ class CreatorWorkspaceReadiness:
     waiting_for_first_paid_result: bool
     booking_links_count: int
     trackable_booking_links_count: int
-    setup_only_booking_links_count: int
+    limited_tracking_booking_links_count: int
     billing_ready_count: int
     tracked_content_count: int
     paid_invoice_count: int
@@ -42,7 +42,7 @@ def build_creator_workspace_readiness(
         for booking_link in booking_links
         if booking_provider_supports_tracked_content(booking_link.provider)
     )
-    setup_only_booking_links_count = booking_links_count - trackable_booking_links_count
+    limited_tracking_booking_links_count = booking_links_count - trackable_booking_links_count
     billing_ready_count = sum(
         1
         for booking_link in booking_links
@@ -64,7 +64,7 @@ def build_creator_workspace_readiness(
         waiting_for_first_paid_result=waiting_for_first_paid_result,
         booking_links_count=booking_links_count,
         trackable_booking_links_count=trackable_booking_links_count,
-        setup_only_booking_links_count=setup_only_booking_links_count,
+        limited_tracking_booking_links_count=limited_tracking_booking_links_count,
         billing_ready_count=billing_ready_count,
         tracked_content_count=tracked_content_count,
         paid_invoice_count=paid_invoice_count,

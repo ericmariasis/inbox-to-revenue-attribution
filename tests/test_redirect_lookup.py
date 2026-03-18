@@ -56,19 +56,30 @@ def _insert_creator_user(
     return {"creator_id": creator_id, "user_id": user_id, "email": email}
 
 
-def _insert_booking_link(*, creator_id: str, name: str, calendly_url: str) -> str:
+def _insert_booking_link(
+    *,
+    creator_id: str,
+    name: str,
+    calendly_url: str | None = None,
+    provider: str | None = None,
+    destination_url: str | None = None,
+) -> str:
     booking_link_id = str(uuid.uuid4())
+    provider = provider or "calendly"
+    destination_url = destination_url or calendly_url
 
     with _engine().begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO booking_links (id, creator_id, name, calendly_url) "
-                "VALUES (:id, :creator_id, :name, :calendly_url)"
+                "INSERT INTO booking_links (id, creator_id, name, provider, destination_url, calendly_url) "
+                "VALUES (:id, :creator_id, :name, :provider, :destination_url, :calendly_url)"
             ),
             {
                 "id": booking_link_id,
                 "creator_id": creator_id,
                 "name": name,
+                "provider": provider,
+                "destination_url": destination_url,
                 "calendly_url": calendly_url,
             },
         )
@@ -552,6 +563,66 @@ def test_redirect_lookup_rewrites_legacy_tid_query_param_to_canonical_utm_conten
     assert (
         response.headers["location"]
         == "https://calendly.com/example/redirect-strategy-call?month=2026-03&utm_content=redirectlookuplegacytid"
+    )
+
+
+def test_redirect_lookup_appends_fullscope_prefill_param_to_supported_booking_slug():
+    creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
+    tid = "redirectlookupfullscopebridge"
+    booking_link_url = "https://links.fullscope.tools/widget/bookings/fs4-personal-calendar"
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="FullScope Personal Calendar",
+        provider="fullscope",
+        destination_url=booking_link_url,
+    )
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/fullscope-bridge",
+        tid=tid,
+        created_at=datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/r/{tid}", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers.get("X-Request-Id")
+    assert (
+        response.headers["location"]
+        == "https://links.fullscope.tools/widget/bookings/fs4-personal-calendar?ccp_attribution_tid=redirectlookupfullscopebridge"
+    )
+
+
+def test_redirect_lookup_rewrites_existing_fullscope_prefill_and_legacy_tid_to_canonical_tid():
+    creator = _insert_creator_user(email=f"redirect_{uuid.uuid4().hex}@example.com")
+    tid = "redirectlookupfullscopecanonicaltid"
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="FullScope Direct Service Calendar",
+        provider="fullscope",
+        destination_url=(
+            "https://links.fullscope.tools/widget/booking/HyM2i9hgdqTHCkDOBuPu"
+            "?slot=afternoon&tid=stale-tid&ccp_attribution_tid=older-stale-tid"
+        ),
+    )
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/fullscope-canonical",
+        tid=tid,
+        created_at=datetime(2026, 3, 18, 12, 5, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/r/{tid}", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers.get("X-Request-Id")
+    assert (
+        response.headers["location"]
+        == "https://links.fullscope.tools/widget/booking/HyM2i9hgdqTHCkDOBuPu?slot=afternoon&ccp_attribution_tid=redirectlookupfullscopecanonicaltid"
     )
 
 

@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.auth_user import AuthUser
 from app.models.booking_link import BookingLink
-from app.models.booking_provider import booking_provider_supports_tracked_content
+from app.models.booking_provider import booking_provider_supports_tracked_destination
 from app.models.content import Content
 from app.models.content_confirmed_topic import ContentConfirmedTopic
 from app.models.content_extraction_artifact import ContentExtractionArtifact
@@ -433,7 +433,7 @@ def create_content_response_for_creator(
             detail="booking link not found",
         )
 
-    if not booking_provider_supports_tracked_content(booking_link.provider):
+    if not booking_provider_supports_tracked_destination(booking_link.provider):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="booking link provider not supported for tracked content",

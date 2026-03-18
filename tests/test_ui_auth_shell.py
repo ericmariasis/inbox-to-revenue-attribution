@@ -1214,7 +1214,7 @@ def test_setup_and_account_pages_reuse_connected_but_not_billable_now_vocabulary
     assert "Ready to track</strong>: Not yet. This milestone starts after the workspace is billable now." in account_response.text
 
 
-def test_setup_and_account_pages_keep_fullscope_sources_setup_only_for_now():
+def test_setup_and_account_pages_keep_fullscope_sources_limited_before_webhook_story():
     inserted = _insert_creator_user(
         email=f"ui_fullscope_setup_only_{uuid.uuid4().hex}@example.com",
         name="FullScope Setup Only Creator",
@@ -1243,10 +1243,10 @@ def test_setup_and_account_pages_keep_fullscope_sources_setup_only_for_now():
 
     assert setup_response.status_code == 200
     assert account_response.status_code == 200
-    assert "These FullScope sources are setup-only for now" in setup_response.text
-    assert "Saved FullScope sources stay setup-only for now" in setup_response.text
-    assert "Billable now</strong>: Not yet. Saved FullScope sources stay setup-only for now." in setup_response.text
-    assert "tracked content and billable-now readiness still require a Calendly link" in account_response.text
+    assert "These FullScope sources can generate tracked redirects now" in setup_response.text
+    assert "Saved FullScope sources can generate tracked redirects now" in setup_response.text
+    assert "Billable now</strong>: Not yet. Saved FullScope sources can generate tracked redirects now" in setup_response.text
+    assert "billable-now and creator-readiness still require a Calendly link" in account_response.text
 
 
 def test_booking_links_page_empty_state_renders_form_and_next_step_copy():
@@ -1392,7 +1392,7 @@ def test_booking_links_page_validation_feedback_preserves_input_and_page_state()
     assert 'value="USDX"' in response.text
 
 
-def test_booking_links_page_create_fullscope_source_shows_setup_only_success_state():
+def test_booking_links_page_create_fullscope_source_shows_bridge_ready_success_state():
     inserted = _insert_creator_user(
         email=f"ui_booking_links_fullscope_{uuid.uuid4().hex}@example.com",
         name="FullScope Setup Creator",
@@ -1428,7 +1428,8 @@ def test_booking_links_page_create_fullscope_source_shows_setup_only_success_sta
     assert "FullScope source saved" in page_response.text
     assert "FS1 Personal Calendar" in page_response.text
     assert "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar" in page_response.text
-    assert "Setup only for now" in page_response.text
+    assert "Tracked redirect ready" in page_response.text
+    assert "End-to-end booking capture still lands in the later FullScope webhook story" in page_response.text
 
 
 def test_booking_links_page_fullscope_validation_requires_supported_calendar_confirmation():
@@ -1527,7 +1528,7 @@ def test_content_page_without_booking_links_explains_prerequisite():
     assert 'class="wrap-anywhere"' not in response.text
 
 
-def test_content_page_shows_fullscope_sources_as_setup_only_and_disabled():
+def test_content_page_shows_fullscope_sources_as_bridge_ready_and_selectable():
     inserted = _insert_creator_user(
         email=f"ui_content_fullscope_{uuid.uuid4().hex}@example.com",
         name="FullScope Content Creator",
@@ -1550,10 +1551,57 @@ def test_content_page_shows_fullscope_sources_as_setup_only_and_disabled():
         response = client.get("/app/content", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Setup-only booking sources" in response.text
-    assert "FullScope sources stay visible here" in response.text
-    assert "FS1 Personal Calendar (setup only - FullScope not yet available for tracked content)" in response.text
-    assert '<button type="submit" disabled>Generate tracked link</button>' in response.text
+    assert "FullScope bridge boundary" in response.text
+    assert "Supported FullScope links can generate tracked redirects now" in response.text
+    assert "FS1 Personal Calendar (FullScope redirect ready - webhook capture later)" in response.text
+    assert '<button type="submit">Generate tracked link</button>' in response.text
+
+
+def test_content_page_create_success_with_fullscope_bridge_link_shows_tracked_link_and_saved_item():
+    inserted = _insert_creator_user(
+        email=f"ui_content_fullscope_create_{uuid.uuid4().hex}@example.com",
+        name="FullScope Bridge Content Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="FS1 Personal Calendar",
+        provider="fullscope",
+        destination_url="https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
+    )
+    tracked_base_url = get_settings().tracked_link_base_url.rstrip("/")
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        create_response = client.post(
+            "/app/content",
+            data={
+                "source_url": "https://example.com/posts/fullscope-fs4-launch",
+                "booking_link_id": booking_link_id,
+            },
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        page_response = client.get(
+            create_response.headers["location"],
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    created_tid = parse_qs(urlparse(create_response.headers["location"]).query)["tid"][0]
+
+    assert create_response.status_code == 303
+    assert create_response.headers["location"] == f"/app/content?status=created&tid={created_tid}"
+    assert page_response.status_code == 200
+    assert "Tracked link ready" in page_response.text
+    assert f"{tracked_base_url}/r/{created_tid}" in page_response.text
+    assert "fullscope-fs4-launch" in page_response.text
+    assert "FS1 Personal Calendar" in page_response.text
+    assert 'data-copy-source="created-tracked-url"' in page_response.text
 
 
 def test_booking_activity_page_empty_state_explains_delay_and_next_steps():

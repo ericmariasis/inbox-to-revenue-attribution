@@ -257,8 +257,9 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
                 create_booking_link_response = client.post(
                     "/app/booking-links",
                     data={
+                        "provider": "calendly",
                         "name": booking_link_name,
-                        "calendly_url": "https://calendly.com/example/phase10-5-validation",
+                        "destination_url": "https://calendly.com/example/phase10-5-validation",
                         "billing_amount_cents": "19500",
                         "billing_currency": " usd ",
                     },
@@ -455,7 +456,7 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert booking_links_page_response.status_code == 200
     assert "Booking link saved" in booking_links_page_response.text
     assert booking_link_name in booking_links_page_response.text
-    assert "Ready for invoice defaults: USD 195.00" in booking_links_page_response.text
+    assert "Amount and currency set: USD 195.00" in booking_links_page_response.text
 
     assert booking_link_setup_response.status_code == 200
     assert "2 of 4 setup steps done" in booking_link_setup_response.text

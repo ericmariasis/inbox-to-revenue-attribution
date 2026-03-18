@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models.booking import Booking
+from app.models.booking_provider import BOOKING_PROVIDER_CALENDLY
 from app.models.calendly_webhook_event import CalendlyWebhookEventRecord
 from app.models.content import Content
 from app.services.booking_attribution import BOOKING_ATTRIBUTION_STATUS_ATTRIBUTED
@@ -254,6 +255,8 @@ class BookingCreatedCalendlyWebhookHandler:
                     creator_id=creator_id,
                     booking_link_id=booking_link_id,
                     tid=resolved_tid,
+                    provider=BOOKING_PROVIDER_CALENDLY,
+                    provider_booking_id=event.calendly_booking_uuid,
                     calendly_booking_uuid=event.calendly_booking_uuid,
                     email=email,
                     booked_at=booked_at,

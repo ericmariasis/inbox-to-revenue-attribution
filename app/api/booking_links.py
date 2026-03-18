@@ -24,9 +24,14 @@ def _creator_scoped_booking_links_query(*, creator_id: UUID) -> Select[tuple[Boo
 
 
 def _build_booking_link_response(booking_link: BookingLink) -> BookingLinkResponse:
+    destination_url = booking_link.resolved_destination_url
+    assert destination_url is not None
+
     return BookingLinkResponse(
         id=str(booking_link.id),
         name=booking_link.name,
+        provider=booking_link.provider,
+        destination_url=destination_url,
         calendly_url=booking_link.calendly_url,
         billing_amount_cents=booking_link.billing_amount_cents,
         billing_currency=booking_link.billing_currency,
@@ -56,6 +61,8 @@ def create_booking_link_response_for_creator(
     booking_link = BookingLink(
         creator_id=creator_id,
         name=payload.name,
+        provider=payload.provider,
+        destination_url=payload.destination_url,
         calendly_url=payload.calendly_url,
         billing_amount_cents=payload.billing_amount_cents,
         billing_currency=payload.billing_currency,

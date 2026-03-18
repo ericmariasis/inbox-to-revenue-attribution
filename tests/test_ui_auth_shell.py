@@ -162,23 +162,29 @@ def _insert_booking_link(
     *,
     creator_id: str,
     name: str,
-    calendly_url: str,
+    calendly_url: str | None = None,
+    provider: str | None = None,
+    destination_url: str | None = None,
     billing_amount_cents: int | None = None,
     billing_currency: str | None = None,
 ) -> str:
     booking_link_id = str(uuid.uuid4())
+    provider = provider or "calendly"
+    destination_url = destination_url or calendly_url
 
     with _engine().begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO booking_links "
-                "(id, creator_id, name, calendly_url, billing_amount_cents, billing_currency) "
-                "VALUES (:id, :creator_id, :name, :calendly_url, :billing_amount_cents, :billing_currency)"
+                "(id, creator_id, name, provider, destination_url, calendly_url, billing_amount_cents, billing_currency) "
+                "VALUES (:id, :creator_id, :name, :provider, :destination_url, :calendly_url, :billing_amount_cents, :billing_currency)"
             ),
             {
                 "id": booking_link_id,
                 "creator_id": creator_id,
                 "name": name,
+                "provider": provider,
+                "destination_url": destination_url,
                 "calendly_url": calendly_url,
                 "billing_amount_cents": billing_amount_cents,
                 "billing_currency": billing_currency,
@@ -1208,6 +1214,41 @@ def test_setup_and_account_pages_reuse_connected_but_not_billable_now_vocabulary
     assert "Ready to track</strong>: Not yet. This milestone starts after the workspace is billable now." in account_response.text
 
 
+def test_setup_and_account_pages_keep_fullscope_sources_setup_only_for_now():
+    inserted = _insert_creator_user(
+        email=f"ui_fullscope_setup_only_{uuid.uuid4().hex}@example.com",
+        name="FullScope Setup Only Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_fullscope_setup_only",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="FS1 Personal Calendar",
+        provider="fullscope",
+        destination_url="https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
+        billing_amount_cents=15000,
+        billing_currency="USD",
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        setup_response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+        account_response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert setup_response.status_code == 200
+    assert account_response.status_code == 200
+    assert "These FullScope sources are setup-only for now" in setup_response.text
+    assert "Saved FullScope sources stay setup-only for now" in setup_response.text
+    assert "Billable now</strong>: Not yet. Saved FullScope sources stay setup-only for now." in setup_response.text
+    assert "tracked content and billable-now readiness still require a Calendly link" in account_response.text
+
+
 def test_booking_links_page_empty_state_renders_form_and_next_step_copy():
     inserted = _insert_creator_user(
         email=f"ui_booking_links_empty_{uuid.uuid4().hex}@example.com",
@@ -1250,8 +1291,9 @@ def test_booking_links_page_create_success_shows_saved_link_and_billing_defaults
         create_response = client.post(
             "/app/booking-links",
             data={
+                "provider": "calendly",
                 "name": "Paid Deep Dive",
-                "calendly_url": "https://calendly.com/example/paid-deep-dive",
+                "destination_url": "https://calendly.com/example/paid-deep-dive",
                 "billing_amount_cents": "15000",
                 "billing_currency": " usd ",
             },
@@ -1270,7 +1312,7 @@ def test_booking_links_page_create_success_shows_saved_link_and_billing_defaults
     assert "Booking link saved" in page_response.text
     assert "Paid Deep Dive" in page_response.text
     assert "https://calendly.com/example/paid-deep-dive" in page_response.text
-    assert "Ready for invoice defaults: USD 150.00" in page_response.text
+    assert "Amount and currency set: USD 150.00" in page_response.text
     assert "1 saved" in page_response.text
 
 
@@ -1291,23 +1333,92 @@ def test_booking_links_page_validation_feedback_preserves_input_and_page_state()
         response = client.post(
             "/app/booking-links",
             data={
+                "provider": "calendly",
                 "name": "Broken Link",
-                "calendly_url": "http://example.com/not-calendly",
+                "destination_url": "http://example.com/not-calendly",
                 "billing_amount_cents": "0",
                 "billing_currency": "USDX",
             },
             headers=HTML_ACCEPT_HEADERS,
-        )
+    )
 
     assert response.status_code == 200
     assert "Fix the highlighted fields" in response.text
-    assert "must use https" in response.text
     assert "must be a positive integer amount in cents" in response.text
     assert "must be a 3-letter currency code" in response.text
     assert 'value="Broken Link"' in response.text
     assert 'value="http://example.com/not-calendly"' in response.text
     assert 'value="0"' in response.text
     assert 'value="USDX"' in response.text
+
+
+def test_booking_links_page_create_fullscope_source_shows_setup_only_success_state():
+    inserted = _insert_creator_user(
+        email=f"ui_booking_links_fullscope_{uuid.uuid4().hex}@example.com",
+        name="FullScope Setup Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        create_response = client.post(
+            "/app/booking-links",
+            data={
+                "provider": "fullscope",
+                "name": "FS1 Personal Calendar",
+                "destination_url": "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
+                "fullscope_supported_calendar_confirmed": "true",
+            },
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        page_response = client.get(
+            create_response.headers["location"],
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert create_response.status_code == 303
+    assert create_response.headers["location"] == "/app/booking-links?status=created-fullscope"
+    assert page_response.status_code == 200
+    assert "FullScope source saved" in page_response.text
+    assert "FS1 Personal Calendar" in page_response.text
+    assert "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar" in page_response.text
+    assert "Setup only for now" in page_response.text
+
+
+def test_booking_links_page_fullscope_validation_requires_supported_calendar_confirmation():
+    inserted = _insert_creator_user(
+        email=f"ui_booking_links_fullscope_invalid_{uuid.uuid4().hex}@example.com",
+        name="FullScope Validation Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.post(
+            "/app/booking-links",
+            data={
+                "provider": "fullscope",
+                "name": "Unconfirmed FullScope",
+                "destination_url": "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
+            },
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert "confirm this is a Personal Calendar or direct Service Calendar link" in response.text
+    assert 'option value="fullscope" selected' in response.text
+    assert 'value="https://links.fullscope.tools/widget/bookings/fs1-personal-calendar"' in response.text
 
 
 def test_booking_links_page_lists_only_current_creators_links():
@@ -1374,6 +1485,35 @@ def test_content_page_without_booking_links_explains_prerequisite():
     assert 'action="/app/content"' not in response.text
     assert "0 saved" in response.text
     assert 'class="wrap-anywhere"' not in response.text
+
+
+def test_content_page_shows_fullscope_sources_as_setup_only_and_disabled():
+    inserted = _insert_creator_user(
+        email=f"ui_content_fullscope_{uuid.uuid4().hex}@example.com",
+        name="FullScope Content Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="FS1 Personal Calendar",
+        provider="fullscope",
+        destination_url="https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/content", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Setup-only booking sources" in response.text
+    assert "FullScope sources stay visible here" in response.text
+    assert "FS1 Personal Calendar (setup only - FullScope not yet available for tracked content)" in response.text
+    assert '<button type="submit" disabled>Generate tracked link</button>' in response.text
 
 
 def test_booking_activity_page_empty_state_explains_delay_and_next_steps():

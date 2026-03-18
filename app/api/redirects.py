@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings, is_local_app_env
 from app.db.session import get_db
 from app.models.booking_link import BookingLink
+from app.models.booking_provider import BOOKING_PROVIDER_CALENDLY
 from app.models.content import Content
 from app.services.click_events import DEFAULT_CLICK_EVENT_PUBLISHER, ClickEventPublisher, build_click_event
 from app.services.rate_limit import (
@@ -36,13 +37,21 @@ _LEGACY_TID_QUERY_PARAM = "tid"
 
 def _redirect_destination_query(*, tid: str) -> Select[tuple[str, str]]:
     return (
-        select(BookingLink.calendly_url, Content.tid)
+        select(
+            BookingLink.provider,
+            BookingLink.destination_url,
+            BookingLink.calendly_url,
+            Content.tid,
+        )
         .join(Content, Content.booking_link_id == BookingLink.id)
         .where(Content.tid == tid)
     )
 
 
-def _destination_with_canonical_tid(*, destination_url: str, canonical_tid: str) -> str:
+def _destination_with_canonical_tid(*, provider: str, destination_url: str, canonical_tid: str) -> str:
+    if provider != BOOKING_PROVIDER_CALENDLY:
+        return destination_url
+
     parsed = urlsplit(destination_url)
     query_params = [
         (key, value)
@@ -124,7 +133,15 @@ def redirect_by_tid(
             detail="link not found",
         )
 
-    destination, canonical_tid = redirect_row
+    provider, destination, legacy_calendly_url, canonical_tid = redirect_row
+    resolved_destination = destination or legacy_calendly_url
+    if resolved_destination is None:
+        logger.warning("redirect_lookup_missing_destination tid=%s provider=%s", tid, provider)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="link not found",
+        )
+
     settings = getattr(request.app.state, "settings", None) or get_settings()
     session_id = _redirect_session_id(
         existing_session_id=request.cookies.get(REDIRECT_SESSION_COOKIE_NAME)
@@ -132,7 +149,8 @@ def redirect_by_tid(
 
     response = RedirectResponse(
         url=_destination_with_canonical_tid(
-            destination_url=destination,
+            provider=provider,
+            destination_url=resolved_destination,
             canonical_tid=canonical_tid,
         ),
         status_code=status.HTTP_302_FOUND,

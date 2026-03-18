@@ -1,11 +1,21 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    event,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+from app.models.booking_provider import BOOKING_PROVIDER_CALENDLY
 
 
 class Booking(Base):
@@ -24,6 +34,11 @@ class Booking(Base):
             name="ck_bookings_attribution_current_state",
         ),
         UniqueConstraint("calendly_booking_uuid", name="uq_bookings_calendly_booking_uuid"),
+        UniqueConstraint(
+            "provider",
+            "provider_booking_id",
+            name="uq_bookings_provider_provider_booking_id",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -42,7 +57,14 @@ class Booking(Base):
         ForeignKey("booking_links.id", ondelete="CASCADE"),
         nullable=False,
     )
-    calendly_booking_uuid: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=BOOKING_PROVIDER_CALENDLY,
+        server_default=BOOKING_PROVIDER_CALENDLY,
+    )
+    provider_booking_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    calendly_booking_uuid: Mapped[str | None] = mapped_column(String(255), nullable=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False)
     status: Mapped[str] = mapped_column(
         String(32),
@@ -76,3 +98,32 @@ class Booking(Base):
         uselist=False,
     )
     invoice_payment_events = relationship("InvoicePaymentEvent", back_populates="booking")
+
+    @property
+    def resolved_provider_booking_id(self) -> str | None:
+        return self.provider_booking_id or self.calendly_booking_uuid
+
+
+def _sync_booking_provider_fields(target: Booking) -> None:
+    if not target.provider:
+        target.provider = BOOKING_PROVIDER_CALENDLY
+
+    if target.provider_booking_id is None and target.calendly_booking_uuid:
+        target.provider_booking_id = target.calendly_booking_uuid
+
+    if (
+        target.provider == BOOKING_PROVIDER_CALENDLY
+        and target.calendly_booking_uuid is None
+        and target.provider_booking_id
+    ):
+        target.calendly_booking_uuid = target.provider_booking_id
+
+
+@event.listens_for(Booking, "before_insert")
+def _booking_before_insert(_mapper, _connection, target: Booking) -> None:
+    _sync_booking_provider_fields(target)
+
+
+@event.listens_for(Booking, "before_update")
+def _booking_before_update(_mapper, _connection, target: Booking) -> None:
+    _sync_booking_provider_fields(target)

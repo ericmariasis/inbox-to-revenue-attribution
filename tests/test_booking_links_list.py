@@ -63,23 +63,29 @@ def _insert_booking_link(
     *,
     creator_id: str,
     name: str,
-    calendly_url: str,
+    calendly_url: str | None = None,
+    provider: str | None = None,
+    destination_url: str | None = None,
     billing_amount_cents: int | None = None,
     billing_currency: str | None = None,
 ) -> str:
     booking_link_id = str(uuid.uuid4())
+    provider = provider or "calendly"
+    destination_url = destination_url or calendly_url
 
     with _engine().begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO booking_links "
-                "(id, creator_id, name, calendly_url, billing_amount_cents, billing_currency) "
-                "VALUES (:id, :creator_id, :name, :calendly_url, :billing_amount_cents, :billing_currency)"
+                "(id, creator_id, name, provider, destination_url, calendly_url, billing_amount_cents, billing_currency) "
+                "VALUES (:id, :creator_id, :name, :provider, :destination_url, :calendly_url, :billing_amount_cents, :billing_currency)"
             ),
             {
                 "id": booking_link_id,
                 "creator_id": creator_id,
                 "name": name,
+                "provider": provider,
+                "destination_url": destination_url,
                 "calendly_url": calendly_url,
                 "billing_amount_cents": billing_amount_cents,
                 "billing_currency": billing_currency,
@@ -110,18 +116,23 @@ def test_list_booking_links_returns_only_current_creators_rows():
     discovery_id = _insert_booking_link(
         creator_id=creator_a["creator_id"],
         name="Discovery Call",
+        provider="calendly",
+        destination_url="https://calendly.com/example/discovery-call",
         calendly_url="https://calendly.com/example/discovery-call",
         billing_amount_cents=20000,
         billing_currency="USD",
     )
     strategy_id = _insert_booking_link(
         creator_id=creator_a["creator_id"],
-        name="Strategy Session",
-        calendly_url="https://calendly.com/example/strategy-session",
+        name="FS1 Personal Calendar",
+        provider="fullscope",
+        destination_url="https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
     )
     _insert_booking_link(
         creator_id=creator_b["creator_id"],
         name="Other Creator Intro",
+        provider="calendly",
+        destination_url="https://calendly.com/example/other-creator-intro",
         calendly_url="https://calendly.com/example/other-creator-intro",
     )
 
@@ -134,14 +145,18 @@ def test_list_booking_links_returns_only_current_creators_rows():
         {
             "id": discovery_id,
             "name": "Discovery Call",
+            "provider": "calendly",
+            "destination_url": "https://calendly.com/example/discovery-call",
             "calendly_url": "https://calendly.com/example/discovery-call",
             "billing_amount_cents": 20000,
             "billing_currency": "USD",
         },
         {
             "id": strategy_id,
-            "name": "Strategy Session",
-            "calendly_url": "https://calendly.com/example/strategy-session",
+            "name": "FS1 Personal Calendar",
+            "provider": "fullscope",
+            "destination_url": "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
+            "calendly_url": None,
             "billing_amount_cents": None,
             "billing_currency": None,
         },
@@ -161,11 +176,15 @@ def test_list_booking_links_hides_other_creators_rows_for_second_creator():
     _insert_booking_link(
         creator_id=creator_a["creator_id"],
         name="Creator A Session",
+        provider="calendly",
+        destination_url="https://calendly.com/example/creator-a-session",
         calendly_url="https://calendly.com/example/creator-a-session",
     )
     creator_b_link_id = _insert_booking_link(
         creator_id=creator_b["creator_id"],
         name="Creator B Session",
+        provider="calendly",
+        destination_url="https://calendly.com/example/creator-b-session",
         calendly_url="https://calendly.com/example/creator-b-session",
         billing_amount_cents=9000,
         billing_currency="EUR",
@@ -179,6 +198,8 @@ def test_list_booking_links_hides_other_creators_rows_for_second_creator():
         {
             "id": creator_b_link_id,
             "name": "Creator B Session",
+            "provider": "calendly",
+            "destination_url": "https://calendly.com/example/creator-b-session",
             "calendly_url": "https://calendly.com/example/creator-b-session",
             "billing_amount_cents": 9000,
             "billing_currency": "EUR",

@@ -39,6 +39,11 @@ from app.api.stripe import (
 from app.core.config import get_settings
 from app.db.session import SessionLocal, get_db
 from app.models.auth_user import AuthUser
+from app.models.booking_provider import (
+    BOOKING_PROVIDER_CALENDLY,
+    BOOKING_PROVIDER_FULLSCOPE,
+    booking_provider_supports_tracked_content,
+)
 from app.models.support_request import SupportRequestRecord
 from app.schemas.booking_link import BookingLinkCreateRequest, BookingLinkResponse
 from app.schemas.auth import MagicLinkStartRequest
@@ -187,8 +192,10 @@ SETUP_HOME_STATUS_MESSAGES = {
 }
 
 BOOKING_LINK_FORM_FIELDS = (
+    "provider",
     "name",
-    "calendly_url",
+    "destination_url",
+    "fullscope_supported_calendar_confirmed",
     "billing_amount_cents",
     "billing_currency",
 )
@@ -594,12 +601,17 @@ async def creator_booking_links_create(
             )
         )
 
-    create_booking_link_response_for_creator(
+    created_booking_link = create_booking_link_response_for_creator(
         creator_id=current_user.creator_id,
         payload=payload,
         db=db,
     )
-    return _redirect("/app/booking-links?status=created")
+    created_status = (
+        "created-fullscope"
+        if created_booking_link.provider == BOOKING_PROVIDER_FULLSCOPE
+        else "created"
+    )
+    return _redirect(f"/app/booking-links?status={created_status}")
 
 
 @router.get("/app/content")
@@ -706,6 +718,26 @@ async def creator_content_create(
                     form_values=form_values,
                     field_errors={
                         "booking_link_id": "Choose one of your saved booking links.",
+                    },
+                    status_value=None,
+                    created_content=None,
+                )
+            )
+        if (
+            exc.status_code == status.HTTP_409_CONFLICT
+            and exc.detail == "booking link provider not supported for tracked content"
+        ):
+            return _html_response(
+                _render_content_page(
+                    current_user=current_user,
+                    booking_links=booking_links,
+                    content_items=content_items,
+                    form_values=form_values,
+                    field_errors={
+                        "booking_link_id": (
+                            "This saved FullScope source is setup-only for now. "
+                            "Use a Calendly link for tracked content until the FullScope bridge lands."
+                        ),
                     },
                     status_value=None,
                     created_content=None,
@@ -1299,15 +1331,40 @@ def _ui_stripe_provider(request: Request):
 
 
 def _empty_booking_link_form_values() -> dict[str, str]:
-    return {field_name: "" for field_name in BOOKING_LINK_FORM_FIELDS}
+    form_values = {field_name: "" for field_name in BOOKING_LINK_FORM_FIELDS}
+    form_values["provider"] = BOOKING_PROVIDER_CALENDLY
+    return form_values
+
+
+BOOKING_LINK_ROOT_ERROR_FIELD_MAP = {
+    "provide a destination URL": "destination_url",
+    "destination_url and calendly_url must match when both are provided": "destination_url",
+    "FullScope requests must use destination_url, not calendly_url": "destination_url",
+    "must be a valid absolute URL": "destination_url",
+    "must use https": "destination_url",
+    "must use calendly.com": "destination_url",
+    "must include a Calendly path": "destination_url",
+    "must use links.fullscope.tools": "destination_url",
+    "must use a Personal Calendar or direct Service Calendar link": "destination_url",
+    "must use a FullScope booking URL": "destination_url",
+    "must include a FullScope booking path": "destination_url",
+}
 
 
 def _booking_link_form_values(raw_values: dict[str, str]) -> dict[str, str]:
     form_values = _empty_booking_link_form_values()
     form_values.update(
         {
+            "provider": raw_values.get("provider", BOOKING_PROVIDER_CALENDLY).strip().lower()
+            or BOOKING_PROVIDER_CALENDLY,
             "name": raw_values.get("name", "").strip(),
-            "calendly_url": raw_values.get("calendly_url", "").strip(),
+            "destination_url": raw_values.get("destination_url", "").strip(),
+            "fullscope_supported_calendar_confirmed": (
+                "true"
+                if raw_values.get("fullscope_supported_calendar_confirmed", "").strip().lower()
+                in {"true", "on", "1", "yes"}
+                else ""
+            ),
             "billing_amount_cents": raw_values.get("billing_amount_cents", "").strip(),
             "billing_currency": raw_values.get("billing_currency", "").strip(),
         }
@@ -1327,18 +1384,24 @@ def _booking_link_payload_from_form(
         except ValueError:
             field_errors["billing_amount_cents"] = "Enter a whole number of cents."
 
-    if field_errors:
-        return None, field_errors
-
     try:
         payload = BookingLinkCreateRequest(
+            provider=form_values["provider"],
             name=form_values["name"],
-            calendly_url=form_values["calendly_url"],
+            destination_url=form_values["destination_url"] or None,
+            fullscope_supported_calendar_confirmed=(
+                form_values["fullscope_supported_calendar_confirmed"] == "true"
+            ),
             billing_amount_cents=billing_amount_cents,
             billing_currency=form_values["billing_currency"] or None,
         )
     except ValidationError as exc:
-        return None, _booking_link_field_errors(exc)
+        for field_name, message in _booking_link_field_errors(exc).items():
+            field_errors.setdefault(field_name, message)
+        return None, field_errors
+
+    if field_errors:
+        return None, field_errors
 
     return payload, {}
 
@@ -1348,6 +1411,12 @@ def _booking_link_field_errors(exc: ValidationError) -> dict[str, str]:
     for error in exc.errors():
         location = error.get("loc") or ()
         field_name = str(location[-1]) if location else ""
+        if not field_name:
+            message = error["msg"].removeprefix("Value error, ")
+            mapped_field_name = BOOKING_LINK_ROOT_ERROR_FIELD_MAP.get(message)
+            if mapped_field_name and mapped_field_name not in errors:
+                errors[mapped_field_name] = message
+            continue
         if field_name in BOOKING_LINK_FORM_FIELDS and field_name not in errors:
             errors[field_name] = error["msg"].removeprefix("Value error, ")
     return errors
@@ -1663,6 +1732,8 @@ def _render_account_page(
     creator_email = html.escape(current_user.email)
     stripe_state = _account_stripe_management_state(readiness=readiness)
     booking_links_count = readiness.booking_links_count
+    trackable_booking_links_count = readiness.trackable_booking_links_count
+    setup_only_booking_links_count = readiness.setup_only_booking_links_count
     billing_ready_count = readiness.billing_ready_count
 
     stripe_detail_lines = []
@@ -1679,11 +1750,21 @@ def _render_account_page(
 
     booking_links_summary = "No booking links are saved yet for this workspace."
     if booking_links_count > 0:
-        booking_links_summary = (
-            f"This workspace currently has "
-            f"{html.escape(_count_copy(booking_links_count, 'saved booking link'))}. "
-            f"{html.escape(_account_billing_ready_summary_copy(billing_ready_count))}"
-        )
+        booking_links_summary = f"This workspace currently has {html.escape(_count_copy(booking_links_count, 'saved booking link'))}. "
+        if trackable_booking_links_count == 0 and setup_only_booking_links_count > 0:
+            booking_links_summary += (
+                "Those FullScope sources are saved for setup, but tracked content and billable-now "
+                "readiness still require a Calendly link until the later bridge story lands."
+            )
+        else:
+            booking_links_summary += html.escape(
+                _account_billing_ready_summary_copy(billing_ready_count)
+            )
+            if setup_only_booking_links_count > 0:
+                booking_links_summary += (
+                    f" {html.escape(_count_copy(setup_only_booking_links_count, 'FullScope source'))} "
+                    "stay setup-only until the later bridge story lands."
+                )
 
     body = f"""
     <header class="shell-header">
@@ -2212,6 +2293,8 @@ def _readiness_stage_summary(readiness: CreatorWorkspaceReadiness) -> dict[str, 
 def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[str, str, str]]:
     stripe_status = readiness.stripe_status
     booking_links_count = readiness.booking_links_count
+    trackable_booking_links_count = readiness.trackable_booking_links_count
+    setup_only_booking_links_count = readiness.setup_only_booking_links_count
 
     if readiness.connected:
         connected_line = ("Connected", "Done", "Stripe is connected to this workspace.")
@@ -2229,6 +2312,16 @@ def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[st
             "Billable now",
             "Done",
             "At least one booking link has amount and currency saved.",
+        )
+    elif (
+        readiness.connected
+        and trackable_booking_links_count == 0
+        and setup_only_booking_links_count > 0
+    ):
+        billable_line = (
+            "Billable now",
+            "Not yet",
+            "Saved FullScope sources stay setup-only for now. Add a Calendly link before relying on tracked content or invoice readiness.",
         )
     elif readiness.connected and booking_links_count > 0:
         billable_line = (
@@ -2323,6 +2416,8 @@ def _build_setup_home_progress(
     readiness = workspace_state.readiness
     normalized_stripe_status = readiness.stripe_status
     booking_links_count = readiness.booking_links_count
+    trackable_booking_links_count = readiness.trackable_booking_links_count
+    setup_only_booking_links_count = readiness.setup_only_booking_links_count
     billing_ready_count = readiness.billing_ready_count
     tracked_content_count = readiness.tracked_content_count
     billable_now = readiness.billable_now
@@ -2381,9 +2476,18 @@ def _build_setup_home_progress(
         }
 
     if booking_links_count > 0:
+        booking_link_copy_html = (
+            f"{html.escape(_count_copy(booking_links_count, 'booking link'))} saved. "
+            "Keep the Calendly link here aligned with what you actually share."
+        )
+        if trackable_booking_links_count == 0 and setup_only_booking_links_count > 0:
+            booking_link_copy_html = (
+                f"{html.escape(_count_copy(booking_links_count, 'booking link'))} saved. "
+                "These FullScope sources are setup-only for now, so tracked content still needs a Calendly link until the later bridge story lands."
+            )
         booking_link_step = _setup_step(
             title="Save a booking link",
-            copy_html=f"{html.escape(_count_copy(booking_links_count, 'booking link'))} saved. Keep the Calendly link here aligned with what you actually share.",
+            copy_html=booking_link_copy_html,
             label="Done",
             badge_class="connected",
             item_class="done",
@@ -2423,6 +2527,23 @@ def _build_setup_home_progress(
             item_class="done",
             is_complete=True,
         )
+    elif trackable_booking_links_count == 0 and setup_only_booking_links_count > 0:
+        billing_defaults_step = _setup_step(
+            title="Add billing defaults",
+            copy_html='Saved FullScope sources stay setup-only for now. Add a Calendly link if you need billable-now readiness before the later FullScope bridge story lands. <a href="/app/booking-links" class="inline-link">Open booking links</a>.',
+            label="Blocked",
+            badge_class="disconnected",
+            item_class="todo",
+            is_complete=False,
+        )
+        if next_action is None:
+            next_action = {
+                "title": "Add a tracked-content-ready link",
+                "copy_html": "FullScope setup is saved, but billable-now readiness still needs a Calendly link until the later bridge story lands.",
+                "action_label": "Open booking links",
+                "action_href": "/app/booking-links",
+                "action_method": "get",
+            }
     elif booking_links_count > 0:
         billing_defaults_step = _setup_step(
             title="Add billing defaults",
@@ -2592,6 +2713,49 @@ def _render_shell_nav(*, current_path: str) -> str:
     return f'<nav class="shell-nav">{"".join(items)}</nav>'
 
 
+def _booking_link_form_provider(form_values: dict[str, str]) -> str:
+    provider = form_values.get("provider", BOOKING_PROVIDER_CALENDLY).strip().lower()
+    if provider == BOOKING_PROVIDER_FULLSCOPE:
+        return BOOKING_PROVIDER_FULLSCOPE
+    return BOOKING_PROVIDER_CALENDLY
+
+
+def _booking_link_destination_label(provider: str) -> str:
+    if provider == BOOKING_PROVIDER_FULLSCOPE:
+        return "FullScope URL"
+    return "Calendly URL"
+
+
+def _booking_link_destination_placeholder(provider: str) -> str:
+    if provider == BOOKING_PROVIDER_FULLSCOPE:
+        return "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar"
+    return "https://calendly.com/example/discovery-call"
+
+
+def _booking_link_destination_help(provider: str) -> str:
+    if provider == BOOKING_PROVIDER_FULLSCOPE:
+        return (
+            "Use a FullScope Personal Calendar or direct Service Calendar URL. "
+            "Round Robin and Service Menu links stay outside the initial support boundary."
+        )
+    return "Use the Calendly URL this creator actually shares today."
+
+
+def _booking_link_provider_label(provider: str) -> str:
+    if provider == BOOKING_PROVIDER_FULLSCOPE:
+        return "FullScope"
+    return "Calendly"
+
+
+def _booking_link_setup_state_copy(booking_link: BookingLinkResponse) -> str:
+    if booking_provider_supports_tracked_content(booking_link.provider):
+        return "Ready for tracked content now."
+    return (
+        "Setup only for now. This FullScope source is saved, but tracked content "
+        "stays disabled until the later FullScope attribution bridge lands."
+    )
+
+
 def _render_booking_links_page(
     *,
     current_user: AuthUser,
@@ -2604,13 +2768,33 @@ def _render_booking_links_page(
     creator_email = html.escape(current_user.email)
     notice = _render_booking_link_notice(status_value=status_value, field_errors=field_errors)
     list_heading = "Your booking links" if booking_links else "No booking links yet"
+    selected_provider = _booking_link_form_provider(form_values)
+    destination_label = _booking_link_destination_label(selected_provider)
+    destination_placeholder = _booking_link_destination_placeholder(selected_provider)
+    destination_help = _booking_link_destination_help(selected_provider)
+    fullscope_confirmation_checked = (
+        " checked" if form_values["fullscope_supported_calendar_confirmed"] == "true" else ""
+    )
+    fullscope_confirmation_visibility = (
+        "" if selected_provider == BOOKING_PROVIDER_FULLSCOPE else ' style="display:none"'
+    )
+    fullscope_setup_note = (
+        """
+          <section class="notice">
+            <p class="eyebrow">FullScope setup boundary</p>
+            <p>Only Personal Calendar and direct Service Calendar links are supported in this setup story. Saved FullScope sources stay setup-only until the later attribution bridge lands.</p>
+          </section>
+        """
+        if selected_provider == BOOKING_PROVIDER_FULLSCOPE
+        else ""
+    )
 
     body = f"""
     <header class="shell-header">
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Booking Links</h1>
-        <p class="lede">Add the Calendly URLs this creator actually uses and, when available, store billing defaults that later invoice automation can trust.</p>
+        <p class="lede">Add the booking destination URLs this creator actually uses and, when available, store billing defaults that later invoice automation can trust.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -2626,6 +2810,18 @@ def _render_booking_links_page(
           <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
         <form action="/app/booking-links" method="post">
+          <label for="provider">Provider</label>
+          <select
+            id="provider"
+            name="provider"
+            aria-invalid="{str("provider" in field_errors).lower()}"
+          >
+            <option value="{BOOKING_PROVIDER_CALENDLY}"{" selected" if selected_provider == BOOKING_PROVIDER_CALENDLY else ""}>Calendly</option>
+            <option value="{BOOKING_PROVIDER_FULLSCOPE}"{" selected" if selected_provider == BOOKING_PROVIDER_FULLSCOPE else ""}>FullScope</option>
+          </select>
+          <p class="form-help">Use Calendly for tracked-content-ready links today. FullScope links can be saved now, but they stay setup-only until the later bridge story lands.</p>
+          {_render_booking_link_field_error(field_errors.get("provider"))}
+
           <label for="name">Name</label>
           <input
             id="name"
@@ -2638,17 +2834,33 @@ def _render_booking_links_page(
           />
           {_render_booking_link_field_error(field_errors.get("name"))}
 
-          <label for="calendly_url">Calendly URL</label>
+          <label id="destination_url_label" for="destination_url">{html.escape(destination_label)}</label>
           <input
-            id="calendly_url"
-            name="calendly_url"
+            id="destination_url"
+            name="destination_url"
             type="url"
-            value="{html.escape(form_values["calendly_url"])}"
-            placeholder="https://calendly.com/example/discovery-call"
+            value="{html.escape(form_values["destination_url"])}"
+            placeholder="{html.escape(destination_placeholder)}"
             required
-            aria-invalid="{str("calendly_url" in field_errors).lower()}"
+            aria-invalid="{str("destination_url" in field_errors).lower()}"
           />
-          {_render_booking_link_field_error(field_errors.get("calendly_url"))}
+          <p id="destination_url_help" class="form-help">{html.escape(destination_help)}</p>
+          {_render_booking_link_field_error(field_errors.get("destination_url"))}
+
+          <div id="fullscope_supported_calendar_section"{fullscope_confirmation_visibility}>
+            {fullscope_setup_note}
+            <label class="checkbox-row">
+              <input
+                id="fullscope_supported_calendar_confirmed"
+                name="fullscope_supported_calendar_confirmed"
+                type="checkbox"
+                value="true"{fullscope_confirmation_checked}
+                aria-invalid="{str("fullscope_supported_calendar_confirmed" in field_errors).lower()}"
+              />
+              <span>I confirm this FullScope link is a Personal Calendar or direct Service Calendar, not a Round Robin or Service Menu path.</span>
+            </label>
+            {_render_booking_link_field_error(field_errors.get("fullscope_supported_calendar_confirmed"))}
+          </div>
 
           <label for="billing_amount_cents">Billing amount in cents</label>
           <input
@@ -2680,6 +2892,45 @@ def _render_booking_links_page(
 
           <button type="submit">Save booking link</button>
         </form>
+        <script>
+          (() => {{
+            const providerSelect = document.getElementById("provider");
+            const destinationLabel = document.getElementById("destination_url_label");
+            const destinationInput = document.getElementById("destination_url");
+            const destinationHelp = document.getElementById("destination_url_help");
+            const fullscopeSection = document.getElementById("fullscope_supported_calendar_section");
+            if (!providerSelect || !destinationLabel || !destinationInput || !destinationHelp || !fullscopeSection) {{
+              return;
+            }}
+
+            const copyByProvider = {{
+              "{BOOKING_PROVIDER_CALENDLY}": {{
+                label: "Calendly URL",
+                placeholder: "https://calendly.com/example/discovery-call",
+                help: "Use the Calendly URL this creator actually shares today.",
+              }},
+              "{BOOKING_PROVIDER_FULLSCOPE}": {{
+                label: "FullScope URL",
+                placeholder: "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
+                help: "Use a FullScope Personal Calendar or direct Service Calendar URL. Round Robin and Service Menu links stay outside the initial support boundary.",
+              }},
+            }};
+
+            const syncBookingLinkProviderUi = () => {{
+              const selectedProvider = providerSelect.value === "{BOOKING_PROVIDER_FULLSCOPE}"
+                ? "{BOOKING_PROVIDER_FULLSCOPE}"
+                : "{BOOKING_PROVIDER_CALENDLY}";
+              const providerCopy = copyByProvider[selectedProvider];
+              destinationLabel.textContent = providerCopy.label;
+              destinationInput.placeholder = providerCopy.placeholder;
+              destinationHelp.textContent = providerCopy.help;
+              fullscopeSection.style.display = selectedProvider === "{BOOKING_PROVIDER_FULLSCOPE}" ? "" : "none";
+            }};
+
+            providerSelect.addEventListener("change", syncBookingLinkProviderUi);
+            syncBookingLinkProviderUi();
+          }})();
+        </script>
       </article>
       <article class="card accent stack">
         <div>
@@ -2711,7 +2962,7 @@ def _render_booking_links_list(booking_links: list[BookingLinkResponse]) -> str:
         <section class="empty-state">
           <p class="eyebrow">Empty state</p>
           <h2>Create the first booking link</h2>
-          <p>Add a Calendly URL now so the next creator workflow stories can attach tracked content and later invoice defaults to a real creator-owned link.</p>
+          <p>Add a booking destination now so later tracked-content and invoice-default steps have a real creator-owned source to reference.</p>
         </section>
         """
 
@@ -2720,16 +2971,19 @@ def _render_booking_links_list(booking_links: list[BookingLinkResponse]) -> str:
 
 
 def _render_booking_link_card(booking_link: BookingLinkResponse) -> str:
+    destination_url = html.escape(booking_link.destination_url)
+    provider_label = html.escape(_booking_link_provider_label(booking_link.provider))
     return f"""
     <article class="booking-link-card">
       <div class="booking-link-header">
         <div>
-          <p class="eyebrow">Booking link</p>
+          <p class="eyebrow">Booking source</p>
           <h2>{html.escape(booking_link.name)}</h2>
         </div>
-        <p class="pill-note">{html.escape(_billing_defaults_copy(booking_link))}</p>
+        <p class="pill-note">{provider_label}</p>
       </div>
-      <p><strong>Calendly URL</strong>: <a href="{html.escape(booking_link.calendly_url)}" class="inline-link">{html.escape(booking_link.calendly_url)}</a></p>
+      <p><strong>Destination URL</strong>: <a href="{destination_url}" class="inline-link">{destination_url}</a></p>
+      <p><strong>Setup state</strong>: {html.escape(_booking_link_setup_state_copy(booking_link))}</p>
       <p><strong>Stored defaults</strong>: {html.escape(_billing_defaults_copy(booking_link, long_form=True))}</p>
     </article>
     """
@@ -2759,6 +3013,14 @@ def _render_booking_link_notice(
         <section class="notice success">
           <p class="eyebrow">Booking link saved</p>
           <p>The creator-owned link is now available for later tracked-link and billing workflow steps.</p>
+        </section>
+        """
+
+    if status_value == "created-fullscope":
+        return """
+        <section class="notice success">
+          <p class="eyebrow">FullScope source saved</p>
+          <p>The FullScope booking source is saved for setup, but tracked content stays disabled until the later FullScope attribution bridge lands.</p>
         </section>
         """
 
@@ -2814,8 +3076,8 @@ def _render_content_page(
           <p class="eyebrow">How tracking works</p>
           <h2>Copy the generated redirect URL into your post</h2>
         </div>
-        <p>The tracked link uses the stored content `tid`, so later redirect and Calendly booking flows can attribute the booking back to the right source URL.</p>
-        <p>Pick a saved booking link, paste in the public URL for the content you are publishing, then copy the generated tracked link into the content or CTA you share externally.</p>
+        <p>The tracked link uses the stored content `tid`, so later redirect and supported booking flows can attribute the booking back to the right source URL.</p>
+        <p>Pick a saved booking link, paste in the public URL for the content you are publishing, then copy the generated tracked link into the content or CTA you share externally. FullScope sources stay visible here but disabled until the later bridge story lands.</p>
         <a href="/app/booking-links" class="inline-link">Review booking links</a>
       </article>
     </section>
@@ -2854,6 +3116,26 @@ def _render_content_form_panel(
         </article>
         """
 
+    selectable_booking_links = [
+        booking_link
+        for booking_link in booking_links
+        if booking_provider_supports_tracked_content(booking_link.provider)
+    ]
+    setup_only_booking_links = [
+        booking_link
+        for booking_link in booking_links
+        if not booking_provider_supports_tracked_content(booking_link.provider)
+    ]
+    submit_disabled = " disabled" if not selectable_booking_links else ""
+    setup_only_note = ""
+    if setup_only_booking_links:
+        setup_only_note = """
+        <section class="notice">
+          <p class="eyebrow">Setup-only booking sources</p>
+          <p>Saved FullScope sources stay visible here, but tracked content still requires a Calendly link until the later FullScope attribution bridge lands.</p>
+        </section>
+        """
+
     return f"""
     <article class="card stack">
       <div>
@@ -2861,6 +3143,7 @@ def _render_content_form_panel(
         <h2>Add a source URL</h2>
         <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
       </div>
+      {setup_only_note}
       <form action="/app/content" method="post">
         <label for="source_url">Public source URL</label>
         <input
@@ -2888,10 +3171,10 @@ def _render_content_form_panel(
               selected_booking_link_id=form_values["booking_link_id"],
           )}
         </select>
-        <p class="form-help">This keeps the tracked content aligned with the creator-owned Calendly link that downstream booking capture expects.</p>
+        <p class="form-help">This keeps the tracked content aligned with the creator-owned booking link that downstream booking capture expects. FullScope sources remain disabled here until the later bridge story lands.</p>
         {_render_content_field_error(field_errors.get("booking_link_id"))}
 
-        <button type="submit">Generate tracked link</button>
+        <button type="submit"{submit_disabled}>Generate tracked link</button>
       </form>
     </article>
     """
@@ -2904,10 +3187,18 @@ def _render_content_booking_link_options(
 ) -> str:
     options = []
     for booking_link in booking_links:
+        supports_tracked_content = booking_provider_supports_tracked_content(booking_link.provider)
         selected_attr = " selected" if booking_link.id == selected_booking_link_id else ""
+        disabled_attr = "" if supports_tracked_content else " disabled"
+        option_label = booking_link.name
+        if not supports_tracked_content:
+            option_label = (
+                f"{booking_link.name} "
+                "(setup only - FullScope not yet available for tracked content)"
+            )
         options.append(
-            f'<option value="{html.escape(booking_link.id)}"{selected_attr}>'
-            f"{html.escape(booking_link.name)}"
+            f'<option value="{html.escape(booking_link.id)}"{selected_attr}{disabled_attr}>'
+            f"{html.escape(option_label)}"
             f"</option>"
         )
     return "".join(options)

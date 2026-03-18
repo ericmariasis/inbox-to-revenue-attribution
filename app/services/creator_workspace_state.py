@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from app.models.booking_provider import booking_provider_supports_tracked_content
 from app.schemas.booking_link import BookingLinkResponse
 from app.schemas.content import ContentResponse
 
@@ -12,6 +13,8 @@ class CreatorWorkspaceReadiness:
     ready_to_track: bool
     waiting_for_first_paid_result: bool
     booking_links_count: int
+    trackable_booking_links_count: int
+    setup_only_booking_links_count: int
     billing_ready_count: int
     tracked_content_count: int
     paid_invoice_count: int
@@ -34,9 +37,16 @@ def build_creator_workspace_readiness(
 ) -> CreatorWorkspaceReadiness:
     normalized_stripe_status = raw_stripe_status.strip().lower()
     booking_links_count = len(booking_links)
+    trackable_booking_links_count = sum(
+        1
+        for booking_link in booking_links
+        if booking_provider_supports_tracked_content(booking_link.provider)
+    )
+    setup_only_booking_links_count = booking_links_count - trackable_booking_links_count
     billing_ready_count = sum(
         1
         for booking_link in booking_links
+        if booking_provider_supports_tracked_content(booking_link.provider)
         if booking_link.billing_amount_cents is not None
         and booking_link.billing_currency is not None
     )
@@ -53,6 +63,8 @@ def build_creator_workspace_readiness(
         ready_to_track=ready_to_track,
         waiting_for_first_paid_result=waiting_for_first_paid_result,
         booking_links_count=booking_links_count,
+        trackable_booking_links_count=trackable_booking_links_count,
+        setup_only_booking_links_count=setup_only_booking_links_count,
         billing_ready_count=billing_ready_count,
         tracked_content_count=tracked_content_count,
         paid_invoice_count=paid_invoice_count,

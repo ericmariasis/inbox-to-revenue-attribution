@@ -23,6 +23,7 @@ SAFE_NON_LOCAL_ENV = {
     "STRIPE_CONNECT_REDIRECT_URI": "https://creatorbeta.co/stripe/connect/callback",
     "STRIPE_WEBHOOK_SECRET": "whsec_story73_beta_live",
     "CALENDLY_WEBHOOK_SIGNING_KEY": "cal_story73_beta_live",
+    "FULLSCOPE_WEBHOOK_SHARED_SECRET": "fullscope_story73_beta_live",
     "TRACKED_LINK_BASE_URL": "https://creatorbeta.co",
     "MAGIC_LINK_EMAIL_PROVIDER": "smtp",
     "MAGIC_LINK_BASE_URL": "https://creatorbeta.co",

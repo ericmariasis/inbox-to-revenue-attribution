@@ -456,9 +456,11 @@ def test_phase9_reporting_flow_end_to_end():
             "currency": "USD",
             "metadata": {
                 "creator_id": creator_id,
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story54_paid",
                 "booking_uuid": "BOOK_story54_paid",
                 "tid": content["tid"],
             },
-            "idempotency_key": "billing:create:BOOK_story54_paid",
+            "idempotency_key": "billing:create:calendly:BOOK_story54_paid",
         }
     ]

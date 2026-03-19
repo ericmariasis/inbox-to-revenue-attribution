@@ -826,10 +826,12 @@ def test_phase12_5_claim_snapshot_replay_and_health_compose_end_to_end():
             "currency": "USD",
             "metadata": {
                 "creator_id": me_response.json()["id"],
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story82_snapshot",
                 "booking_uuid": "BOOK_story82_snapshot",
                 "tid": content["tid"],
             },
-            "idempotency_key": "billing:create:BOOK_story82_snapshot",
+            "idempotency_key": "billing:create:calendly:BOOK_story82_snapshot",
         },
         {
             "stripe_account_id": provider.account_id,
@@ -837,10 +839,12 @@ def test_phase12_5_claim_snapshot_replay_and_health_compose_end_to_end():
             "currency": "USD",
             "metadata": {
                 "creator_id": me_response.json()["id"],
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story82_replay",
                 "booking_uuid": "BOOK_story82_replay",
                 "tid": content["tid"],
             },
-            "idempotency_key": "billing:create:BOOK_story82_replay",
+            "idempotency_key": "billing:create:calendly:BOOK_story82_replay",
         },
         {
             "stripe_account_id": provider.account_id,
@@ -848,10 +852,12 @@ def test_phase12_5_claim_snapshot_replay_and_health_compose_end_to_end():
             "currency": "USD",
             "metadata": {
                 "creator_id": me_response.json()["id"],
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story82_conflict",
                 "booking_uuid": "BOOK_story82_conflict",
                 "tid": content["tid"],
             },
-            "idempotency_key": "billing:create:BOOK_story82_conflict",
+            "idempotency_key": "billing:create:calendly:BOOK_story82_conflict",
         },
     ]
     assert provider.void_calls == [

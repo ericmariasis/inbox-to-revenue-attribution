@@ -556,10 +556,12 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
             "currency": "USD",
             "metadata": {
                 "creator_id": provider.onboarding_calls[0]["creator_id"],
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story60_paid",
                 "booking_uuid": "BOOK_story60_paid",
                 "tid": created_tid,
             },
-            "idempotency_key": "billing:create:BOOK_story60_paid",
+            "idempotency_key": "billing:create:calendly:BOOK_story60_paid",
         },
         {
             "stripe_account_id": provider.account_id,
@@ -567,10 +569,12 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
             "currency": "USD",
             "metadata": {
                 "creator_id": provider.onboarding_calls[0]["creator_id"],
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story60_blocked",
                 "booking_uuid": "BOOK_story60_blocked",
                 "tid": created_tid,
             },
-            "idempotency_key": "billing:create:BOOK_story60_blocked",
+            "idempotency_key": "billing:create:calendly:BOOK_story60_blocked",
         },
         {
             "stripe_account_id": provider.account_id,
@@ -578,9 +582,11 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
             "currency": "USD",
             "metadata": {
                 "creator_id": provider.onboarding_calls[0]["creator_id"],
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story60_blocked",
                 "booking_uuid": "BOOK_story60_blocked",
                 "tid": created_tid,
             },
-            "idempotency_key": "billing:create:BOOK_story60_blocked",
+            "idempotency_key": "billing:create:calendly:BOOK_story60_blocked",
         },
     ]

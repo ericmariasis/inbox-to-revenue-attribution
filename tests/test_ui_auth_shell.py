@@ -1218,7 +1218,7 @@ def test_setup_and_account_pages_reuse_connected_but_not_billable_now_vocabulary
     assert "Ready to track</strong>: Not yet. This milestone starts after the workspace is billable now." in account_response.text
 
 
-def test_setup_and_account_pages_count_supported_fullscope_sources_as_billable_now():
+def test_setup_and_account_pages_keep_fullscope_sources_out_of_billable_now():
     inserted = _insert_creator_user(
         email=f"ui_fullscope_setup_only_{uuid.uuid4().hex}@example.com",
         name="FullScope Setup Only Creator",
@@ -1247,12 +1247,12 @@ def test_setup_and_account_pages_count_supported_fullscope_sources_as_billable_n
 
     assert setup_response.status_code == 200
     assert account_response.status_code == 200
-    assert "Billable now, but not ready to track" in setup_response.text
-    assert "Billable now, but not ready to track" in account_response.text
-    assert "Billable now</strong>: Done. At least one booking link has amount and currency saved." in setup_response.text
-    assert "Billable now</strong>: Done. At least one booking link has amount and currency saved." in account_response.text
-    assert "Ready to track</strong>: Not yet. Create tracked content so shared links can lead to attributed bookings." in setup_response.text
-    assert "Ready to track</strong>: Not yet. Create tracked content so shared links can lead to attributed bookings." in account_response.text
+    assert "Connected, but not billable now" in setup_response.text
+    assert "Connected, but not billable now" in account_response.text
+    assert "Saved booking sources are not active for creator-tracked workflows right now. Add a currently supported booking link." in setup_response.text
+    assert "Saved booking sources are not active for creator-tracked workflows right now. Add a currently supported booking link." in account_response.text
+    assert "Creator setup still needs a currently supported booking link before this workspace can become billable now." in setup_response.text
+    assert "Those booking sources stay saved, but they are not active in creator-tracked workflows right now." in account_response.text
 
 
 def test_booking_links_page_empty_state_renders_form_and_next_step_copy():
@@ -1278,6 +1278,7 @@ def test_booking_links_page_empty_state_renders_form_and_next_step_copy():
     assert "Billing amount in cents" in response.text
     assert "0 saved" in response.text
     assert 'class="wrap-anywhere"' in response.text
+    assert 'option value="fullscope"' not in response.text
 
 
 def test_booking_links_page_create_success_shows_saved_link_and_billing_defaults():
@@ -1398,7 +1399,7 @@ def test_booking_links_page_validation_feedback_preserves_input_and_page_state()
     assert 'value="USDX"' in response.text
 
 
-def test_booking_links_page_create_fullscope_source_shows_end_to_end_success_state():
+def test_booking_links_page_rejects_fullscope_source_from_creator_ui():
     inserted = _insert_creator_user(
         email=f"ui_booking_links_fullscope_{uuid.uuid4().hex}@example.com",
         name="FullScope Setup Creator",
@@ -1412,7 +1413,7 @@ def test_booking_links_page_create_fullscope_source_shows_end_to_end_success_sta
 
     with TestClient(app) as client:
         client.cookies.set(SESSION_COOKIE_NAME, access_token)
-        create_response = client.post(
+        response = client.post(
             "/app/booking-links",
             data={
                 "provider": "fullscope",
@@ -1421,24 +1422,15 @@ def test_booking_links_page_create_fullscope_source_shows_end_to_end_success_sta
                 "fullscope_supported_calendar_confirmed": "true",
             },
             headers=HTML_ACCEPT_HEADERS,
-            follow_redirects=False,
         )
-        page_response = client.get(
-            create_response.headers["location"],
-            headers=HTML_ACCEPT_HEADERS,
-        )
-
-    assert create_response.status_code == 303
-    assert create_response.headers["location"] == "/app/booking-links?status=created-fullscope"
-    assert page_response.status_code == 200
-    assert "FullScope source saved" in page_response.text
-    assert "FS1 Personal Calendar" in page_response.text
-    assert "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar" in page_response.text
-    assert "Ready for tracked content now." in page_response.text
-    assert "verified webhook capture, and billing" in page_response.text
+    assert response.status_code == 200
+    assert "This booking provider is not available in creator setup right now." in response.text
+    assert 'option value="fullscope"' not in response.text
+    assert 'value="https://links.fullscope.tools/widget/bookings/fs1-personal-calendar"' in response.text
+    assert "0 saved" in response.text
 
 
-def test_booking_links_page_fullscope_validation_requires_supported_calendar_confirmation():
+def test_booking_links_page_does_not_render_fullscope_confirmation_copy_anymore():
     inserted = _insert_creator_user(
         email=f"ui_booking_links_fullscope_invalid_{uuid.uuid4().hex}@example.com",
         name="FullScope Validation Creator",
@@ -1463,8 +1455,9 @@ def test_booking_links_page_fullscope_validation_requires_supported_calendar_con
         )
 
     assert response.status_code == 200
-    assert "confirm this is a Personal Calendar or direct Service Calendar link" in response.text
-    assert 'option value="fullscope" selected' in response.text
+    assert "This booking provider is not available in creator setup right now." in response.text
+    assert "confirm this is a Personal Calendar or direct Service Calendar link" not in response.text
+    assert 'option value="fullscope"' not in response.text
     assert 'value="https://links.fullscope.tools/widget/bookings/fs1-personal-calendar"' in response.text
 
 
@@ -1534,7 +1527,7 @@ def test_content_page_without_booking_links_explains_prerequisite():
     assert 'class="wrap-anywhere"' not in response.text
 
 
-def test_content_page_shows_fullscope_sources_as_supported_and_selectable():
+def test_content_page_shows_fullscope_sources_as_saved_but_unavailable():
     inserted = _insert_creator_user(
         email=f"ui_content_fullscope_{uuid.uuid4().hex}@example.com",
         name="FullScope Content Creator",
@@ -1557,13 +1550,14 @@ def test_content_page_shows_fullscope_sources_as_supported_and_selectable():
         response = client.get("/app/content", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "FullScope support boundary" in response.text
-    assert "Supported FullScope Personal Calendar and direct Service Calendar links work end to end here today." in response.text
-    assert ">FS1 Personal Calendar</option>" in response.text
-    assert '<button type="submit">Generate tracked link</button>' in response.text
+    assert "Tracked content unavailable for current saved links" in response.text
+    assert "Add a Calendly link to continue." in response.text
+    assert ">FS1 Personal Calendar (tracked redirect not available yet)</option>" in response.text
+    assert '<option value="' in response.text
+    assert '<button type="submit" disabled>Generate tracked link</button>' in response.text
 
 
-def test_content_page_create_success_with_fullscope_bridge_link_shows_tracked_link_and_saved_item():
+def test_content_page_rejects_fullscope_links_for_tracked_content():
     inserted = _insert_creator_user(
         email=f"ui_content_fullscope_create_{uuid.uuid4().hex}@example.com",
         name="FullScope Bridge Content Creator",
@@ -1580,34 +1574,22 @@ def test_content_page_create_success_with_fullscope_bridge_link_shows_tracked_li
         provider="fullscope",
         destination_url="https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
     )
-    tracked_base_url = get_settings().tracked_link_base_url.rstrip("/")
 
     with TestClient(app) as client:
         client.cookies.set(SESSION_COOKIE_NAME, access_token)
-        create_response = client.post(
+        response = client.post(
             "/app/content",
             data={
                 "source_url": "https://example.com/posts/fullscope-fs4-launch",
                 "booking_link_id": booking_link_id,
             },
             headers=HTML_ACCEPT_HEADERS,
-            follow_redirects=False,
         )
-        page_response = client.get(
-            create_response.headers["location"],
-            headers=HTML_ACCEPT_HEADERS,
-        )
-
-    created_tid = parse_qs(urlparse(create_response.headers["location"]).query)["tid"][0]
-
-    assert create_response.status_code == 303
-    assert create_response.headers["location"] == f"/app/content?status=created&tid={created_tid}"
-    assert page_response.status_code == 200
-    assert "Tracked link ready" in page_response.text
-    assert f"{tracked_base_url}/r/{created_tid}" in page_response.text
-    assert "fullscope-fs4-launch" in page_response.text
-    assert "FS1 Personal Calendar" in page_response.text
-    assert 'data-copy-source="created-tracked-url"' in page_response.text
+    assert response.status_code == 200
+    assert "This saved booking source cannot generate tracked content yet. Choose a supported tracked destination instead." in response.text
+    assert "Tracked link ready" not in response.text
+    assert "fullscope-fs4-launch" in response.text
+    assert ">FS1 Personal Calendar (tracked redirect not available yet)</option>" in response.text
 
 
 def test_booking_activity_page_empty_state_explains_delay_and_next_steps():

@@ -59,15 +59,15 @@ class BookingAttributionHealthResponse(BaseModel):
     reasons: list[BookingAttributionReasonCountResponse]
 
 
-class CalendlyIngressStatusCountResponse(BaseModel):
+class ProviderIngressStatusCountResponse(BaseModel):
     processing_status: str
     event_count: int
 
 
-class CalendlyIngressHealthResponse(BaseModel):
+class ProviderIngressHealthResponse(BaseModel):
     backlog_event_count: int
     failed_event_count: int
-    statuses: list[CalendlyIngressStatusCountResponse]
+    statuses: list[ProviderIngressStatusCountResponse]
 
 
 class PaymentProvenanceStateCountResponse(BaseModel):
@@ -104,7 +104,8 @@ class AuthoritativeContentHealthResponse(BaseModel):
 class EvidenceIngressHealthResponse(BaseModel):
     creator_id: str
     booking_attribution: BookingAttributionHealthResponse
-    calendly_ingress: CalendlyIngressHealthResponse
+    calendly_ingress: ProviderIngressHealthResponse
+    fullscope_ingress: ProviderIngressHealthResponse
     payment_provenance: PaymentProvenanceHealthResponse
     blocked_billing: BlockedBillingHealthResponse
     authoritative_content: AuthoritativeContentHealthResponse

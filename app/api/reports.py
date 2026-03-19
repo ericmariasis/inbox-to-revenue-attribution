@@ -12,14 +12,14 @@ from app.schemas.reporting import (
     AuthoritativeContentLagReasonCountResponse,
     BookingAttributionHealthResponse,
     BookingAttributionReasonCountResponse,
-    CalendlyIngressHealthResponse,
-    CalendlyIngressStatusCountResponse,
     EvidenceIngressHealthResponse,
     PaymentProvenanceHealthResponse,
     PaymentProvenanceReasonCountResponse,
     PaymentProvenanceStateCountResponse,
-    ReportsBlockedReasonCountResponse,
     BlockedBillingHealthResponse,
+    ProviderIngressHealthResponse,
+    ProviderIngressStatusCountResponse,
+    ReportsBlockedReasonCountResponse,
     ReportsBlockedSummaryResponse,
     ReportsSummaryResponse,
     ReportsSummaryRowResponse,
@@ -28,6 +28,7 @@ from app.schemas.reporting import (
 )
 from app.services.evidence_ingress_health import (
     CreatorEvidenceIngressHealthSnapshot,
+    ProviderIngressHealthSnapshot,
     get_creator_evidence_ingress_health_snapshot,
 )
 from app.services.invoice_payment_events import (
@@ -107,16 +108,11 @@ def _build_reports_health_response(
                 for item in snapshot.booking_attribution.reasons
             ],
         ),
-        calendly_ingress=CalendlyIngressHealthResponse(
-            backlog_event_count=snapshot.calendly_ingress.backlog_event_count,
-            failed_event_count=snapshot.calendly_ingress.failed_event_count,
-            statuses=[
-                CalendlyIngressStatusCountResponse(
-                    processing_status=item.processing_status,
-                    event_count=item.event_count,
-                )
-                for item in snapshot.calendly_ingress.statuses
-            ],
+        calendly_ingress=_build_provider_ingress_health_response(
+            snapshot.calendly_ingress
+        ),
+        fullscope_ingress=_build_provider_ingress_health_response(
+            snapshot.fullscope_ingress
         ),
         payment_provenance=PaymentProvenanceHealthResponse(
             settled_state_counts=[
@@ -158,16 +154,34 @@ def _build_reports_health_response(
     )
 
 
+def _build_provider_ingress_health_response(
+    snapshot: ProviderIngressHealthSnapshot,
+) -> ProviderIngressHealthResponse:
+    return ProviderIngressHealthResponse(
+        backlog_event_count=snapshot.backlog_event_count,
+        failed_event_count=snapshot.failed_event_count,
+        statuses=[
+            ProviderIngressStatusCountResponse(
+                processing_status=item.processing_status,
+                event_count=item.event_count,
+            )
+            for item in snapshot.statuses
+        ],
+    )
+
+
 def _log_reports_health_snapshot(snapshot: CreatorEvidenceIngressHealthSnapshot) -> None:
     payment_state_counts = {
         item.state: item.row_count
         for item in snapshot.payment_provenance.settled_state_counts
     }
     logger.info(
-        "reports_health_snapshot attribution_unattributed_booking_count=%s calendly_backlog_event_count=%s calendly_failed_event_count=%s payment_backlog_event_count=%s payment_pending_count=%s payment_unmatched_count=%s payment_conflicting_count=%s blocked_billing_open_case_count=%s authoritative_lagging_content_count=%s",
+        "reports_health_snapshot attribution_unattributed_booking_count=%s calendly_backlog_event_count=%s calendly_failed_event_count=%s fullscope_backlog_event_count=%s fullscope_failed_event_count=%s payment_backlog_event_count=%s payment_pending_count=%s payment_unmatched_count=%s payment_conflicting_count=%s blocked_billing_open_case_count=%s authoritative_lagging_content_count=%s",
         snapshot.booking_attribution.unattributed_booking_count,
         snapshot.calendly_ingress.backlog_event_count,
         snapshot.calendly_ingress.failed_event_count,
+        snapshot.fullscope_ingress.backlog_event_count,
+        snapshot.fullscope_ingress.failed_event_count,
         snapshot.payment_provenance.current_backlog_event_count,
         payment_state_counts.get(PAYMENT_PROVENANCE_STATE_PENDING, 0),
         payment_state_counts.get(PAYMENT_PROVENANCE_STATE_UNMATCHED, 0),

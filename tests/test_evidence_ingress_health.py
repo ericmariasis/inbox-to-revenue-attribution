@@ -20,6 +20,7 @@ from app.models.content_extraction_artifact import ContentExtractionArtifact
 from app.models.content_fetch_snapshot import ContentFetchSnapshot
 from app.models.content_topic_candidate import ContentTopicCandidate
 from app.models.creator import Creator
+from app.models.fullscope_webhook_event import FullScopeWebhookEventRecord
 from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
 from app.services.blocked_billing import BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE
@@ -93,11 +94,16 @@ def _create_booking_link(
     *,
     creator: Creator,
     suffix: str,
+    provider: str = "calendly",
+    destination_url: str | None = None,
 ) -> BookingLink:
+    resolved_destination_url = destination_url or f"https://calendly.com/example/health-{suffix}"
     booking_link = BookingLink(
         creator_id=creator.id,
         name=f"Health Link {suffix}",
-        calendly_url=f"https://calendly.com/example/health-{suffix}",
+        provider=provider,
+        destination_url=resolved_destination_url,
+        calendly_url=resolved_destination_url if provider == "calendly" else None,
         billing_amount_cents=19500,
         billing_currency="USD",
     )
@@ -132,14 +138,19 @@ def _create_booking(
     content: Content | None,
     booking_uuid: str,
     booked_at: datetime,
+    provider: str = "calendly",
+    provider_booking_id: str | None = None,
     attribution_status: str = "attributed",
     unattributed_reason: str | None = None,
 ) -> Booking:
+    resolved_provider_booking_id = provider_booking_id or booking_uuid
     booking = Booking(
         creator_id=creator.id,
         booking_link_id=booking_link.id,
         tid=content.tid if content is not None else None,
-        calendly_booking_uuid=booking_uuid,
+        provider=provider,
+        provider_booking_id=resolved_provider_booking_id,
+        calendly_booking_uuid=booking_uuid if provider == "calendly" else None,
         email=f"{booking_uuid.lower()}@example.com",
         status="created",
         attribution_status=attribution_status,
@@ -300,6 +311,55 @@ def _create_calendly_event_record(
             None
             if processing_status == "received"
             else datetime(2026, 3, 12, 10, 5, tzinfo=timezone.utc)
+        ),
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def _create_fullscope_event_record(
+    session: Session,
+    *,
+    event_id: str,
+    appointment_id: str,
+    tid: str | None,
+    processing_status: str,
+) -> FullScopeWebhookEventRecord:
+    record = FullScopeWebhookEventRecord(
+        provider_event_type="appointment.created",
+        event_type="booking.created",
+        appointment_id=appointment_id,
+        appointment_id_path="payload.appointment.id",
+        calendar_id="calendar_health",
+        calendar_id_path="payload.calendar.id",
+        workflow_id=None,
+        workflow_id_path=None,
+        tid=tid,
+        tid_path="payload.metadata.ccp_attribution_tid" if tid is not None else None,
+        payload={
+            "event": "appointment.created",
+            "payload": {
+                "appointment": {"id": appointment_id},
+                "metadata": {"ccp_attribution_tid": tid},
+            },
+        },
+        payload_sha256=f"health-{uuid.uuid4().hex}",
+        reducer_key=f"booking:{appointment_id}",
+        delivery_count=1,
+        processing_status=processing_status,
+        reducer_attempt_count=1 if processing_status != "received" else 0,
+        last_error=(
+            "RuntimeError: health test reducer failure"
+            if processing_status == "failed"
+            else None
+        ),
+        received_at=datetime(2026, 3, 12, 10, 10, tzinfo=timezone.utc),
+        last_received_at=datetime(2026, 3, 12, 10, 10, tzinfo=timezone.utc),
+        processed_at=(
+            None
+            if processing_status == "received"
+            else datetime(2026, 3, 12, 10, 15, tzinfo=timezone.utc)
         ),
     )
     session.add(record)
@@ -561,6 +621,50 @@ def test_creator_evidence_ingress_health_snapshot_surfaces_degraded_current_stat
             tid=conflicting_content.tid,
             processing_status="failed",
         )
+        fullscope_booking_link = _create_booking_link(
+            session,
+            creator=creator,
+            suffix="fullscope",
+            provider="fullscope",
+            destination_url="https://links.fullscope.tools/widget/bookings/health-fullscope",
+        )
+        fullscope_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=fullscope_booking_link,
+            suffix="fullscope",
+        )
+        fullscope_booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=fullscope_booking_link,
+            content=fullscope_content,
+            booking_uuid="BOOK_HEALTH_FULLSCOPE",
+            provider="fullscope",
+            provider_booking_id="FS_BOOK_HEALTH_FULLSCOPE",
+            booked_at=datetime(2026, 3, 12, 10, 45, tzinfo=timezone.utc),
+        )
+        _create_fullscope_event_record(
+            session,
+            event_id="EVT_HEALTH_FULLSCOPE_RECEIVED",
+            appointment_id="FS_APP_HEALTH_RECEIVED",
+            tid=pending_content.tid,
+            processing_status="received",
+        )
+        _create_fullscope_event_record(
+            session,
+            event_id="EVT_HEALTH_FULLSCOPE_DEFERRED",
+            appointment_id="FS_APP_HEALTH_DEFERRED",
+            tid=pending_content.tid,
+            processing_status="deferred_missing_booking",
+        )
+        _create_fullscope_event_record(
+            session,
+            event_id="EVT_HEALTH_FULLSCOPE_FAILED",
+            appointment_id=fullscope_booking.resolved_provider_booking_id,
+            tid=None,
+            processing_status="failed",
+        )
 
         old_snapshot = _create_fetch_snapshot(
             session,
@@ -772,6 +876,17 @@ def test_creator_evidence_ingress_health_snapshot_surfaces_degraded_current_stat
         ("deferred_missing_booking", 1),
         ("failed", 1),
     ]
+    assert snapshot.fullscope_ingress.backlog_event_count == 2
+    assert snapshot.fullscope_ingress.failed_event_count == 1
+    assert [
+        (item.processing_status, item.event_count)
+        for item in snapshot.fullscope_ingress.statuses
+    ] == [
+        ("received", 1),
+        ("processing", 0),
+        ("deferred_missing_booking", 1),
+        ("failed", 1),
+    ]
 
     assert [
         (item.state, item.row_count)
@@ -857,6 +972,13 @@ def test_reports_health_returns_creator_scoped_snapshot_and_logs_counts():
             tid=content.tid,
             processing_status="failed",
         )
+        _create_fullscope_event_record(
+            session,
+            event_id="EVT_HEALTH_API_FULLSCOPE_FAILED",
+            appointment_id="FS_APP_HEALTH_API_FAILED",
+            tid=content.tid,
+            processing_status="failed",
+        )
 
         blocked_booking = _create_booking(
             session,
@@ -886,6 +1008,13 @@ def test_reports_health_returns_creator_scoped_snapshot_and_logs_counts():
             tid=other_content.tid,
             processing_status="failed",
         )
+        _create_fullscope_event_record(
+            session,
+            event_id="EVT_HEALTH_API_OTHER_FULLSCOPE_FAILED",
+            appointment_id="FS_APP_HEALTH_API_OTHER_FAILED",
+            tid=other_content.tid,
+            processing_status="failed",
+        )
 
         token = _access_token(
             user_id=str(user.id),
@@ -906,15 +1035,19 @@ def test_reports_health_returns_creator_scoped_snapshot_and_logs_counts():
     assert response.json()["booking_attribution"]["unattributed_booking_count"] == 1
     assert response.json()["calendly_ingress"]["backlog_event_count"] == 0
     assert response.json()["calendly_ingress"]["failed_event_count"] == 1
+    assert response.json()["fullscope_ingress"]["backlog_event_count"] == 0
+    assert response.json()["fullscope_ingress"]["failed_event_count"] == 1
     assert response.json()["blocked_billing"]["open_case_count"] == 1
     assert response.json()["payment_provenance"]["current_backlog_event_count"] == 0
     assert response.json()["authoritative_content"]["lagging_content_count"] == 0
     info_log.assert_called_once()
     assert (
         info_log.call_args.args[0]
-        == "reports_health_snapshot attribution_unattributed_booking_count=%s calendly_backlog_event_count=%s calendly_failed_event_count=%s payment_backlog_event_count=%s payment_pending_count=%s payment_unmatched_count=%s payment_conflicting_count=%s blocked_billing_open_case_count=%s authoritative_lagging_content_count=%s"
+        == "reports_health_snapshot attribution_unattributed_booking_count=%s calendly_backlog_event_count=%s calendly_failed_event_count=%s fullscope_backlog_event_count=%s fullscope_failed_event_count=%s payment_backlog_event_count=%s payment_pending_count=%s payment_unmatched_count=%s payment_conflicting_count=%s blocked_billing_open_case_count=%s authoritative_lagging_content_count=%s"
     )
     assert info_log.call_args.args[1:] == (
+        1,
+        0,
         1,
         0,
         1,

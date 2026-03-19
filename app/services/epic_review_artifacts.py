@@ -16,7 +16,8 @@ class EpicReviewArtifactsError(ValueError):
 
 @dataclass(frozen=True)
 class ClosedStorySummary:
-    number: int
+    key: str
+    number: int | None
     title: str
     scope_delivered: tuple[str, ...]
     validation: tuple[str, ...]
@@ -27,7 +28,8 @@ class ClosedStorySummary:
 @dataclass(frozen=True)
 class EpicReviewArtifacts:
     epic_title: str
-    closeout_story_number: int
+    closeout_story_key: str
+    closeout_story_number: int | None
     packet_path: Path
     prompt_path: Path
     review_response_path: Path
@@ -85,20 +87,21 @@ def generate_epic_review_artifacts(
     epic_title = _extract_markdown_title(epic_text)
     epic_goal = _extract_labeled_value(epic_text, "Goal")
     epic_scope = tuple(_extract_bullets(_extract_labeled_block(epic_text, "Scope")))
-    closeout_story_number = _extract_closeout_story_number(epic_text)
-    story_numbers = _extract_story_numbers(epic_text)
-    if closeout_story_number not in story_numbers:
+    closeout_story_key = _extract_closeout_story_key(epic_text)
+    closeout_story_number = _extract_story_number_from_key(closeout_story_key)
+    story_keys = _extract_story_keys(epic_text)
+    if closeout_story_key not in story_keys:
         raise EpicReviewArtifactsError(
-            f"Epic closeout story Story {closeout_story_number} is not listed in recommended story order for {epic_title!r}"
+            f"Epic closeout story {closeout_story_key} is not listed in recommended story order for {epic_title!r}"
         )
 
     closed_stories = _parse_closed_story_summaries(
         jira_closed_text=jira_closed_text,
-        story_numbers=story_numbers,
+        story_keys=story_keys,
     )
-    if closeout_story_number not in {story.number for story in closed_stories}:
+    if closeout_story_key not in {story.key for story in closed_stories}:
         raise EpicReviewArtifactsError(
-            f"Epic closeout story Story {closeout_story_number} is not closed in north-star/JIRA_STORIES_CLOSED.md"
+            f"Epic closeout story {closeout_story_key} is not closed in north-star/JIRA_STORIES_CLOSED.md"
         )
 
     scratchpad = _parse_epic_review_scratchpad(active_context_text=active_context_text)
@@ -122,7 +125,7 @@ def generate_epic_review_artifacts(
             "Update the scratchpad or rerun with --allow-empty-friction."
         )
 
-    closeout_story = next(story for story in closed_stories if story.number == closeout_story_number)
+    closeout_story = next(story for story in closed_stories if story.key == closeout_story_key)
     upcoming_epics = tuple(
         _find_upcoming_epics(
             repo_root=resolved_repo_root,
@@ -135,6 +138,7 @@ def generate_epic_review_artifacts(
         epic_title=epic_title,
         epic_goal=epic_goal,
         epic_doc_path=epic_path,
+        closeout_story_key=closeout_story_key,
         closeout_story_number=closeout_story_number,
         epic_scope=epic_scope,
         architecture_text=architecture_text,
@@ -179,6 +183,7 @@ def generate_epic_review_artifacts(
 
     return EpicReviewArtifacts(
         epic_title=epic_title,
+        closeout_story_key=closeout_story_key,
         closeout_story_number=closeout_story_number,
         packet_path=packet_path,
         prompt_path=prompt_path,
@@ -238,76 +243,89 @@ def _extract_bullets(block_text: str) -> list[str]:
     return bullets
 
 
-def _extract_closeout_story_number(epic_text: str) -> int:
-    match = re.search(r"^Epic closeout story:\s*Story\s+(\d+)\s*$", epic_text, re.MULTILINE)
+def _extract_closeout_story_key(epic_text: str) -> str:
+    match = re.search(r"^Epic closeout story:\s*(.+?)\s*$", epic_text, re.MULTILINE)
     if match is None:
         raise EpicReviewArtifactsError(
-            "Epic doc is missing 'Epic closeout story: Story N'."
+            "Epic doc is missing 'Epic closeout story: <story key>'."
         )
+    return match.group(1).strip()
+
+
+def _extract_story_number_from_key(story_key: str) -> int | None:
+    match = re.fullmatch(r"Story\s+(\d+)", story_key)
+    if match is None:
+        return None
     return int(match.group(1))
 
 
-def _extract_story_numbers(epic_text: str) -> tuple[int, ...]:
+def _extract_story_keys(epic_text: str) -> tuple[str, ...]:
     if "Recommended story order:" not in epic_text:
         raise EpicReviewArtifactsError("Epic doc is missing 'Recommended story order:'")
     story_order_block = epic_text.split("Recommended story order:", 1)[1]
-    ordered_lines: list[str] = []
+    ordered_story_keys: list[str] = []
     for line in story_order_block.splitlines():
         stripped = line.strip()
         if not stripped:
-            if ordered_lines:
+            if ordered_story_keys:
                 break
             continue
-        if re.match(r"^\d+\.\s+Story\s+\d+\b", stripped):
-            ordered_lines.append(stripped)
+        match = re.match(r"^\d+\.\s+(.+?)(?:\s+[—-]\s+.+)?$", stripped)
+        if match is not None:
+            story_key = match.group(1).strip()
+            if story_key not in ordered_story_keys:
+                ordered_story_keys.append(story_key)
             continue
-        if ordered_lines:
+        if ordered_story_keys:
             break
 
-    story_numbers = [int(number) for number in re.findall(r"Story\s+(\d+)", "\n".join(ordered_lines))]
-    if not story_numbers:
-        raise EpicReviewArtifactsError("No story numbers found under 'Recommended story order:'")
-    ordered_unique_numbers: list[int] = []
-    for story_number in story_numbers:
-        if story_number not in ordered_unique_numbers:
-            ordered_unique_numbers.append(story_number)
-    return tuple(ordered_unique_numbers)
+    if not ordered_story_keys:
+        raise EpicReviewArtifactsError("No story keys found under 'Recommended story order:'")
+    return tuple(ordered_story_keys)
 
 
 def _parse_closed_story_summaries(
     *,
     jira_closed_text: str,
-    story_numbers: tuple[int, ...],
+    story_keys: tuple[str, ...],
 ) -> tuple[ClosedStorySummary, ...]:
-    requested_story_numbers = set(story_numbers)
-    story_entries = list(re.finditer(r"^## Story (\d+) — (.+)$", jira_closed_text, re.MULTILINE))
-    summaries: dict[int, ClosedStorySummary] = {}
+    requested_story_keys = set(story_keys)
+    story_entries = list(re.finditer(r"^## (.+)$", jira_closed_text, re.MULTILINE))
+    summaries: dict[str, ClosedStorySummary] = {}
 
     for index, match in enumerate(story_entries):
-        story_number = int(match.group(1))
-        if story_number not in requested_story_numbers:
+        header_text = match.group(1).strip()
+        split_match = re.match(r"(.+?)\s+[—-]\s+(.+)$", header_text)
+        if split_match is None:
             continue
+        story_key = split_match.group(1).strip()
+        if story_key not in requested_story_keys:
+            continue
+        story_number = _extract_story_number_from_key(story_key)
 
         start = match.start()
         end = story_entries[index + 1].start() if index + 1 < len(story_entries) else len(jira_closed_text)
         entry_text = jira_closed_text[start:end]
-        summaries[story_number] = ClosedStorySummary(
+        summaries[story_key] = ClosedStorySummary(
+            key=story_key,
             number=story_number,
-            title=match.group(2).strip(),
+            title=split_match.group(2).strip(),
             scope_delivered=tuple(_extract_entry_section_bullets(entry_text, "Scope delivered")),
             validation=tuple(_extract_entry_section_bullets(entry_text, "Validation")),
             follow_ups=tuple(_extract_entry_section_bullets(entry_text, "Follow-ups")),
-            manual_guides=tuple(sorted(set(re.findall(r"north-star/story\d+-manual\.md", entry_text)))),
+            manual_guides=tuple(
+                sorted(set(re.findall(r"north-star/[A-Za-z0-9._/-]+-manual\.md", entry_text)))
+            ),
         )
 
-    missing_story_numbers = [number for number in story_numbers if number not in summaries]
-    if missing_story_numbers:
-        missing_text = ", ".join(f"Story {number}" for number in missing_story_numbers)
+    missing_story_keys = [key for key in story_keys if key not in summaries]
+    if missing_story_keys:
+        missing_text = ", ".join(missing_story_keys)
         raise EpicReviewArtifactsError(
             f"Missing closed story entries in north-star/JIRA_STORIES_CLOSED.md: {missing_text}"
         )
 
-    return tuple(summaries[number] for number in story_numbers)
+    return tuple(summaries[key] for key in story_keys)
 
 
 def _extract_entry_section_bullets(entry_text: str, section_name: str) -> list[str]:
@@ -429,7 +447,8 @@ def _render_packet(
     epic_title: str,
     epic_goal: str,
     epic_doc_path: Path,
-    closeout_story_number: int,
+    closeout_story_key: str,
+    closeout_story_number: int | None,
     epic_scope: tuple[str, ...],
     architecture_text: str,
     closed_stories: tuple[ClosedStorySummary, ...],
@@ -441,7 +460,7 @@ def _render_packet(
     story_summaries = "\n".join(_render_story_summary(story) for story in closed_stories)
     manual_guides = sorted({guide for story in closed_stories for guide in story.manual_guides})
     validation_bullets = closeout_story.validation or (
-        f"Story {closeout_story.number} is closed, but no validation bullets were parsed from JIRA closeout.",
+        f"{closeout_story.key} is closed, but no validation bullets were parsed from JIRA closeout.",
     )
     follow_up_bullets = closeout_story.follow_ups or scratchpad.risks_before_next_epic
     generated_at_text = generated_at.strftime("%Y-%m-%d %H:%M UTC")
@@ -450,14 +469,14 @@ def _render_packet(
         f"# {epic_title} Review Packet\n\n"
         f"- Generated at: {generated_at_text}\n"
         f"- Epic doc: `{epic_doc_path.as_posix()}`\n"
-        f"- Epic closeout story: Story {closeout_story_number}\n"
+        f"- Epic closeout story: {closeout_story_key}\n"
         f"- Scratchpad active epic: {scratchpad.active_epic or 'not set'}\n\n"
         f"## Current Architecture Snapshot\n\n"
         f"{architecture_text}\n\n"
         f"## Epic Completed\n\n"
         f"- Epic: {epic_title}\n"
         f"- Goal: {epic_goal}\n"
-        f"- Stories completed in this epic: {', '.join(f'Story {story.number}' for story in closed_stories)}\n"
+        f"- Stories completed in this epic: {', '.join(story.key for story in closed_stories)}\n"
         f"- Epic scope:\n{scope_bullets}\n\n"
         f"## Epic Stories Delivered\n\n"
         f"{story_summaries}\n\n"
@@ -482,7 +501,7 @@ def _render_packet(
 
 def _render_story_summary(story: ClosedStorySummary) -> str:
     scope_bullets = _render_bullets(story.scope_delivered or ("no scope-delivered bullets recorded",))
-    return f"### Story {story.number} — {story.title}\n{scope_bullets}"
+    return f"### {story.key} — {story.title}\n{scope_bullets}"
 
 
 def _render_prompt(*, packet_text: str) -> str:

@@ -70,7 +70,7 @@ def main() -> int:
         return 2
 
     print(f"epic_title={artifacts.epic_title}")
-    print(f"closeout_story=Story {artifacts.closeout_story_number}")
+    print(f"closeout_story={artifacts.closeout_story_key}")
     print(f"packet_path={artifacts.packet_path}")
     print(f"prompt_path={artifacts.prompt_path}")
     print(f"review_response_path={artifacts.review_response_path}")

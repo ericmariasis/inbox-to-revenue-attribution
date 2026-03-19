@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 
-from app.models.booking_provider import booking_provider_supports_tracked_content
+from app.models.booking_provider import (
+    booking_provider_supports_creator_visible_tracked_content,
+    booking_provider_supports_creator_visible_tracked_destination,
+)
 from app.schemas.booking_link import BookingLinkResponse
 from app.schemas.content import ContentResponse
 
@@ -40,13 +43,18 @@ def build_creator_workspace_readiness(
     trackable_booking_links_count = sum(
         1
         for booking_link in booking_links
-        if booking_provider_supports_tracked_content(booking_link.provider)
+        if booking_provider_supports_creator_visible_tracked_content(booking_link.provider)
     )
-    limited_tracking_booking_links_count = booking_links_count - trackable_booking_links_count
+    limited_tracking_booking_links_count = sum(
+        1
+        for booking_link in booking_links
+        if booking_provider_supports_creator_visible_tracked_destination(booking_link.provider)
+        and not booking_provider_supports_creator_visible_tracked_content(booking_link.provider)
+    )
     billing_ready_count = sum(
         1
         for booking_link in booking_links
-        if booking_provider_supports_tracked_content(booking_link.provider)
+        if booking_provider_supports_creator_visible_tracked_content(booking_link.provider)
         if booking_link.billing_amount_cents is not None
         and booking_link.billing_currency is not None
     )

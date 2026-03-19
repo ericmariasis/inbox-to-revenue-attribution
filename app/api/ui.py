@@ -42,8 +42,8 @@ from app.models.auth_user import AuthUser
 from app.models.booking_provider import (
     BOOKING_PROVIDER_CALENDLY,
     BOOKING_PROVIDER_FULLSCOPE,
-    booking_provider_supports_tracked_destination,
-    booking_provider_supports_tracked_content,
+    booking_provider_supports_creator_visible_tracked_content,
+    booking_provider_supports_creator_visible_tracked_destination,
 )
 from app.models.support_request import SupportRequestRecord
 from app.schemas.booking_link import BookingLinkCreateRequest, BookingLinkResponse
@@ -209,6 +209,7 @@ REPORT_FILTER_FIELDS = (
     "start_date",
     "end_date",
 )
+CREATOR_VISIBLE_BOOKING_LINK_PROVIDERS = frozenset({BOOKING_PROVIDER_CALENDLY})
 ACCOUNT_REQUEST_STATUS_MESSAGES = {
     "workspace-reset-requested": {
         "title": "Workspace reset requested",
@@ -608,12 +609,7 @@ async def creator_booking_links_create(
         payload=payload,
         db=db,
     )
-    created_status = (
-        "created-fullscope"
-        if created_booking_link.provider == BOOKING_PROVIDER_FULLSCOPE
-        else "created"
-    )
-    return _redirect(f"/app/booking-links?status={created_status}")
+    return _redirect("/app/booking-links?status=created")
 
 
 @router.get("/app/content")
@@ -699,6 +695,38 @@ async def creator_content_create(
                 content_items=content_items,
                 form_values=form_values,
                 field_errors=field_errors,
+                status_value=None,
+                created_content=None,
+            )
+        )
+
+    selected_booking_link_id = str(payload.booking_link_id)
+    selected_booking_link = next(
+        (
+            booking_link
+            for booking_link in booking_links
+            if booking_link.id == selected_booking_link_id
+        ),
+        None,
+    )
+    if (
+        selected_booking_link is not None
+        and not booking_provider_supports_creator_visible_tracked_content(
+            selected_booking_link.provider
+        )
+    ):
+        return _html_response(
+            _render_content_page(
+                current_user=current_user,
+                booking_links=booking_links,
+                content_items=content_items,
+                form_values=form_values,
+                field_errors={
+                    "booking_link_id": (
+                        "This saved booking source cannot generate tracked content yet. "
+                        "Choose a supported tracked destination instead."
+                    ),
+                },
                 status_value=None,
                 created_content=None,
             )
@@ -1384,6 +1412,9 @@ def _booking_link_payload_from_form(
     field_errors: dict[str, str] = {}
     billing_amount_cents: int | None = None
 
+    if form_values["provider"] not in CREATOR_VISIBLE_BOOKING_LINK_PROVIDERS:
+        field_errors["provider"] = "This booking provider is not available in creator setup right now."
+
     if form_values["billing_amount_cents"]:
         try:
             billing_amount_cents = int(form_values["billing_amount_cents"])
@@ -1757,10 +1788,15 @@ def _render_account_page(
     booking_links_summary = "No booking links are saved yet for this workspace."
     if booking_links_count > 0:
         booking_links_summary = f"This workspace currently has {html.escape(_count_copy(booking_links_count, 'saved booking link'))}. "
-        if trackable_booking_links_count == 0 and limited_tracking_booking_links_count > 0:
+        if _has_limited_tracking_only_booking_links(readiness):
             booking_links_summary += (
                 "Those booking sources can generate tracked redirects now, but billable-now "
                 "and creator-readiness still wait for end-to-end provider support."
+            )
+        elif _has_inactive_creator_booking_links(readiness):
+            booking_links_summary += (
+                "Those booking sources stay saved, but they are not active in creator-tracked "
+                "workflows right now."
             )
         else:
             booking_links_summary += html.escape(
@@ -2286,6 +2322,15 @@ def _readiness_stage_summary(readiness: CreatorWorkspaceReadiness) -> dict[str, 
             ),
         }
 
+    if _has_inactive_creator_booking_links(readiness):
+        return {
+            "title": "Connected, but not billable now",
+            "copy": (
+                "Saved booking sources are not active for creator-tracked workflows right now. "
+                "Add a currently supported booking link next."
+            ),
+        }
+
     if readiness.connected:
         return {
             "title": "Connected, but not billable now",
@@ -2327,15 +2372,17 @@ def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[st
             "Done",
             "At least one booking link has amount and currency saved.",
         )
-    elif (
-        readiness.connected
-        and trackable_booking_links_count == 0
-        and limited_tracking_booking_links_count > 0
-    ):
+    elif readiness.connected and _has_limited_tracking_only_booking_links(readiness):
         billable_line = (
             "Billable now",
             "Not yet",
             "Saved booking sources can generate tracked redirects now, but billable-now and invoice readiness still wait for end-to-end provider support.",
+        )
+    elif readiness.connected and _has_inactive_creator_booking_links(readiness):
+        billable_line = (
+            "Billable now",
+            "Not yet",
+            "Saved booking sources are not active for creator-tracked workflows right now. Add a currently supported booking link.",
         )
     elif readiness.connected and booking_links_count > 0:
         billable_line = (
@@ -2447,6 +2494,10 @@ def _build_setup_home_progress(
                 + (
                     "This workspace is already billable now while you finish the rest of setup."
                     if billable_now
+                    else "Creator setup still needs a currently supported booking link before this workspace can become billable now."
+                    if booking_links_count > 0
+                    and trackable_booking_links_count == 0
+                    and limited_tracking_booking_links_count == 0
                     else "The next milestone is billable now, which needs amount and currency on at least one booking link."
                 )
             ),
@@ -2494,10 +2545,15 @@ def _build_setup_home_progress(
             f"{html.escape(_count_copy(booking_links_count, 'booking link'))} saved. "
             "Keep the saved booking links here aligned with what you actually share."
         )
-        if trackable_booking_links_count == 0 and limited_tracking_booking_links_count > 0:
+        if _has_limited_tracking_only_booking_links(readiness):
             booking_link_copy_html = (
                 f"{html.escape(_count_copy(booking_links_count, 'booking link'))} saved. "
                 "These booking sources can generate tracked redirects now, but end-to-end creator readiness still waits for provider support."
+            )
+        elif _has_inactive_creator_booking_links(readiness):
+            booking_link_copy_html = (
+                f"{html.escape(_count_copy(booking_links_count, 'booking link'))} saved. "
+                "These booking sources stay saved, but creator setup currently needs a supported active booking link."
             )
         booking_link_step = _setup_step(
             title="Save a booking link",
@@ -2541,7 +2597,7 @@ def _build_setup_home_progress(
             item_class="done",
             is_complete=True,
         )
-    elif trackable_booking_links_count == 0 and limited_tracking_booking_links_count > 0:
+    elif _has_limited_tracking_only_booking_links(readiness):
         billing_defaults_step = _setup_step(
             title="Add billing defaults",
             copy_html='Saved booking sources can generate tracked redirects now, but billable-now readiness still waits for end-to-end provider support. <a href="/app/booking-links" class="inline-link">Open booking links</a>.',
@@ -2554,6 +2610,23 @@ def _build_setup_home_progress(
             next_action = {
                 "title": "Add a tracked-content-ready link",
                 "copy_html": "Tracked redirects are ready, but billable-now readiness still waits for end-to-end provider support.",
+                "action_label": "Open booking links",
+                "action_href": "/app/booking-links",
+                "action_method": "get",
+            }
+    elif _has_inactive_creator_booking_links(readiness):
+        billing_defaults_step = _setup_step(
+            title="Add billing defaults",
+            copy_html='Saved booking sources are not active for creator billing right now. Add a currently supported booking link first. <a href="/app/booking-links" class="inline-link">Open booking links</a>.',
+            label="Blocked",
+            badge_class="disconnected",
+            item_class="todo",
+            is_complete=False,
+        )
+        if next_action is None:
+            next_action = {
+                "title": "Add a supported booking link",
+                "copy_html": "Creator setup currently needs a booking link with active tracked-content support before this workspace can become billable now.",
                 "action_label": "Open booking links",
                 "action_href": "/app/booking-links",
                 "action_method": "get",
@@ -2729,29 +2802,20 @@ def _render_shell_nav(*, current_path: str) -> str:
 
 def _booking_link_form_provider(form_values: dict[str, str]) -> str:
     provider = form_values.get("provider", BOOKING_PROVIDER_CALENDLY).strip().lower()
-    if provider == BOOKING_PROVIDER_FULLSCOPE:
-        return BOOKING_PROVIDER_FULLSCOPE
+    if provider in CREATOR_VISIBLE_BOOKING_LINK_PROVIDERS:
+        return provider
     return BOOKING_PROVIDER_CALENDLY
 
 
 def _booking_link_destination_label(provider: str) -> str:
-    if provider == BOOKING_PROVIDER_FULLSCOPE:
-        return "FullScope URL"
     return "Calendly URL"
 
 
 def _booking_link_destination_placeholder(provider: str) -> str:
-    if provider == BOOKING_PROVIDER_FULLSCOPE:
-        return "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar"
     return "https://calendly.com/example/discovery-call"
 
 
 def _booking_link_destination_help(provider: str) -> str:
-    if provider == BOOKING_PROVIDER_FULLSCOPE:
-        return (
-            "Use a FullScope Personal Calendar or direct Service Calendar URL. "
-            "Round Robin and Service Menu links stay outside the initial support boundary."
-        )
     return "Use the Calendly URL this creator actually shares today."
 
 
@@ -2762,13 +2826,29 @@ def _booking_link_provider_label(provider: str) -> str:
 
 
 def _booking_link_setup_state_copy(booking_link: BookingLinkResponse) -> str:
-    if booking_provider_supports_tracked_content(booking_link.provider):
+    if booking_provider_supports_creator_visible_tracked_content(booking_link.provider):
         return "Ready for tracked content now."
-    if booking_provider_supports_tracked_destination(booking_link.provider):
+    if booking_provider_supports_creator_visible_tracked_destination(booking_link.provider):
         return "Tracked redirect ready, but end-to-end provider support is still pending."
     return (
         "Setup only for now. This booking source is saved, but tracked redirects are "
         "not available yet."
+    )
+
+
+def _has_limited_tracking_only_booking_links(readiness: CreatorWorkspaceReadiness) -> bool:
+    return (
+        readiness.booking_links_count > 0
+        and readiness.trackable_booking_links_count == 0
+        and readiness.limited_tracking_booking_links_count > 0
+    )
+
+
+def _has_inactive_creator_booking_links(readiness: CreatorWorkspaceReadiness) -> bool:
+    return (
+        readiness.booking_links_count > 0
+        and readiness.trackable_booking_links_count == 0
+        and readiness.limited_tracking_booking_links_count == 0
     )
 
 
@@ -2788,22 +2868,6 @@ def _render_booking_links_page(
     destination_label = _booking_link_destination_label(selected_provider)
     destination_placeholder = _booking_link_destination_placeholder(selected_provider)
     destination_help = _booking_link_destination_help(selected_provider)
-    fullscope_confirmation_checked = (
-        " checked" if form_values["fullscope_supported_calendar_confirmed"] == "true" else ""
-    )
-    fullscope_confirmation_visibility = (
-        "" if selected_provider == BOOKING_PROVIDER_FULLSCOPE else ' style="display:none"'
-    )
-    fullscope_setup_note = (
-        """
-          <section class="notice">
-            <p class="eyebrow">FullScope setup boundary</p>
-            <p>Only Personal Calendar and direct Service Calendar links are supported for FullScope end-to-end tracking. Round Robin and Service Menu links stay outside the current support boundary.</p>
-          </section>
-        """
-        if selected_provider == BOOKING_PROVIDER_FULLSCOPE
-        else ""
-    )
 
     body = f"""
     <header class="shell-header">
@@ -2832,10 +2896,9 @@ def _render_booking_links_page(
             name="provider"
             aria-invalid="{str("provider" in field_errors).lower()}"
           >
-            <option value="{BOOKING_PROVIDER_CALENDLY}"{" selected" if selected_provider == BOOKING_PROVIDER_CALENDLY else ""}>Calendly</option>
-            <option value="{BOOKING_PROVIDER_FULLSCOPE}"{" selected" if selected_provider == BOOKING_PROVIDER_FULLSCOPE else ""}>FullScope</option>
+            <option value="{BOOKING_PROVIDER_CALENDLY}" selected>Calendly</option>
           </select>
-          <p class="form-help">Calendly works end to end today. Supported FullScope Personal Calendar and direct Service Calendar links also work end to end today. Round Robin and Service Menu links stay out of scope.</p>
+          <p class="form-help">Creator setup currently supports Calendly end to end.</p>
           {_render_booking_link_field_error(field_errors.get("provider"))}
 
           <label for="name">Name</label>
@@ -2862,21 +2925,6 @@ def _render_booking_links_page(
           />
           <p id="destination_url_help" class="form-help">{html.escape(destination_help)}</p>
           {_render_booking_link_field_error(field_errors.get("destination_url"))}
-
-          <div id="fullscope_supported_calendar_section"{fullscope_confirmation_visibility}>
-            {fullscope_setup_note}
-            <label class="checkbox-row">
-              <input
-                id="fullscope_supported_calendar_confirmed"
-                name="fullscope_supported_calendar_confirmed"
-                type="checkbox"
-                value="true"{fullscope_confirmation_checked}
-                aria-invalid="{str("fullscope_supported_calendar_confirmed" in field_errors).lower()}"
-              />
-              <span>I confirm this FullScope link is a Personal Calendar or direct Service Calendar, not a Round Robin or Service Menu path.</span>
-            </label>
-            {_render_booking_link_field_error(field_errors.get("fullscope_supported_calendar_confirmed"))}
-          </div>
 
           <label for="billing_amount_cents">Billing amount in cents</label>
           <input
@@ -2908,45 +2956,6 @@ def _render_booking_links_page(
 
           <button type="submit">Save booking link</button>
         </form>
-        <script>
-          (() => {{
-            const providerSelect = document.getElementById("provider");
-            const destinationLabel = document.getElementById("destination_url_label");
-            const destinationInput = document.getElementById("destination_url");
-            const destinationHelp = document.getElementById("destination_url_help");
-            const fullscopeSection = document.getElementById("fullscope_supported_calendar_section");
-            if (!providerSelect || !destinationLabel || !destinationInput || !destinationHelp || !fullscopeSection) {{
-              return;
-            }}
-
-            const copyByProvider = {{
-              "{BOOKING_PROVIDER_CALENDLY}": {{
-                label: "Calendly URL",
-                placeholder: "https://calendly.com/example/discovery-call",
-                help: "Use the Calendly URL this creator actually shares today.",
-              }},
-              "{BOOKING_PROVIDER_FULLSCOPE}": {{
-                label: "FullScope URL",
-                placeholder: "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
-                help: "Use a FullScope Personal Calendar or direct Service Calendar URL. Round Robin and Service Menu links stay outside the initial support boundary.",
-              }},
-            }};
-
-            const syncBookingLinkProviderUi = () => {{
-              const selectedProvider = providerSelect.value === "{BOOKING_PROVIDER_FULLSCOPE}"
-                ? "{BOOKING_PROVIDER_FULLSCOPE}"
-                : "{BOOKING_PROVIDER_CALENDLY}";
-              const providerCopy = copyByProvider[selectedProvider];
-              destinationLabel.textContent = providerCopy.label;
-              destinationInput.placeholder = providerCopy.placeholder;
-              destinationHelp.textContent = providerCopy.help;
-              fullscopeSection.style.display = selectedProvider === "{BOOKING_PROVIDER_FULLSCOPE}" ? "" : "none";
-            }};
-
-            providerSelect.addEventListener("change", syncBookingLinkProviderUi);
-            syncBookingLinkProviderUi();
-          }})();
-        </script>
       </article>
       <article class="card accent stack">
         <div>
@@ -3032,14 +3041,6 @@ def _render_booking_link_notice(
         </section>
         """
 
-    if status_value == "created-fullscope":
-        return """
-        <section class="notice success">
-          <p class="eyebrow">FullScope source saved</p>
-          <p>The FullScope booking source can now be used for tracked content, verified webhook capture, and billing on supported Personal Calendar and direct Service Calendar links.</p>
-        </section>
-        """
-
     return ""
 
 
@@ -3093,7 +3094,7 @@ def _render_content_page(
           <h2>Copy the generated redirect URL into your post</h2>
         </div>
         <p>The tracked link uses the stored content `tid`, so the redirect can carry attribution into the supported booking flow before later booking capture reads it.</p>
-        <p>Pick a saved booking link, paste in the public URL for the content you are publishing, then copy the generated tracked link into the content or CTA you share externally. Calendly and supported FullScope links both work end to end here today. Round Robin and Service Menu links stay outside the current FullScope support boundary.</p>
+        <p>Pick a saved booking link, paste in the public URL for the content you are publishing, then copy the generated tracked link into the content or CTA you share externally. Only booking links with active tracked-content support can be used here today.</p>
         <a href="/app/booking-links" class="inline-link">Review booking links</a>
       </article>
     </section>
@@ -3135,20 +3136,17 @@ def _render_content_form_panel(
     selectable_booking_links = [
         booking_link
         for booking_link in booking_links
-        if booking_provider_supports_tracked_destination(booking_link.provider)
-    ]
-    fullscope_booking_links = [
-        booking_link
-        for booking_link in booking_links
-        if booking_link.provider == BOOKING_PROVIDER_FULLSCOPE
+        if booking_provider_supports_creator_visible_tracked_destination(
+            booking_link.provider
+        )
     ]
     submit_disabled = " disabled" if not selectable_booking_links else ""
-    bridge_ready_note = ""
-    if fullscope_booking_links:
-        bridge_ready_note = """
+    unavailable_note = ""
+    if booking_links and not selectable_booking_links:
+        unavailable_note = """
         <section class="notice">
-          <p class="eyebrow">FullScope support boundary</p>
-          <p>Supported FullScope Personal Calendar and direct Service Calendar links work end to end here today. Round Robin and Service Menu links remain out of scope.</p>
+          <p class="eyebrow">Tracked content unavailable for current saved links</p>
+          <p>These booking sources stay saved, but creator-tracked links currently require a provider with active support. Add a Calendly link to continue.</p>
         </section>
         """
 
@@ -3159,7 +3157,7 @@ def _render_content_form_panel(
         <h2>Add a source URL</h2>
         <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
       </div>
-      {bridge_ready_note}
+      {unavailable_note}
       <form action="/app/content" method="post">
         <label for="source_url">Public source URL</label>
         <input
@@ -3187,7 +3185,7 @@ def _render_content_form_panel(
               selected_booking_link_id=form_values["booking_link_id"],
           )}
         </select>
-        <p class="form-help">This keeps the tracked content aligned with the creator-owned booking link that downstream redirect handling expects. Supported FullScope links now flow through verified booking capture and shared billing here, while Round Robin and Service Menu remain out of scope.</p>
+        <p class="form-help">This keeps the tracked content aligned with the creator-owned booking link that downstream redirect handling expects. Only booking links with active tracked-content support can be used here.</p>
         {_render_content_field_error(field_errors.get("booking_link_id"))}
 
         <button type="submit"{submit_disabled}>Generate tracked link</button>
@@ -3203,10 +3201,12 @@ def _render_content_booking_link_options(
 ) -> str:
     options = []
     for booking_link in booking_links:
-        supports_tracked_destination = booking_provider_supports_tracked_destination(
-            booking_link.provider
+        supports_tracked_destination = (
+            booking_provider_supports_creator_visible_tracked_destination(
+                booking_link.provider
+            )
         )
-        supports_tracked_content = booking_provider_supports_tracked_content(
+        supports_tracked_content = booking_provider_supports_creator_visible_tracked_content(
             booking_link.provider
         )
         selected_attr = " selected" if booking_link.id == selected_booking_link_id else ""

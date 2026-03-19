@@ -4701,7 +4701,7 @@ def _render_blocked_billing_case_card(*, blocked_case: BlockedBillingCaseSummary
       <div class="content-card-header">
         <div>
           <p class="eyebrow">Blocked billing</p>
-          <h2>{html.escape(blocked_case.calendly_booking_uuid)}</h2>
+          <h2>{html.escape(blocked_case.provider_booking_id)}</h2>
         </div>
         <span class="status-pill pending">Blocked</span>
       </div>

@@ -1489,6 +1489,8 @@ def test_blocked_billing_cases_table_has_expected_columns_fk_indexes_and_unique_
             "booking_id",
             "invoice_id",
             "tid",
+            "provider",
+            "provider_booking_id",
             "calendly_booking_uuid",
             "stripe_account_id",
             "frozen_amount_cents",

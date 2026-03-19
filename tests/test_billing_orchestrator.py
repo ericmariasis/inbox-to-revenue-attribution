@@ -100,6 +100,7 @@ def _persist_booking_graph(
     stripe_account_id: str = "acct_story44_billable",
     billing_amount_cents: int | None = 15000,
     billing_currency: str | None = "USD",
+    provider: str = "calendly",
 ) -> tuple[Creator, BookingLink, Content, Booking]:
     creator = Creator(
         name="Story 44 Creator",
@@ -109,13 +110,23 @@ def _persist_booking_graph(
     session.add(creator)
     session.flush()
 
-    booking_link = BookingLink(
-        creator_id=creator.id,
-        name="Story 44 Booking Link",
-        calendly_url="https://calendly.com/example/story44-call",
-        billing_amount_cents=billing_amount_cents,
-        billing_currency=billing_currency,
-    )
+    if provider == "fullscope":
+        booking_link = BookingLink(
+            creator_id=creator.id,
+            name="Story 44 Booking Link",
+            provider="fullscope",
+            destination_url="https://links.fullscope.tools/widget/bookings/story44-call",
+            billing_amount_cents=billing_amount_cents,
+            billing_currency=billing_currency,
+        )
+    else:
+        booking_link = BookingLink(
+            creator_id=creator.id,
+            name="Story 44 Booking Link",
+            calendly_url="https://calendly.com/example/story44-call",
+            billing_amount_cents=billing_amount_cents,
+            billing_currency=billing_currency,
+        )
     session.add(booking_link)
     session.flush()
 
@@ -132,7 +143,9 @@ def _persist_booking_graph(
         creator_id=creator.id,
         booking_link_id=booking_link.id,
         tid=content.tid,
-        calendly_booking_uuid=booking_uuid,
+        provider=provider,
+        provider_booking_id=booking_uuid,
+        calendly_booking_uuid=booking_uuid if provider == "calendly" else None,
         email="story44-booked@example.com",
         status="created",
         booked_at=datetime(2026, 3, 8, 18, 0, tzinfo=UTC),
@@ -197,10 +210,12 @@ def test_billing_orchestrator_persists_open_invoice_from_trusted_booking_data():
             "currency": "USD",
             "metadata": {
                 "creator_id": str(creator_id),
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story44_primary",
                 "booking_uuid": "BOOK_story44_primary",
                 "tid": content_tid,
             },
-            "idempotency_key": "billing:create:BOOK_story44_primary",
+            "idempotency_key": "billing:create:calendly:BOOK_story44_primary",
         }
     ]
     assert provider.void_calls == []
@@ -219,6 +234,57 @@ def test_billing_orchestrator_persists_open_invoice_from_trusted_booking_data():
     assert invoices[0].issued_at == issued_at
     assert invoices[0].voided_at is None
     assert invoices[0].paid_at is None
+
+
+def test_billing_orchestrator_uses_provider_aware_identity_for_fullscope_booking():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    issued_at = datetime(2026, 3, 8, 18, 7, tzinfo=UTC)
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_story44_fullscope",
+    )
+
+    with Session(engine) as session:
+        creator, _, content, booking = _persist_booking_graph(
+            session,
+            booking_uuid="APT_story44_fullscope",
+            tid="story44_fullscope_tid",
+            provider="fullscope",
+        )
+        creator_id = creator.id
+        booking_id = booking.id
+        session.commit()
+
+    orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        provider=provider,
+        now_fn=lambda: issued_at,
+    )
+
+    result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
+    invoices = _invoice_rows()
+
+    assert result.outcome == "created"
+    assert result.stripe_invoice_id == "in_story44_fullscope"
+    assert provider.create_calls == [
+        {
+            "stripe_account_id": "acct_story44_billable",
+            "amount_cents": 15000,
+            "currency": "USD",
+            "metadata": {
+                "creator_id": str(creator_id),
+                "booking_provider": "fullscope",
+                "provider_booking_id": "APT_story44_fullscope",
+                "booking_uuid": "APT_story44_fullscope",
+                "tid": "story44_fullscope_tid",
+            },
+            "idempotency_key": "billing:create:fullscope:APT_story44_fullscope",
+        }
+    ]
+    assert len(invoices) == 1
+    assert invoices[0].booking_id == booking_id
+    assert invoices[0].stripe_invoice_id == "in_story44_fullscope"
+    assert _blocked_case_rows() == []
 
 
 def test_billing_orchestrator_create_is_idempotent_for_same_booking():
@@ -498,6 +564,9 @@ def test_billing_orchestrator_defers_when_creator_is_not_billable():
     assert _booking_rows()[0].frozen_billing_amount_cents == 15000
     assert _booking_rows()[0].frozen_billing_currency == "USD"
     assert blocked_cases[0].booking_id == booking_id
+    assert blocked_cases[0].provider == "calendly"
+    assert blocked_cases[0].provider_booking_id == "BOOK_story44_not_billable"
+    assert blocked_cases[0].calendly_booking_uuid == "BOOK_story44_not_billable"
     assert blocked_cases[0].reason_code == "creator_not_billable"
     assert blocked_cases[0].frozen_amount_cents == 15000
     assert blocked_cases[0].frozen_currency == "USD"
@@ -550,6 +619,8 @@ def test_billing_orchestrator_defers_when_readiness_lookup_raises_provider_error
     assert _booking_rows()[0].frozen_billing_amount_cents == 15000
     assert _booking_rows()[0].frozen_billing_currency == "USD"
     assert blocked_cases[0].booking_id == booking_id
+    assert blocked_cases[0].provider == "calendly"
+    assert blocked_cases[0].provider_booking_id == "BOOK_story57_readiness_failure"
     assert blocked_cases[0].reason_code == "provider_error"
     assert blocked_cases[0].provider_operation == "stripe_account_readiness"
     assert blocked_cases[0].provider_http_status == 503
@@ -600,6 +671,8 @@ def test_billing_orchestrator_defers_when_invoice_create_raises_provider_error()
     assert _booking_rows()[0].frozen_billing_amount_cents == 15000
     assert _booking_rows()[0].frozen_billing_currency == "USD"
     assert blocked_cases[0].booking_id == booking_id
+    assert blocked_cases[0].provider == "calendly"
+    assert blocked_cases[0].provider_booking_id == "BOOK_story57_create_failure"
     assert blocked_cases[0].reason_code == "provider_error"
     assert blocked_cases[0].provider_operation == "stripe_invoice_create"
     assert blocked_cases[0].provider_http_status == 502

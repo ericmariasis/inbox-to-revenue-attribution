@@ -641,6 +641,8 @@ def _insert_blocked_billing_case(
     frozen_currency: str,
     reason_code: str,
     first_blocked_at: datetime,
+    provider: str = "calendly",
+    provider_booking_id: str | None = None,
     last_blocked_at: datetime | None = None,
     last_retry_at: datetime | None = None,
     status: str = "open",
@@ -656,12 +658,12 @@ def _insert_blocked_billing_case(
         conn.execute(
             text(
                 "INSERT INTO blocked_billing_cases "
-                "(id, creator_id, booking_id, invoice_id, tid, calendly_booking_uuid, stripe_account_id, "
+                "(id, creator_id, booking_id, invoice_id, tid, provider, provider_booking_id, calendly_booking_uuid, stripe_account_id, "
                 "frozen_amount_cents, frozen_currency, status, reason_code, provider_operation, "
                 "provider_http_status, provider_error_code, first_blocked_at, last_blocked_at, "
                 "last_retry_at, resolved_at, resolution_code) "
                 "VALUES "
-                "(:id, :creator_id, :booking_id, :invoice_id, :tid, :calendly_booking_uuid, :stripe_account_id, "
+                "(:id, :creator_id, :booking_id, :invoice_id, :tid, :provider, :provider_booking_id, :calendly_booking_uuid, :stripe_account_id, "
                 ":frozen_amount_cents, :frozen_currency, :status, :reason_code, :provider_operation, "
                 ":provider_http_status, :provider_error_code, :first_blocked_at, :last_blocked_at, "
                 ":last_retry_at, :resolved_at, :resolution_code)"
@@ -672,6 +674,8 @@ def _insert_blocked_billing_case(
                 "booking_id": booking_id,
                 "invoice_id": None,
                 "tid": tid,
+                "provider": provider,
+                "provider_booking_id": provider_booking_id or calendly_booking_uuid,
                 "calendly_booking_uuid": calendly_booking_uuid,
                 "stripe_account_id": stripe_account_id,
                 "frozen_amount_cents": frozen_amount_cents,

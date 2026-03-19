@@ -42,7 +42,8 @@ class BlockedBillingCaseSummary:
     invoice_status: str | None
     stripe_invoice_id: str | None
     tid: str
-    calendly_booking_uuid: str
+    provider: str
+    provider_booking_id: str
     stripe_account_id: str | None
     frozen_amount_cents: int
     frozen_currency: str
@@ -198,6 +199,10 @@ def record_blocked_billing_case(
     provider_http_status: int | None = None,
     provider_error_code: str | None = None,
 ) -> BlockedBillingCase:
+    resolved_provider_booking_id = booking.resolved_provider_booking_id
+    if resolved_provider_booking_id is None:
+        raise ValueError(f"missing provider booking identity for booking {booking.id}")
+
     blocked_case = session.scalar(
         select(BlockedBillingCase)
         .where(BlockedBillingCase.booking_id == booking.id)
@@ -209,6 +214,8 @@ def record_blocked_billing_case(
             creator_id=booking.creator_id,
             booking_id=booking.id,
             tid=booking.tid,
+            provider=booking.provider,
+            provider_booking_id=resolved_provider_booking_id,
             calendly_booking_uuid=booking.calendly_booking_uuid,
             frozen_amount_cents=frozen_amount_cents,
             frozen_currency=frozen_currency.upper(),
@@ -223,6 +230,8 @@ def record_blocked_billing_case(
     booking.frozen_billing_amount_cents = frozen_amount_cents
     booking.frozen_billing_currency = frozen_currency.upper()
     blocked_case.tid = booking.tid
+    blocked_case.provider = booking.provider
+    blocked_case.provider_booking_id = resolved_provider_booking_id
     blocked_case.calendly_booking_uuid = booking.calendly_booking_uuid
     blocked_case.stripe_account_id = stripe_account_id
     blocked_case.frozen_amount_cents = frozen_amount_cents
@@ -237,9 +246,11 @@ def record_blocked_billing_case(
     blocked_case.resolution_code = None
 
     logger.info(
-        "blocked_billing_case_%s booking_id=%s creator_id=%s reason_code=%s stripe_account_id=%s",
+        "blocked_billing_case_%s booking_id=%s provider=%s provider_booking_id=%s creator_id=%s reason_code=%s stripe_account_id=%s",
         "created" if created else "updated",
         booking.id,
+        booking.provider,
+        resolved_provider_booking_id,
         booking.creator_id,
         reason_code,
         stripe_account_id,
@@ -347,7 +358,8 @@ def list_open_blocked_billing_cases(
             invoice_status=invoice_status,
             stripe_invoice_id=stripe_invoice_id,
             tid=blocked_case.tid,
-            calendly_booking_uuid=blocked_case.calendly_booking_uuid,
+            provider=blocked_case.resolved_provider,
+            provider_booking_id=blocked_case.resolved_provider_booking_id or "missing",
             stripe_account_id=blocked_case.stripe_account_id,
             frozen_amount_cents=blocked_case.frozen_amount_cents,
             frozen_currency=blocked_case.frozen_currency,

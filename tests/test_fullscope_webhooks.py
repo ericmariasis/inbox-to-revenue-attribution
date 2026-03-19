@@ -9,15 +9,23 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.main import app
+from app.models.blocked_billing_case import BlockedBillingCase
 from app.models.booking import Booking
 from app.models.booking_link import BookingLink
 from app.models.content import Content
 from app.models.creator import Creator
 from app.models.fullscope_webhook_event import FullScopeWebhookEventRecord
+from app.models.invoice import Invoice
 from app.services.fullscope_webhooks import (
     DefaultFullScopeWebhookRouter,
     FullScopeWebhookJournalRecordResult,
+    build_default_fullscope_webhook_router,
     verify_and_parse_fullscope_webhook,
+)
+from app.services.stripe_provider import (
+    StripeAccountReadiness,
+    StripeInvoiceCreateResult,
+    StripeProviderError,
 )
 
 
@@ -96,6 +104,75 @@ class _CaptureUnpaidInvoiceVoider:
         )
 
 
+class _StubStripeProvider:
+    def __init__(
+        self,
+        *,
+        readiness: StripeAccountReadiness,
+        created_invoice_id: str = "in_fs5_created",
+        created_invoice_status: str = "open",
+        readiness_error: StripeProviderError | None = None,
+        create_error: StripeProviderError | None = None,
+        void_error: StripeProviderError | None = None,
+    ):
+        self._readiness = readiness
+        self._created_invoice_id = created_invoice_id
+        self._created_invoice_status = created_invoice_status
+        self._readiness_error = readiness_error
+        self._create_error = create_error
+        self._void_error = void_error
+        self.readiness_calls: list[str] = []
+        self.create_calls: list[dict[str, object]] = []
+        self.void_calls: list[dict[str, str]] = []
+
+    def build_connect_onboarding_url(self, *, creator_id: str, state: str) -> str:
+        raise AssertionError(f"unexpected onboarding call creator_id={creator_id} state={state}")
+
+    def exchange_connect_callback(self, *, code: str, state: str) -> str:
+        raise AssertionError(f"unexpected callback exchange code={code} state={state}")
+
+    def get_account_readiness(self, *, stripe_account_id: str) -> StripeAccountReadiness:
+        self.readiness_calls.append(stripe_account_id)
+        if self._readiness_error is not None:
+            raise self._readiness_error
+        return self._readiness
+
+    def create_invoice(
+        self,
+        *,
+        stripe_account_id: str,
+        amount_cents: int,
+        currency: str,
+        metadata: dict[str, str],
+        idempotency_key: str,
+    ) -> StripeInvoiceCreateResult:
+        self.create_calls.append(
+            {
+                "stripe_account_id": stripe_account_id,
+                "amount_cents": amount_cents,
+                "currency": currency,
+                "metadata": metadata,
+                "idempotency_key": idempotency_key,
+            }
+        )
+        if self._create_error is not None:
+            raise self._create_error
+        return StripeInvoiceCreateResult(
+            stripe_invoice_id=self._created_invoice_id,
+            status=self._created_invoice_status,
+        )
+
+    def void_invoice(self, *, stripe_account_id: str, stripe_invoice_id: str) -> None:
+        self.void_calls.append(
+            {
+                "stripe_account_id": stripe_account_id,
+                "stripe_invoice_id": stripe_invoice_id,
+            }
+        )
+        if self._void_error is not None:
+            raise self._void_error
+
+
 def _engine():
     return create_engine(os.environ["TEST_DATABASE_URL"])
 
@@ -118,9 +195,16 @@ def _create_creator_booking_link_and_content(
     *,
     tid: str,
     provider: str = "fullscope",
+    stripe_account_id: str | None = None,
+    billing_amount_cents: int | None = None,
+    billing_currency: str | None = None,
 ) -> dict[str, Any]:
     with Session(_engine()) as session:
-        creator = Creator(name=f"FS5 Creator {uuid.uuid4().hex}")
+        creator = Creator(
+            name=f"FS5 Creator {uuid.uuid4().hex}",
+            stripe_account_id=stripe_account_id,
+            stripe_connect_status="connected" if stripe_account_id else "pending",
+        )
         session.add(creator)
         session.flush()
 
@@ -130,6 +214,8 @@ def _create_creator_booking_link_and_content(
                 name="FS5 FullScope Source",
                 provider="fullscope",
                 destination_url="https://links.fullscope.tools/widget/bookings/fs5-personal-calendar",
+                billing_amount_cents=billing_amount_cents,
+                billing_currency=billing_currency,
             )
         else:
             booking_link = BookingLink(
@@ -138,6 +224,8 @@ def _create_creator_booking_link_and_content(
                 provider="calendly",
                 destination_url="https://calendly.com/example/fs5-source",
                 calendly_url="https://calendly.com/example/fs5-source",
+                billing_amount_cents=billing_amount_cents,
+                billing_currency=billing_currency,
             )
         session.add(booking_link)
         session.flush()
@@ -155,6 +243,9 @@ def _create_creator_booking_link_and_content(
             "creator_id": creator.id,
             "booking_link_id": booking_link.id,
             "tid": content.tid,
+            "stripe_account_id": creator.stripe_account_id,
+            "billing_amount_cents": booking_link.billing_amount_cents,
+            "billing_currency": booking_link.billing_currency,
         }
 
 
@@ -162,6 +253,28 @@ def _bookings_for_provider_booking_id(*, provider_booking_id: str) -> list[Booki
     with Session(_engine()) as session:
         return session.scalars(
             select(Booking).where(Booking.provider_booking_id == provider_booking_id)
+        ).all()
+
+
+def _invoices_for_provider_booking_id(*, provider_booking_id: str) -> list[Invoice]:
+    with Session(_engine()) as session:
+        booking = session.scalar(
+            select(Booking).where(Booking.provider_booking_id == provider_booking_id)
+        )
+        if booking is None:
+            return []
+        return session.scalars(select(Invoice).where(Invoice.booking_id == booking.id)).all()
+
+
+def _blocked_cases_for_provider_booking_id(*, provider_booking_id: str) -> list[BlockedBillingCase]:
+    with Session(_engine()) as session:
+        booking = session.scalar(
+            select(Booking).where(Booking.provider_booking_id == provider_booking_id)
+        )
+        if booking is None:
+            return []
+        return session.scalars(
+            select(BlockedBillingCase).where(BlockedBillingCase.booking_id == booking.id)
         ).all()
 
 
@@ -517,6 +630,235 @@ def test_fullscope_webhook_confirmed_for_non_fullscope_content_is_ignored():
     assert bookings == []
     assert len(journal_records) == 1
     assert journal_records[0].processing_status == "ignored_unsupported_source"
+
+
+def test_fullscope_webhook_billable_booking_created_persists_invoice_and_duplicate_is_idempotent():
+    stored = _create_creator_booking_link_and_content(
+        tid="fs5_billable_tid",
+        stripe_account_id="acct_fs5_billable",
+        billing_amount_cents=15000,
+        billing_currency="USD",
+    )
+    payload = _fullscope_payload(
+        appointment_id="APT_fs5_billable",
+        calendar_id="CAL_fs5_billable",
+        workflow_id="WF_fs5_billable",
+        appointment_status="confirmed",
+        tid=stored["tid"],
+        email="fs5-billable@example.com",
+        calendar_date_created="2026-03-18T21:15:00Z",
+    )
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_fs5_billable",
+    )
+    router = build_default_fullscope_webhook_router(provider=provider)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("fullscope_webhook_router", router):
+                first_response = client.post(
+                    "/webhooks/fullscope",
+                    content=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": _fullscope_authorization(
+                            _StubSettings.fullscope_webhook_shared_secret
+                        ),
+                    },
+                )
+                second_response = client.post(
+                    "/webhooks/fullscope",
+                    content=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": _fullscope_authorization(
+                            _StubSettings.fullscope_webhook_shared_secret
+                        ),
+                    },
+                )
+
+    bookings = _bookings_for_provider_booking_id(provider_booking_id="APT_fs5_billable")
+    invoices = _invoices_for_provider_booking_id(provider_booking_id="APT_fs5_billable")
+    journal_records = _journal_records_for_appointment_id(appointment_id="APT_fs5_billable")
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert len(bookings) == 1
+    assert bookings[0].provider == "fullscope"
+    assert bookings[0].status == "created"
+    assert bookings[0].frozen_billing_amount_cents == 15000
+    assert bookings[0].frozen_billing_currency == "USD"
+    assert len(invoices) == 1
+    assert invoices[0].creator_id == stored["creator_id"]
+    assert invoices[0].booking_id == bookings[0].id
+    assert invoices[0].tid == stored["tid"]
+    assert invoices[0].stripe_account_id == "acct_fs5_billable"
+    assert invoices[0].stripe_invoice_id == "in_fs5_billable"
+    assert invoices[0].amount_cents == 15000
+    assert invoices[0].currency == "USD"
+    assert invoices[0].status == "open"
+    assert len(journal_records) == 1
+    assert journal_records[0].delivery_count == 2
+    assert journal_records[0].processing_status == "applied"
+    assert provider.readiness_calls == ["acct_fs5_billable"]
+    assert provider.create_calls == [
+        {
+            "stripe_account_id": "acct_fs5_billable",
+            "amount_cents": 15000,
+            "currency": "USD",
+            "metadata": {
+                "creator_id": str(stored["creator_id"]),
+                "booking_provider": "fullscope",
+                "provider_booking_id": "APT_fs5_billable",
+                "booking_uuid": "APT_fs5_billable",
+                "tid": stored["tid"],
+            },
+            "idempotency_key": "billing:create:fullscope:APT_fs5_billable",
+        }
+    ]
+    assert provider.void_calls == []
+
+
+def test_fullscope_webhook_booking_canceled_voids_open_invoice_once_and_repeat_is_safe():
+    stored = _create_creator_booking_link_and_content(
+        tid="fs5_cancel_tid",
+        stripe_account_id="acct_fs5_cancel",
+        billing_amount_cents=18000,
+        billing_currency="USD",
+    )
+    created_payload = _fullscope_payload(
+        appointment_id="APT_fs5_cancel",
+        calendar_id="CAL_fs5_cancel",
+        workflow_id="WF_fs5_cancel",
+        appointment_status="confirmed",
+        tid=stored["tid"],
+        email="fs5-cancel@example.com",
+        calendar_date_created="2026-03-18T21:30:00Z",
+    )
+    canceled_payload = _fullscope_payload(
+        appointment_id="APT_fs5_cancel",
+        calendar_id="CAL_fs5_cancel",
+        workflow_id="WF_fs5_cancel",
+        appointment_status="cancelled",
+        tid=stored["tid"],
+        email="fs5-cancel@example.com",
+        calendar_date_created="2026-03-18T21:30:00Z",
+        last_updated_source="appointment_page",
+    )
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_fs5_cancel",
+    )
+    router = build_default_fullscope_webhook_router(provider=provider)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("fullscope_webhook_router", router):
+                created_response = client.post(
+                    "/webhooks/fullscope",
+                    content=created_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": _fullscope_authorization(
+                            _StubSettings.fullscope_webhook_shared_secret
+                        ),
+                    },
+                )
+                first_canceled_response = client.post(
+                    "/webhooks/fullscope",
+                    content=canceled_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": _fullscope_authorization(
+                            _StubSettings.fullscope_webhook_shared_secret
+                        ),
+                    },
+                )
+                second_canceled_response = client.post(
+                    "/webhooks/fullscope",
+                    content=canceled_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": _fullscope_authorization(
+                            _StubSettings.fullscope_webhook_shared_secret
+                        ),
+                    },
+                )
+
+    bookings = _bookings_for_provider_booking_id(provider_booking_id="APT_fs5_cancel")
+    invoices = _invoices_for_provider_booking_id(provider_booking_id="APT_fs5_cancel")
+
+    assert created_response.status_code == 200
+    assert first_canceled_response.status_code == 200
+    assert second_canceled_response.status_code == 200
+    assert len(bookings) == 1
+    assert bookings[0].status == "canceled"
+    assert len(invoices) == 1
+    assert invoices[0].status == "void"
+    assert invoices[0].voided_at is not None
+    assert len(provider.create_calls) == 1
+    assert provider.void_calls == [
+        {
+            "stripe_account_id": "acct_fs5_cancel",
+            "stripe_invoice_id": "in_fs5_cancel",
+        }
+    ]
+
+
+def test_fullscope_webhook_booking_created_with_non_billable_creator_creates_provider_aware_blocked_case():
+    stored = _create_creator_booking_link_and_content(
+        tid="fs5_not_billable_tid",
+        stripe_account_id="acct_fs5_not_billable",
+        billing_amount_cents=22000,
+        billing_currency="USD",
+    )
+    payload = _fullscope_payload(
+        appointment_id="APT_fs5_not_billable",
+        calendar_id="CAL_fs5_not_billable",
+        workflow_id="WF_fs5_not_billable",
+        appointment_status="confirmed",
+        tid=stored["tid"],
+        email="fs5-not-billable@example.com",
+        calendar_date_created="2026-03-18T21:45:00Z",
+    )
+    provider = _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=False))
+    router = build_default_fullscope_webhook_router(provider=provider)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("fullscope_webhook_router", router):
+                response = client.post(
+                    "/webhooks/fullscope",
+                    content=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": _fullscope_authorization(
+                            _StubSettings.fullscope_webhook_shared_secret
+                        ),
+                    },
+                )
+
+    bookings = _bookings_for_provider_booking_id(provider_booking_id="APT_fs5_not_billable")
+    invoices = _invoices_for_provider_booking_id(provider_booking_id="APT_fs5_not_billable")
+    blocked_cases = _blocked_cases_for_provider_booking_id(
+        provider_booking_id="APT_fs5_not_billable"
+    )
+
+    assert response.status_code == 200
+    assert len(bookings) == 1
+    assert bookings[0].frozen_billing_amount_cents == 22000
+    assert bookings[0].frozen_billing_currency == "USD"
+    assert invoices == []
+    assert len(blocked_cases) == 1
+    assert blocked_cases[0].provider == "fullscope"
+    assert blocked_cases[0].provider_booking_id == "APT_fs5_not_billable"
+    assert blocked_cases[0].calendly_booking_uuid is None
+    assert blocked_cases[0].reason_code == "creator_not_billable"
+    assert blocked_cases[0].status == "open"
+    assert provider.readiness_calls == ["acct_fs5_not_billable"]
+    assert provider.create_calls == []
+    assert provider.void_calls == []
 
 
 def test_fullscope_webhook_rejects_invalid_authorization_without_routing_or_persisting_bookings():

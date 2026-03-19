@@ -64,7 +64,11 @@ def _provider(*, transport: _StubStripeTransport, booking_email: str | None = No
         redirect_uri="https://creatortrust.test/stripe/connect/callback",
         client_secret="sk_test_story57",
         transport=transport,
-        booking_email_lookup=lambda booking_uuid: booking_email if booking_uuid == "BOOK_story57" else None,
+        booking_email_lookup=lambda booking_provider, booking_uuid: (
+            booking_email
+            if booking_provider in {None, "calendly"} and booking_uuid == "BOOK_story57"
+            else None
+        ),
     )
 
 
@@ -258,6 +262,75 @@ def test_create_invoice_accepts_paid_status_when_stripe_finalizes_zero_amount_in
 
     assert result.stripe_invoice_id == "in_story57_paid"
     assert result.status == "paid"
+
+
+def test_create_invoice_prefers_provider_aware_booking_identity_for_customer_lookup():
+    transport = _StubStripeTransport(
+        responses=[
+            {"id": "cus_story57_fullscope"},
+            {"id": "ii_story57_fullscope"},
+            {"id": "in_story57_fullscope"},
+            {"id": "in_story57_fullscope", "status": "open"},
+        ]
+    )
+    lookups: list[tuple[str | None, str]] = []
+    provider = StripeOAuthProvider(
+        authorize_url="https://connect.stripe.com/oauth/authorize",
+        client_id="ca_story57_test",
+        redirect_uri="https://creatortrust.test/stripe/connect/callback",
+        client_secret="sk_test_story57",
+        transport=transport,
+        booking_email_lookup=lambda booking_provider, booking_uuid: (
+            lookups.append((booking_provider, booking_uuid)) or "story57-fullscope@example.com"
+        ),
+    )
+
+    result = provider.create_invoice(
+        stripe_account_id="acct_story57_billable",
+        amount_cents=19500,
+        currency="USD",
+        metadata={
+            "creator_id": "creator_story57",
+            "booking_provider": "fullscope",
+            "provider_booking_id": "APT_story57",
+            "booking_uuid": "APT_story57",
+            "tid": "story57_tid",
+        },
+        idempotency_key="billing:create:fullscope:APT_story57",
+    )
+
+    assert result.stripe_invoice_id == "in_story57_fullscope"
+    assert lookups == [("fullscope", "APT_story57")]
+    assert transport.calls[0] == _TransportCall(
+        method="POST",
+        url="https://api.stripe.com/v1/customers",
+        api_key="sk_test_story57",
+        params={
+            "metadata": {
+                "creator_id": "creator_story57",
+                "booking_provider": "fullscope",
+                "provider_booking_id": "APT_story57",
+                "booking_uuid": "APT_story57",
+                "tid": "story57_tid",
+            },
+            "email": "story57-fullscope@example.com",
+        },
+        stripe_account_id="acct_story57_billable",
+        idempotency_key="billing:create:fullscope:APT_story57:customer",
+    )
+    assert transport.calls[1].params == {
+        "amount": 19500,
+        "currency": "usd",
+        "customer": "cus_story57_fullscope",
+        "description": "Creator Compass booking APT_story57 (story57_tid)",
+        "metadata": {
+            "creator_id": "creator_story57",
+            "booking_provider": "fullscope",
+            "provider_booking_id": "APT_story57",
+            "booking_uuid": "APT_story57",
+            "tid": "story57_tid",
+        },
+    }
 
 
 def test_void_invoice_retrieves_and_voids_open_invoice():

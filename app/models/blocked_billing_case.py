@@ -1,11 +1,12 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, event
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+from app.models.booking_provider import BOOKING_PROVIDER_CALENDLY
 
 
 class BlockedBillingCase(Base):
@@ -34,7 +35,14 @@ class BlockedBillingCase(Base):
         nullable=True,
     )
     tid: Mapped[str] = mapped_column(String(64), nullable=False)
-    calendly_booking_uuid: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=BOOKING_PROVIDER_CALENDLY,
+        server_default=BOOKING_PROVIDER_CALENDLY,
+    )
+    provider_booking_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    calendly_booking_uuid: Mapped[str | None] = mapped_column(String(255), nullable=True)
     stripe_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     frozen_amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     frozen_currency: Mapped[str] = mapped_column(String(3), nullable=False)
@@ -52,3 +60,36 @@ class BlockedBillingCase(Base):
     creator = relationship("Creator", back_populates="blocked_billing_cases")
     booking = relationship("Booking", back_populates="blocked_billing_case")
     invoice = relationship("Invoice", back_populates="blocked_billing_case")
+
+    @property
+    def resolved_provider(self) -> str:
+        return self.provider or BOOKING_PROVIDER_CALENDLY
+
+    @property
+    def resolved_provider_booking_id(self) -> str | None:
+        return self.provider_booking_id or self.calendly_booking_uuid
+
+
+def _sync_blocked_billing_provider_fields(target: BlockedBillingCase) -> None:
+    if not target.provider:
+        target.provider = BOOKING_PROVIDER_CALENDLY
+
+    if target.provider_booking_id is None and target.calendly_booking_uuid:
+        target.provider_booking_id = target.calendly_booking_uuid
+
+    if (
+        target.provider == BOOKING_PROVIDER_CALENDLY
+        and target.calendly_booking_uuid is None
+        and target.provider_booking_id
+    ):
+        target.calendly_booking_uuid = target.provider_booking_id
+
+
+@event.listens_for(BlockedBillingCase, "before_insert")
+def _blocked_billing_case_before_insert(_mapper, _connection, target: BlockedBillingCase) -> None:
+    _sync_blocked_billing_provider_fields(target)
+
+
+@event.listens_for(BlockedBillingCase, "before_update")
+def _blocked_billing_case_before_update(_mapper, _connection, target: BlockedBillingCase) -> None:
+    _sync_blocked_billing_provider_fields(target)

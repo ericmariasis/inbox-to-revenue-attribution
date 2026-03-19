@@ -18,6 +18,7 @@ from app.services.click_events import DEFAULT_CLICK_EVENT_PUBLISHER
 from app.services.calendly_webhooks import build_default_calendly_webhook_router
 from app.services.content_fetch import build_default_content_fetch_provider
 from app.services.email_provider import build_default_email_provider
+from app.services.fullscope_webhooks import build_default_fullscope_webhook_router
 from app.services.stripe_provider import build_default_stripe_provider
 from app.services.stripe_webhooks import DEFAULT_STRIPE_WEBHOOK_ROUTER
 
@@ -48,6 +49,8 @@ async def lifespan(app: FastAPI):
         app.state.calendly_webhook_router = build_default_calendly_webhook_router(
             provider=app.state.stripe_provider
         )
+    if not hasattr(app.state, "fullscope_webhook_router"):
+        app.state.fullscope_webhook_router = build_default_fullscope_webhook_router()
     yield
 
 

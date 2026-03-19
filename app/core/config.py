@@ -14,6 +14,7 @@ DEFAULT_STRIPE_CONNECT_AUTHORIZE_URL = "https://connect.stripe.com/oauth/authori
 DEFAULT_STRIPE_CONNECT_REDIRECT_URI = "http://localhost:8000/stripe/connect/callback"
 DEFAULT_STRIPE_WEBHOOK_SECRET = "whsec_test_example"
 DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY = "whsec_calendly_test_example"
+DEFAULT_FULLSCOPE_WEBHOOK_SHARED_SECRET = "fullscope_webhook_secret_test_example"
 DEFAULT_TRACKED_LINK_BASE_URL = "https://trk.example.com"
 DEFAULT_MAGIC_LINK_EMAIL_PROVIDER = "stub"
 DEFAULT_MAGIC_LINK_BASE_URL = "http://localhost:8000"
@@ -182,6 +183,7 @@ class Settings(BaseSettings):
     stripe_webhook_tolerance_seconds: int = 300
     calendly_webhook_signing_key: str = DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY
     calendly_webhook_tolerance_seconds: int = 300
+    fullscope_webhook_shared_secret: str = DEFAULT_FULLSCOPE_WEBHOOK_SHARED_SECRET
     tracked_link_base_url: str = DEFAULT_TRACKED_LINK_BASE_URL
     magic_link_email_provider: str = DEFAULT_MAGIC_LINK_EMAIL_PROVIDER
     magic_link_base_url: str = DEFAULT_MAGIC_LINK_BASE_URL
@@ -275,6 +277,12 @@ class Settings(BaseSettings):
             field_name="calendly_webhook_signing_key",
             value=self.calendly_webhook_signing_key,
             placeholders={DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY},
+        )
+        _require_non_placeholder(
+            errors,
+            field_name="fullscope_webhook_shared_secret",
+            value=self.fullscope_webhook_shared_secret,
+            placeholders={DEFAULT_FULLSCOPE_WEBHOOK_SHARED_SECRET},
         )
         _require_non_placeholder(
             errors,

@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import (
     DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY,
+    DEFAULT_FULLSCOPE_WEBHOOK_SHARED_SECRET,
     DEFAULT_JWT_SECRET,
     DEFAULT_MAGIC_LINK_BASE_URL,
     DEFAULT_MAGIC_LINK_EMAIL_FROM_EMAIL,
@@ -28,6 +29,7 @@ SAFE_NON_LOCAL_ENV = {
     "STRIPE_CONNECT_REDIRECT_URI": "https://creatortrust.test/stripe/connect/callback",
     "STRIPE_WEBHOOK_SECRET": "whsec_story55_preview_live",
     "CALENDLY_WEBHOOK_SIGNING_KEY": "cal_story55_preview_live",
+    "FULLSCOPE_WEBHOOK_SHARED_SECRET": "fullscope_story55_preview_live",
     "TRACKED_LINK_BASE_URL": "https://trk.creatortrust.test",
     "MAGIC_LINK_EMAIL_PROVIDER": "smtp",
     "MAGIC_LINK_BASE_URL": "https://creatortrust.test",
@@ -54,6 +56,9 @@ def _safe_non_local_settings(**overrides: str) -> Settings:
         "stripe_connect_redirect_uri": SAFE_NON_LOCAL_ENV["STRIPE_CONNECT_REDIRECT_URI"],
         "stripe_webhook_secret": SAFE_NON_LOCAL_ENV["STRIPE_WEBHOOK_SECRET"],
         "calendly_webhook_signing_key": SAFE_NON_LOCAL_ENV["CALENDLY_WEBHOOK_SIGNING_KEY"],
+        "fullscope_webhook_shared_secret": SAFE_NON_LOCAL_ENV[
+            "FULLSCOPE_WEBHOOK_SHARED_SECRET"
+        ],
         "tracked_link_base_url": SAFE_NON_LOCAL_ENV["TRACKED_LINK_BASE_URL"],
         "magic_link_email_provider": SAFE_NON_LOCAL_ENV["MAGIC_LINK_EMAIL_PROVIDER"],
         "magic_link_base_url": SAFE_NON_LOCAL_ENV["MAGIC_LINK_BASE_URL"],
@@ -83,6 +88,7 @@ def test_non_local_defaults_fail_with_clear_field_names(monkeypatch: pytest.Monk
         "JWT_SECRET",
         "STRIPE_WEBHOOK_SECRET",
         "CALENDLY_WEBHOOK_SIGNING_KEY",
+        "FULLSCOPE_WEBHOOK_SHARED_SECRET",
         "STRIPE_CONNECT_CLIENT_ID",
         "STRIPE_SECRET_KEY",
         "STRIPE_CONNECT_REDIRECT_URI",
@@ -104,6 +110,7 @@ def test_non_local_defaults_fail_with_clear_field_names(monkeypatch: pytest.Monk
     assert "jwt_secret" in message
     assert "stripe_webhook_secret" in message
     assert "calendly_webhook_signing_key" in message
+    assert "fullscope_webhook_shared_secret" in message
     assert "stripe_connect_client_id" in message
     assert "stripe_secret_key" in message
     assert "stripe_connect_redirect_uri" in message
@@ -113,6 +120,7 @@ def test_non_local_defaults_fail_with_clear_field_names(monkeypatch: pytest.Monk
     assert DEFAULT_JWT_SECRET not in message
     assert DEFAULT_STRIPE_WEBHOOK_SECRET not in message
     assert DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY not in message
+    assert DEFAULT_FULLSCOPE_WEBHOOK_SHARED_SECRET not in message
     assert DEFAULT_STRIPE_CONNECT_CLIENT_ID not in message
     assert DEFAULT_STRIPE_SECRET_KEY not in message
     assert DEFAULT_STRIPE_CONNECT_REDIRECT_URI not in message

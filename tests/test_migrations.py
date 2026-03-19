@@ -21,6 +21,9 @@ def test_migrations_upgrade_and_downgrade():
             calendly_columns = {
                 column["name"] for column in inspector.get_columns("calendly_webhook_events")
             }
+            fullscope_columns = {
+                column["name"] for column in inspector.get_columns("fullscope_webhook_events")
+            }
             assert "support_requests" in table_names
             assert "shared_rate_limit_events" in table_names
             assert "pending_magic_link_issuances" in table_names
@@ -29,6 +32,53 @@ def test_migrations_upgrade_and_downgrade():
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
             assert "calendly_webhook_events" in table_names
+            assert "fullscope_webhook_events" in table_names
+            assert "content_topic_candidates" in table_names
+            assert "content_confirmed_topics" in table_names
+            assert "content_extraction_artifacts" in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
+            assert "authoritative_extraction_artifact_id" in content_columns
+            assert "attribution_status" in booking_columns
+            assert "unattributed_reason" in booking_columns
+            assert "reducer_key" in calendly_columns
+            assert "reducer_attempt_count" in calendly_columns
+            assert "payload_sha256" in fullscope_columns
+            assert "frozen_billing_amount_cents" in booking_columns
+            assert "frozen_billing_currency" in booking_columns
+            assert "provider" in booking_columns
+            assert "provider_booking_id" in booking_columns
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+            assert "provider" in booking_link_columns
+            assert "destination_url" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
+            content_columns = {column["name"] for column in inspector.get_columns("content")}
+            calendly_columns = {
+                column["name"] for column in inspector.get_columns("calendly_webhook_events")
+            }
+            assert "support_requests" in table_names
+            assert "shared_rate_limit_events" in table_names
+            assert "pending_magic_link_issuances" in table_names
+            assert "creator_experiment_run_cards" in table_names
+            assert "creator_experiment_runs" in table_names
+            assert "creator_claim_paid_evidence_refs" in table_names
+            assert "creator_claim_snapshots" in table_names
+            assert "calendly_webhook_events" in table_names
+            assert "fullscope_webhook_events" not in table_names
             assert "content_topic_candidates" in table_names
             assert "content_confirmed_topics" in table_names
             assert "content_extraction_artifacts" in table_names
@@ -90,15 +140,11 @@ def test_migrations_upgrade_and_downgrade():
             assert "reducer_attempt_count" in calendly_columns
             assert "frozen_billing_amount_cents" in booking_columns
             assert "frozen_billing_currency" in booking_columns
-            assert "provider" not in booking_columns
-            assert "provider_booking_id" not in booking_columns
             booking_link_columns = {
                 column["name"] for column in inspector.get_columns("booking_links")
             }
             assert "billing_amount_cents" in booking_link_columns
             assert "billing_currency" in booking_link_columns
-            assert "provider" not in booking_link_columns
-            assert "destination_url" not in booking_link_columns
 
         command.downgrade(cfg, "-1")
         with engine.connect() as conn:
@@ -189,9 +235,6 @@ def test_migrations_upgrade_and_downgrade():
             calendly_columns = {
                 column["name"] for column in inspector.get_columns("calendly_webhook_events")
             }
-            assert "support_requests" not in table_names
-            assert "shared_rate_limit_events" not in table_names
-            assert "pending_magic_link_issuances" in table_names
             assert "creator_experiment_run_cards" in table_names
             assert "creator_experiment_runs" in table_names
             assert "creator_claim_paid_evidence_refs" in table_names
@@ -283,7 +326,6 @@ def test_migrations_upgrade_and_downgrade():
             assert "booking_links" in table_names
             assert "authoritative_extraction_artifact_id" in content_columns
             assert "attribution_status" in booking_columns
-            assert "unattributed_reason" in booking_columns
             assert "reducer_key" in calendly_columns
             assert "reducer_attempt_count" in calendly_columns
             assert "frozen_billing_amount_cents" in booking_columns
@@ -300,9 +342,6 @@ def test_migrations_upgrade_and_downgrade():
             table_names = inspector.get_table_names(schema="public")
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
-            calendly_columns = {
-                column["name"] for column in inspector.get_columns("calendly_webhook_events")
-            }
             assert "creator_experiment_run_cards" not in table_names
             assert "creator_experiment_runs" not in table_names
             assert "creator_claim_paid_evidence_refs" in table_names
@@ -320,8 +359,6 @@ def test_migrations_upgrade_and_downgrade():
             assert "booking_links" in table_names
             assert "authoritative_extraction_artifact_id" in content_columns
             assert "attribution_status" in booking_columns
-            assert "reducer_key" not in calendly_columns
-            assert "reducer_attempt_count" not in calendly_columns
             assert "frozen_billing_amount_cents" in booking_columns
             assert "frozen_billing_currency" in booking_columns
             booking_link_columns = {
@@ -336,40 +373,9 @@ def test_migrations_upgrade_and_downgrade():
             table_names = inspector.get_table_names(schema="public")
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
-            assert "creator_experiment_run_cards" not in table_names
-            assert "creator_experiment_runs" not in table_names
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
             assert "calendly_webhook_events" in table_names
-            assert "content_topic_candidates" in table_names
-            assert "content_confirmed_topics" in table_names
-            assert "content_extraction_artifacts" in table_names
-            assert "content_fetch_snapshots" in table_names
-            assert "blocked_billing_cases" in table_names
-            assert "invoice_payment_events" in table_names
-            assert "invoices" in table_names
-            assert "bookings" in table_names
-            assert "content" in table_names
-            assert "booking_links" in table_names
-            assert "authoritative_extraction_artifact_id" in content_columns
-            assert "attribution_status" not in booking_columns
-            assert "frozen_billing_amount_cents" in booking_columns
-            assert "frozen_billing_currency" in booking_columns
-            booking_link_columns = {
-                column["name"] for column in inspector.get_columns("booking_links")
-            }
-            assert "billing_amount_cents" in booking_link_columns
-            assert "billing_currency" in booking_link_columns
-
-        command.downgrade(cfg, "-1")
-        with engine.connect() as conn:
-            inspector = inspect(conn)
-            table_names = inspector.get_table_names(schema="public")
-            booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
-            content_columns = {column["name"] for column in inspector.get_columns("content")}
-            assert "creator_claim_paid_evidence_refs" not in table_names
-            assert "creator_claim_snapshots" not in table_names
-            assert "calendly_webhook_events" in table_names
             assert "authoritative_extraction_artifact_id" in content_columns
             assert "attribution_status" not in booking_columns
             assert "content_topic_candidates" in table_names
@@ -543,7 +549,7 @@ def test_migrations_upgrade_and_downgrade():
         with engine.connect() as conn:
             inspector = inspect(conn)
             table_names = inspector.get_table_names(schema="public")
-            assert "invoices" not in table_names
+            assert "invoices" in table_names
             assert "bookings" in table_names
             assert "content" in table_names
             assert "booking_links" in table_names
@@ -1681,5 +1687,70 @@ def test_calendly_webhook_events_table_has_expected_columns_indexes_and_unique_c
             constraint["name"] == "uq_calendly_webhook_events_provider_type_event_booking"
             and constraint["column_names"]
             == ["provider_event_type", "calendly_event_id", "calendly_booking_uuid"]
+            for constraint in unique_constraints
+        )
+
+
+def test_fullscope_webhook_events_table_has_expected_columns_indexes_and_unique_constraints():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {column["name"] for column in inspector.get_columns("fullscope_webhook_events")}
+        assert columns == {
+            "id",
+            "provider_event_type",
+            "event_type",
+            "appointment_id",
+            "appointment_id_path",
+            "calendar_id",
+            "calendar_id_path",
+            "workflow_id",
+            "workflow_id_path",
+            "tid",
+            "tid_path",
+            "payload",
+            "payload_sha256",
+            "reducer_key",
+            "delivery_count",
+            "processing_status",
+            "reducer_attempt_count",
+            "last_error",
+            "received_at",
+            "last_received_at",
+            "processed_at",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("fullscope_webhook_events")
+        assert foreign_keys == []
+
+        indexes = inspector.get_indexes("fullscope_webhook_events")
+        assert any(
+            index["name"] == "ix_fullscope_webhook_events_appointment_id"
+            and index["column_names"] == ["appointment_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_fullscope_webhook_events_event_type"
+            and index["column_names"] == ["event_type"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_fullscope_webhook_events_processing_status"
+            and index["column_names"] == ["processing_status"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_fullscope_webhook_events_reducer_key"
+            and index["column_names"] == ["reducer_key"]
+            for index in indexes
+        )
+
+        unique_constraints = inspector.get_unique_constraints("fullscope_webhook_events")
+        assert any(
+            constraint["name"] == "uq_fullscope_webhook_events_provider_type_appointment_hash"
+            and constraint["column_names"]
+            == ["provider_event_type", "appointment_id", "payload_sha256"]
             for constraint in unique_constraints
         )

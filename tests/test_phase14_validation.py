@@ -389,6 +389,8 @@ def test_phase14_launch_surfaces_cover_warm_creator_and_operator_paths():
     assert reports_health_response.json()["booking_attribution"]["unattributed_booking_count"] == 0
     assert reports_health_response.json()["calendly_ingress"]["backlog_event_count"] == 0
     assert reports_health_response.json()["calendly_ingress"]["failed_event_count"] == 0
+    assert reports_health_response.json()["fullscope_ingress"]["backlog_event_count"] == 0
+    assert reports_health_response.json()["fullscope_ingress"]["failed_event_count"] == 0
     assert reports_health_response.json()["payment_provenance"]["current_backlog_event_count"] == 1
     assert reports_health_response.json()["payment_provenance"]["current_backlog_reasons"] == [
         {"reason": "UNKNOWN_BOOKING_UUID", "event_count": 1},

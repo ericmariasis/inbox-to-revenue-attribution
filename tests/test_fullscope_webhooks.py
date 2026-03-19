@@ -591,6 +591,115 @@ def test_fullscope_webhook_canceled_before_created_is_deferred_and_replay_applie
     ]
 
 
+def test_fullscope_webhook_created_replay_after_cancel_keeps_booking_canceled_and_invoice_void():
+    stored = _create_creator_booking_link_and_content(
+        tid="fs5_stale_create_tid",
+        stripe_account_id="acct_fs5_stale_create",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    created_payload = _fullscope_payload(
+        appointment_id="APT_fs5_stale_create",
+        calendar_id="CAL_fs5_stale_create",
+        workflow_id="WF_fs5_stale_create",
+        appointment_status="confirmed",
+        tid=stored["tid"],
+        email="fs5-stale-create@example.com",
+        calendar_date_created="2026-03-18T20:30:00Z",
+    )
+    canceled_payload = _fullscope_payload(
+        appointment_id="APT_fs5_stale_create",
+        calendar_id="CAL_fs5_stale_create",
+        workflow_id="WF_fs5_stale_create",
+        appointment_status="cancelled",
+        tid=stored["tid"],
+        email="fs5-stale-create@example.com",
+        calendar_date_created="2026-03-18T20:30:00Z",
+        last_updated_source="appointment_page",
+    )
+    provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_fs5_stale_create",
+    )
+    router = build_default_fullscope_webhook_router(provider=provider)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("fullscope_webhook_router", router):
+                created_response = client.post(
+                    "/webhooks/fullscope",
+                    content=created_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": _fullscope_authorization(
+                            _StubSettings.fullscope_webhook_shared_secret
+                        ),
+                    },
+                )
+                canceled_response = client.post(
+                    "/webhooks/fullscope",
+                    content=canceled_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": _fullscope_authorization(
+                            _StubSettings.fullscope_webhook_shared_secret
+                        ),
+                    },
+                )
+
+    initial_journal_records = _journal_records_for_appointment_id(
+        appointment_id="APT_fs5_stale_create"
+    )
+    created_record = next(
+        record
+        for record in initial_journal_records
+        if record.provider_event_type == "appointment.confirmed"
+    )
+    replay_result = router.reprocess_event(record_id=created_record.id)
+
+    bookings = _bookings_for_provider_booking_id(provider_booking_id="APT_fs5_stale_create")
+    invoices = _invoices_for_provider_booking_id(provider_booking_id="APT_fs5_stale_create")
+    journal_records = _journal_records_for_appointment_id(appointment_id="APT_fs5_stale_create")
+    replayed_created_record = next(
+        record for record in journal_records if record.provider_event_type == "appointment.confirmed"
+    )
+
+    assert created_response.status_code == 200
+    assert canceled_response.status_code == 200
+    assert replay_result.outcome == "reprocessed"
+    assert replay_result.processing_status == "applied"
+    assert len(bookings) == 1
+    assert bookings[0].status == "canceled"
+    assert bookings[0].canceled_at is not None
+    assert len(invoices) == 1
+    assert invoices[0].status == "void"
+    assert invoices[0].voided_at is not None
+    assert provider.readiness_calls == ["acct_fs5_stale_create"]
+    assert provider.create_calls == [
+        {
+            "stripe_account_id": "acct_fs5_stale_create",
+            "amount_cents": 19500,
+            "currency": "USD",
+            "metadata": {
+                "creator_id": str(stored["creator_id"]),
+                "booking_provider": "fullscope",
+                "provider_booking_id": "APT_fs5_stale_create",
+                "booking_uuid": "APT_fs5_stale_create",
+                "tid": stored["tid"],
+            },
+            "idempotency_key": "billing:create:fullscope:APT_fs5_stale_create",
+        }
+    ]
+    assert provider.void_calls == [
+        {
+            "stripe_account_id": "acct_fs5_stale_create",
+            "stripe_invoice_id": "in_fs5_stale_create",
+        }
+    ]
+    assert replayed_created_record.processing_status == "applied"
+    assert replayed_created_record.reducer_attempt_count == 2
+
+
 def test_fullscope_webhook_confirmed_for_non_fullscope_content_is_ignored():
     _create_creator_booking_link_and_content(
         tid="fs5_unsupported_source_tid",

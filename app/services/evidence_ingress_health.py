@@ -5,10 +5,12 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
+from app.models.booking_provider import BOOKING_PROVIDER_FULLSCOPE
 from app.models.calendly_webhook_event import CalendlyWebhookEventRecord
 from app.models.content import Content
 from app.models.content_extraction_artifact import ContentExtractionArtifact
 from app.models.content_topic_candidate import ContentTopicCandidate
+from app.models.fullscope_webhook_event import FullScopeWebhookEventRecord
 from app.services.booking_attribution import (
     BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
     BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
@@ -23,15 +25,15 @@ from app.services.invoice_payment_events import (
 )
 from app.services.settled_paid_evidence import get_creator_settled_paid_evidence
 
-CALENDLY_INGRESS_BACKLOG_PROCESSING_STATUSES = (
+PROVIDER_INGRESS_BACKLOG_PROCESSING_STATUSES = (
     "received",
     "processing",
     "deferred_missing_booking",
 )
-CALENDLY_INGRESS_FAILURE_PROCESSING_STATUSES = ("failed",)
-CALENDLY_INGRESS_HEALTH_PROCESSING_STATUSES = (
-    *CALENDLY_INGRESS_BACKLOG_PROCESSING_STATUSES,
-    *CALENDLY_INGRESS_FAILURE_PROCESSING_STATUSES,
+PROVIDER_INGRESS_FAILURE_PROCESSING_STATUSES = ("failed",)
+PROVIDER_INGRESS_HEALTH_PROCESSING_STATUSES = (
+    *PROVIDER_INGRESS_BACKLOG_PROCESSING_STATUSES,
+    *PROVIDER_INGRESS_FAILURE_PROCESSING_STATUSES,
 )
 PAYMENT_PROVENANCE_STATE_ORDER = (
     PAYMENT_PROVENANCE_STATE_MATCHED,
@@ -60,16 +62,16 @@ class BookingAttributionHealthSnapshot:
 
 
 @dataclass(frozen=True)
-class CalendlyIngressStatusCount:
+class ProviderIngressStatusCount:
     processing_status: str
     event_count: int
 
 
 @dataclass(frozen=True)
-class CalendlyIngressHealthSnapshot:
+class ProviderIngressHealthSnapshot:
     backlog_event_count: int
     failed_event_count: int
-    statuses: list[CalendlyIngressStatusCount]
+    statuses: list[ProviderIngressStatusCount]
 
 
 @dataclass(frozen=True)
@@ -119,7 +121,8 @@ class AuthoritativeContentHealthSnapshot:
 class CreatorEvidenceIngressHealthSnapshot:
     creator_id: UUID
     booking_attribution: BookingAttributionHealthSnapshot
-    calendly_ingress: CalendlyIngressHealthSnapshot
+    calendly_ingress: ProviderIngressHealthSnapshot
+    fullscope_ingress: ProviderIngressHealthSnapshot
     payment_provenance: PaymentProvenanceHealthSnapshot
     blocked_billing: BlockedBillingHealthSnapshot
     authoritative_content: AuthoritativeContentHealthSnapshot
@@ -142,6 +145,10 @@ def get_creator_evidence_ingress_health_snapshot(
             db=db,
         ),
         calendly_ingress=_build_calendly_ingress_health_snapshot(
+            creator_id=creator_id,
+            db=db,
+        ),
+        fullscope_ingress=_build_fullscope_ingress_health_snapshot(
             creator_id=creator_id,
             db=db,
         ),
@@ -195,7 +202,7 @@ def _build_calendly_ingress_health_snapshot(
     *,
     creator_id: UUID,
     db: Session,
-) -> CalendlyIngressHealthSnapshot:
+) -> ProviderIngressHealthSnapshot:
     rows = db.execute(
         select(
             CalendlyWebhookEventRecord.processing_status,
@@ -219,7 +226,7 @@ def _build_calendly_ingress_health_snapshot(
         )
         .where(
             CalendlyWebhookEventRecord.processing_status.in_(
-                CALENDLY_INGRESS_HEALTH_PROCESSING_STATUSES
+                PROVIDER_INGRESS_HEALTH_PROCESSING_STATUSES
             ),
             or_(
                 Content.id.is_not(None),
@@ -228,22 +235,72 @@ def _build_calendly_ingress_health_snapshot(
         )
         .group_by(CalendlyWebhookEventRecord.processing_status)
     ).all()
-    counts_by_status = {status: event_count for status, event_count in rows}
+    return _build_provider_ingress_health_snapshot(
+        counts_by_status={status: event_count for status, event_count in rows}
+    )
+
+
+def _build_fullscope_ingress_health_snapshot(
+    *,
+    creator_id: UUID,
+    db: Session,
+) -> ProviderIngressHealthSnapshot:
+    rows = db.execute(
+        select(
+            FullScopeWebhookEventRecord.processing_status,
+            func.count(FullScopeWebhookEventRecord.id),
+        )
+        .select_from(FullScopeWebhookEventRecord)
+        .outerjoin(
+            Content,
+            and_(
+                Content.tid == FullScopeWebhookEventRecord.tid,
+                Content.creator_id == creator_id,
+            ),
+        )
+        .outerjoin(
+            Booking,
+            and_(
+                Booking.provider == BOOKING_PROVIDER_FULLSCOPE,
+                Booking.provider_booking_id == FullScopeWebhookEventRecord.appointment_id,
+                Booking.creator_id == creator_id,
+            ),
+        )
+        .where(
+            FullScopeWebhookEventRecord.processing_status.in_(
+                PROVIDER_INGRESS_HEALTH_PROCESSING_STATUSES
+            ),
+            or_(
+                Content.id.is_not(None),
+                Booking.id.is_not(None),
+            ),
+        )
+        .group_by(FullScopeWebhookEventRecord.processing_status)
+    ).all()
+    return _build_provider_ingress_health_snapshot(
+        counts_by_status={status: event_count for status, event_count in rows}
+    )
+
+
+def _build_provider_ingress_health_snapshot(
+    *,
+    counts_by_status: dict[str, int],
+) -> ProviderIngressHealthSnapshot:
     statuses = [
-        CalendlyIngressStatusCount(
+        ProviderIngressStatusCount(
             processing_status=status,
             event_count=counts_by_status.get(status, 0),
         )
-        for status in CALENDLY_INGRESS_HEALTH_PROCESSING_STATUSES
+        for status in PROVIDER_INGRESS_HEALTH_PROCESSING_STATUSES
     ]
-    return CalendlyIngressHealthSnapshot(
+    return ProviderIngressHealthSnapshot(
         backlog_event_count=sum(
             counts_by_status.get(status, 0)
-            for status in CALENDLY_INGRESS_BACKLOG_PROCESSING_STATUSES
+            for status in PROVIDER_INGRESS_BACKLOG_PROCESSING_STATUSES
         ),
         failed_event_count=sum(
             counts_by_status.get(status, 0)
-            for status in CALENDLY_INGRESS_FAILURE_PROCESSING_STATUSES
+            for status in PROVIDER_INGRESS_FAILURE_PROCESSING_STATUSES
         ),
         statuses=statuses,
     )

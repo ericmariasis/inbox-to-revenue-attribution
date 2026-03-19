@@ -85,6 +85,7 @@ from app.services.evidence_ingress_health import (
     AUTHORITATIVE_CONTENT_LAG_REASON_MISSING_AUTHORITY,
     AUTHORITATIVE_CONTENT_LAG_REASON_STALE_AUTHORITY,
     CreatorEvidenceIngressHealthSnapshot,
+    ProviderIngressHealthSnapshot,
     get_creator_evidence_ingress_health_snapshot,
 )
 from app.services.invoice_payment_events import (
@@ -1758,9 +1759,8 @@ def _render_account_page(
         booking_links_summary = f"This workspace currently has {html.escape(_count_copy(booking_links_count, 'saved booking link'))}. "
         if trackable_booking_links_count == 0 and limited_tracking_booking_links_count > 0:
             booking_links_summary += (
-                "Those FullScope sources can generate tracked redirects now, but billable-now "
-                "and creator-readiness still require a Calendly link until the later FullScope "
-                "webhook story lands."
+                "Those booking sources can generate tracked redirects now, but billable-now "
+                "and creator-readiness still wait for end-to-end provider support."
             )
         else:
             booking_links_summary += html.escape(
@@ -1768,12 +1768,12 @@ def _render_account_page(
             )
             if limited_tracking_booking_links_count > 0:
                 limited_tracking_summary = (
-                    "1 FullScope source stays limited to tracked redirects until the later "
-                    "FullScope webhook story lands."
+                    "1 booking source still stays limited to tracked redirects until end-to-end "
+                    "provider support lands."
                     if limited_tracking_booking_links_count == 1
                     else (
-                        f"{limited_tracking_booking_links_count} FullScope sources stay limited "
-                        "to tracked redirects until the later FullScope webhook story lands."
+                        f"{limited_tracking_booking_links_count} booking sources still stay "
+                        "limited to tracked redirects until end-to-end provider support lands."
                     )
                 )
                 booking_links_summary += (
@@ -2335,7 +2335,7 @@ def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[st
         billable_line = (
             "Billable now",
             "Not yet",
-            "Saved FullScope sources can generate tracked redirects now, but billable-now and invoice readiness still need a Calendly link until the later FullScope webhook story lands.",
+            "Saved booking sources can generate tracked redirects now, but billable-now and invoice readiness still wait for end-to-end provider support.",
         )
     elif readiness.connected and booking_links_count > 0:
         billable_line = (
@@ -2492,12 +2492,12 @@ def _build_setup_home_progress(
     if booking_links_count > 0:
         booking_link_copy_html = (
             f"{html.escape(_count_copy(booking_links_count, 'booking link'))} saved. "
-            "Keep the Calendly link here aligned with what you actually share."
+            "Keep the saved booking links here aligned with what you actually share."
         )
         if trackable_booking_links_count == 0 and limited_tracking_booking_links_count > 0:
             booking_link_copy_html = (
                 f"{html.escape(_count_copy(booking_links_count, 'booking link'))} saved. "
-                "These FullScope sources can generate tracked redirects now, but end-to-end creator readiness still needs a Calendly link until the later FullScope webhook story lands."
+                "These booking sources can generate tracked redirects now, but end-to-end creator readiness still waits for provider support."
             )
         booking_link_step = _setup_step(
             title="Save a booking link",
@@ -2510,7 +2510,7 @@ def _build_setup_home_progress(
     else:
         booking_link_step = _setup_step(
             title="Save a booking link",
-            copy_html='Add the Calendly link you want this workspace to track. <a href="/app/booking-links" class="inline-link">Open booking links</a>.',
+            copy_html='Add the booking link you want this workspace to track. <a href="/app/booking-links" class="inline-link">Open booking links</a>.',
             label="Needs action",
             badge_class="pending",
             item_class="todo",
@@ -2519,7 +2519,7 @@ def _build_setup_home_progress(
         if next_action is None:
             next_action = {
                 "title": "Add your first booking link",
-                "copy_html": "Save the Calendly URL you actually use so tracked content has a real booking destination.",
+                "copy_html": "Save the booking URL you actually use so tracked content has a real booking destination.",
                 "action_label": "Open booking links",
                 "action_href": "/app/booking-links",
                 "action_method": "get",
@@ -2544,7 +2544,7 @@ def _build_setup_home_progress(
     elif trackable_booking_links_count == 0 and limited_tracking_booking_links_count > 0:
         billing_defaults_step = _setup_step(
             title="Add billing defaults",
-            copy_html='Saved FullScope sources can generate tracked redirects now. Add a Calendly link if you need billable-now readiness before the later FullScope webhook story lands. <a href="/app/booking-links" class="inline-link">Open booking links</a>.',
+            copy_html='Saved booking sources can generate tracked redirects now, but billable-now readiness still waits for end-to-end provider support. <a href="/app/booking-links" class="inline-link">Open booking links</a>.',
             label="Blocked",
             badge_class="disconnected",
             item_class="todo",
@@ -2553,7 +2553,7 @@ def _build_setup_home_progress(
         if next_action is None:
             next_action = {
                 "title": "Add a tracked-content-ready link",
-                "copy_html": "FullScope tracked redirects are ready, but billable-now readiness still needs a Calendly link until the later FullScope webhook story lands.",
+                "copy_html": "Tracked redirects are ready, but billable-now readiness still waits for end-to-end provider support.",
                 "action_label": "Open booking links",
                 "action_href": "/app/booking-links",
                 "action_method": "get",
@@ -2765,10 +2765,7 @@ def _booking_link_setup_state_copy(booking_link: BookingLinkResponse) -> str:
     if booking_provider_supports_tracked_content(booking_link.provider):
         return "Ready for tracked content now."
     if booking_provider_supports_tracked_destination(booking_link.provider):
-        return (
-            "Tracked redirect ready. FullScope booking capture still waits for the later "
-            "webhook story."
-        )
+        return "Tracked redirect ready, but end-to-end provider support is still pending."
     return (
         "Setup only for now. This booking source is saved, but tracked redirects are "
         "not available yet."
@@ -2801,7 +2798,7 @@ def _render_booking_links_page(
         """
           <section class="notice">
             <p class="eyebrow">FullScope setup boundary</p>
-            <p>Only Personal Calendar and direct Service Calendar links are supported for the FullScope bridge. Those links can generate tracked redirects now, but end-to-end booking capture still lands in the later webhook story.</p>
+            <p>Only Personal Calendar and direct Service Calendar links are supported for FullScope end-to-end tracking. Round Robin and Service Menu links stay outside the current support boundary.</p>
           </section>
         """
         if selected_provider == BOOKING_PROVIDER_FULLSCOPE
@@ -2838,7 +2835,7 @@ def _render_booking_links_page(
             <option value="{BOOKING_PROVIDER_CALENDLY}"{" selected" if selected_provider == BOOKING_PROVIDER_CALENDLY else ""}>Calendly</option>
             <option value="{BOOKING_PROVIDER_FULLSCOPE}"{" selected" if selected_provider == BOOKING_PROVIDER_FULLSCOPE else ""}>FullScope</option>
           </select>
-          <p class="form-help">Calendly works end to end today. FullScope Personal Calendar and direct Service Calendar links can generate tracked redirects now, but booking capture still lands in the later webhook story.</p>
+          <p class="form-help">Calendly works end to end today. Supported FullScope Personal Calendar and direct Service Calendar links also work end to end today. Round Robin and Service Menu links stay out of scope.</p>
           {_render_booking_link_field_error(field_errors.get("provider"))}
 
           <label for="name">Name</label>
@@ -3039,7 +3036,7 @@ def _render_booking_link_notice(
         return """
         <section class="notice success">
           <p class="eyebrow">FullScope source saved</p>
-          <p>The FullScope booking source can now be used for tracked redirects on supported Personal Calendar and direct Service Calendar links. End-to-end booking capture still lands in the later FullScope webhook story.</p>
+          <p>The FullScope booking source can now be used for tracked content, verified webhook capture, and billing on supported Personal Calendar and direct Service Calendar links.</p>
         </section>
         """
 
@@ -3096,7 +3093,7 @@ def _render_content_page(
           <h2>Copy the generated redirect URL into your post</h2>
         </div>
         <p>The tracked link uses the stored content `tid`, so the redirect can carry attribution into the supported booking flow before later booking capture reads it.</p>
-        <p>Pick a saved booking link, paste in the public URL for the content you are publishing, then copy the generated tracked link into the content or CTA you share externally. Calendly works end to end today. Supported FullScope links can now receive the redirect prefill, but booking capture still lands in the later webhook story.</p>
+        <p>Pick a saved booking link, paste in the public URL for the content you are publishing, then copy the generated tracked link into the content or CTA you share externally. Calendly and supported FullScope links both work end to end here today. Round Robin and Service Menu links stay outside the current FullScope support boundary.</p>
         <a href="/app/booking-links" class="inline-link">Review booking links</a>
       </article>
     </section>
@@ -3140,19 +3137,18 @@ def _render_content_form_panel(
         for booking_link in booking_links
         if booking_provider_supports_tracked_destination(booking_link.provider)
     ]
-    bridge_ready_booking_links = [
+    fullscope_booking_links = [
         booking_link
         for booking_link in booking_links
-        if booking_provider_supports_tracked_destination(booking_link.provider)
-        and not booking_provider_supports_tracked_content(booking_link.provider)
+        if booking_link.provider == BOOKING_PROVIDER_FULLSCOPE
     ]
     submit_disabled = " disabled" if not selectable_booking_links else ""
     bridge_ready_note = ""
-    if bridge_ready_booking_links:
+    if fullscope_booking_links:
         bridge_ready_note = """
         <section class="notice">
-          <p class="eyebrow">FullScope bridge boundary</p>
-          <p>Supported FullScope links can generate tracked redirects now. Booking capture and setup readiness still wait for the later FullScope webhook story.</p>
+          <p class="eyebrow">FullScope support boundary</p>
+          <p>Supported FullScope Personal Calendar and direct Service Calendar links work end to end here today. Round Robin and Service Menu links remain out of scope.</p>
         </section>
         """
 
@@ -3191,7 +3187,7 @@ def _render_content_form_panel(
               selected_booking_link_id=form_values["booking_link_id"],
           )}
         </select>
-        <p class="form-help">This keeps the tracked content aligned with the creator-owned booking link that downstream redirect handling expects. FullScope redirects can prefill attribution now, but end-to-end booking capture still waits for the later webhook story.</p>
+        <p class="form-help">This keeps the tracked content aligned with the creator-owned booking link that downstream redirect handling expects. Supported FullScope links now flow through verified booking capture and shared billing here, while Round Robin and Service Menu remain out of scope.</p>
         {_render_content_field_error(field_errors.get("booking_link_id"))}
 
         <button type="submit"{submit_disabled}>Generate tracked link</button>
@@ -3219,7 +3215,7 @@ def _render_content_booking_link_options(
         if supports_tracked_destination and not supports_tracked_content:
             option_label = (
                 f"{booking_link.name} "
-                "(FullScope redirect ready - webhook capture later)"
+                "(tracked redirect ready - end-to-end support pending)"
             )
         elif not supports_tracked_destination:
             option_label = (
@@ -3760,7 +3756,7 @@ def _render_booking_activity_page(
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Booking Activity</h1>
-        <p class="lede">See whether tracked content is turning into verified Calendly bookings, without needing raw DB checks or API tooling.</p>
+        <p class="lede">See whether tracked content is turning into verified provider bookings, without needing raw DB checks or API tooling.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -3782,7 +3778,7 @@ def _render_booking_activity_page(
           <p class="eyebrow">Attribution timing</p>
           <h2>New bookings may take a moment to appear</h2>
         </div>
-        <p>Bookings only show up here after someone uses a tracked link and Calendly delivers the verified webhook back to this app. That handoff is not always instant.</p>
+        <p>Bookings only show up here after someone uses a tracked link and the booking provider delivers the verified webhook back to this app. That handoff is not always instant.</p>
         <p>If you just created tracked content, publish the redirect URL first, complete a booking through that path, then refresh this page after the provider callback lands.</p>
         <a href="/app/content" class="inline-link">Open content manager</a>
       </article>
@@ -4324,6 +4320,13 @@ def _render_health_page(
           <p>{_count_copy(snapshot.calendly_ingress.failed_event_count, "failed event")} currently need operator review.</p>
         </div>
       </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">FullScope ingress</p>
+          <h2>{_count_copy(snapshot.fullscope_ingress.backlog_event_count, "backlog event")}</h2>
+          <p>{_count_copy(snapshot.fullscope_ingress.failed_event_count, "failed event")} currently need operator review.</p>
+        </div>
+      </article>
       <article class="card stack">
         <div>
           <p class="eyebrow">Payment provenance</p>
@@ -4365,25 +4368,18 @@ def _render_health_page(
       )}
       <p><a href="/app/bookings" class="inline-link">Review booking activity</a></p>
     </section>
-    <section class="card stack">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">Calendly ingress</p>
-          <h2>Webhook backlog and failure counts</h2>
-        </div>
-        <p>{html.escape(_count_copy(snapshot.calendly_ingress.backlog_event_count + snapshot.calendly_ingress.failed_event_count, "event"))}</p>
-      </div>
-      {_render_health_reason_list(
-          items=[
-              f"{_count_copy(item.event_count, 'event')} currently marked {_health_calendly_status_label(item.processing_status).lower()}."
-              for item in snapshot.calendly_ingress.statuses
-              if item.event_count > 0
-          ],
-          empty_heading="No Calendly backlog or failures are waiting right now",
-          empty_body="Verified Calendly events for this creator are not currently sitting in backlog or failure states.",
-      )}
-      <p>Use structured webhook logs for event-level identifiers and replay context when these counts rise.</p>
-    </section>
+    {_render_health_ingress_section(
+        provider_label="Calendly",
+        snapshot=snapshot.calendly_ingress,
+        empty_heading="No Calendly backlog or failures are waiting right now",
+        empty_body="Verified Calendly events for this creator are not currently sitting in backlog or failure states.",
+    )}
+    {_render_health_ingress_section(
+        provider_label="FullScope",
+        snapshot=snapshot.fullscope_ingress,
+        empty_heading="No FullScope backlog or failures are waiting right now",
+        empty_body="Verified FullScope events for this creator are not currently sitting in backlog or failure states.",
+    )}
     <section class="card stack">
       <div class="section-heading">
         <div>
@@ -4458,7 +4454,7 @@ def _render_booking_activity_list(
         <section class="empty-state">
           <p class="eyebrow">Empty state</p>
           <h2>No bookings captured yet</h2>
-          <p>Bookings appear here only after someone uses one of your tracked links and the verified Calendly webhook is processed, so a brand-new booking may not appear immediately.</p>
+          <p>Bookings appear here only after someone uses one of your tracked links and the verified provider webhook is processed, so a brand-new booking may not appear immediately.</p>
           <p>Create tracked content, make sure the redirect URL is the one being shared, then check back here after the provider handoff completes.</p>
           <a href="/app/content" class="inline-link">Create tracked content</a>
         </section>
@@ -5687,7 +5683,37 @@ def _render_health_reason_list(
     return f'<ul class="reason-list">{rows}</ul>'
 
 
-def _health_calendly_status_label(processing_status: str) -> str:
+def _render_health_ingress_section(
+    *,
+    provider_label: str,
+    snapshot: ProviderIngressHealthSnapshot,
+    empty_heading: str,
+    empty_body: str,
+) -> str:
+    return f"""
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">{html.escape(provider_label)} ingress</p>
+          <h2>Webhook backlog and failure counts</h2>
+        </div>
+        <p>{html.escape(_count_copy(snapshot.backlog_event_count + snapshot.failed_event_count, "event"))}</p>
+      </div>
+      {_render_health_reason_list(
+          items=[
+              f"{_count_copy(item.event_count, 'event')} currently marked {_health_ingress_status_label(item.processing_status).lower()}."
+              for item in snapshot.statuses
+              if item.event_count > 0
+          ],
+          empty_heading=empty_heading,
+          empty_body=empty_body,
+      )}
+      <p>Use structured webhook logs for event-level identifiers and replay context when these counts rise.</p>
+    </section>
+    """
+
+
+def _health_ingress_status_label(processing_status: str) -> str:
     if processing_status == "received":
         return "Received"
     if processing_status == "processing":

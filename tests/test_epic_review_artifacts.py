@@ -255,3 +255,75 @@ def test_generate_epic_review_artifacts_ignores_follow_on_story_mentions_outside
 
     assert artifacts.closeout_story_number == 2
     assert artifacts.packet_path.exists()
+
+
+def test_generate_epic_review_artifacts_supports_prefixed_story_keys(tmp_path: Path):
+    repo_root = _build_minimal_repo(tmp_path)
+    _write_text(
+        repo_root / "north-star" / "JIRA_STORIES_CLOSED.md",
+        """
+        # Jira Stories Closed
+
+        ## FS-1 — FullScope contract proof spike
+        - Status: Closed locally
+        - Scope delivered:
+          - captured the provider-backed attribution contract
+        - Validation:
+          - local replay notes captured
+        - Follow-ups:
+          - FS-2 widens creator and operator surfaces
+
+        ## FS-2 — Reports and health closeout
+        - Status: Closed locally
+        - Scope delivered:
+          - widened reporting and health copy
+          - added `north-star/fullscope-fs2-manual.md`
+        - Validation:
+          - pytest -q tests/test_fullscope_validation.py passing (`3 passed`)
+        - Follow-ups:
+          - run the epic review gate
+        """,
+    )
+    _write_text(
+        repo_root / "north-star" / "fullscope-booking-integration-v1.md",
+        """
+        # FullScope Booking Integration V1
+
+        Goal:
+        Ship a narrow FullScope integration.
+
+        Scope:
+        - Personal Calendar support
+        - direct Service Calendar support
+
+        Epic closeout story: FS-2
+
+        Recommended story order:
+
+        1. FS-1 — FullScope contract proof spike
+        2. FS-2 — Reports and health closeout
+        """,
+    )
+    active_context_path = repo_root / "north-star" / "ACTIVE_CONTEXT.md"
+    active_context_path.write_text(
+        active_context_path.read_text(encoding="utf-8").replace(
+            "Phase 1 Epic — Sample Epic",
+            "FullScope Booking Integration V1",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    artifacts = generate_epic_review_artifacts(
+        repo_root=repo_root,
+        epic_doc_path="north-star/fullscope-booking-integration-v1.md",
+        output_dir="north-star/epic-reviews",
+    )
+
+    assert artifacts.closeout_story_key == "FS-2"
+    assert artifacts.closeout_story_number is None
+
+    packet_text = artifacts.packet_path.read_text(encoding="utf-8")
+    assert "Epic closeout story: FS-2" in packet_text
+    assert "### FS-1 — FullScope contract proof spike" in packet_text
+    assert "north-star/fullscope-fs2-manual.md" in packet_text

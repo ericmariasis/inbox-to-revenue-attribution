@@ -91,7 +91,7 @@ def test_build_creator_workspace_readiness_paid_results_clear_waiting_state():
     assert readiness.paid_invoice_count == 2
 
 
-def test_build_creator_workspace_readiness_excludes_fullscope_links_from_billable_now_before_webhook_ingress():
+def test_build_creator_workspace_readiness_counts_supported_fullscope_links_as_billable_now():
     readiness = build_creator_workspace_readiness(
         raw_stripe_status="connected",
         booking_links=[
@@ -108,10 +108,10 @@ def test_build_creator_workspace_readiness_excludes_fullscope_links_from_billabl
     )
 
     assert readiness.booking_links_count == 1
-    assert readiness.trackable_booking_links_count == 0
-    assert readiness.limited_tracking_booking_links_count == 1
-    assert readiness.billing_ready_count == 0
-    assert readiness.billable_now is False
+    assert readiness.trackable_booking_links_count == 1
+    assert readiness.limited_tracking_booking_links_count == 0
+    assert readiness.billing_ready_count == 1
+    assert readiness.billable_now is True
     assert readiness.ready_to_track is False
 
 

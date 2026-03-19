@@ -32,6 +32,7 @@ def isolate_test_data():
             "creator_claim_snapshots",
             "support_requests",
             "calendly_webhook_events",
+            "fullscope_webhook_events",
             "content_topic_candidates",
             "content_confirmed_topics",
             "content_extraction_artifacts",

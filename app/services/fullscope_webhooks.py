@@ -222,6 +222,16 @@ class BookingCreatedFullScopeWebhookHandler:
                     )
                     return FullScopeWebhookReducerResult(processing_status="ignored_invalid_payload")
 
+                if existing_booking.status == "canceled":
+                    logger.info(
+                        "fullscope_webhook_booking_created_stale_after_cancel appointment_id=%s tid=%s creator_id=%s booking_link_id=%s",
+                        event.appointment_id,
+                        existing_booking.tid,
+                        existing_booking.creator_id,
+                        existing_booking.booking_link_id,
+                    )
+                    return FullScopeWebhookReducerResult(processing_status="applied")
+
                 existing_booking.email = email
                 existing_booking.booked_at = booked_at
                 existing_booking.status = "created"

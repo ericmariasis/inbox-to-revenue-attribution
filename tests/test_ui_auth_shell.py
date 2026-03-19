@@ -1218,7 +1218,7 @@ def test_setup_and_account_pages_reuse_connected_but_not_billable_now_vocabulary
     assert "Ready to track</strong>: Not yet. This milestone starts after the workspace is billable now." in account_response.text
 
 
-def test_setup_and_account_pages_keep_fullscope_sources_limited_before_webhook_story():
+def test_setup_and_account_pages_count_supported_fullscope_sources_as_billable_now():
     inserted = _insert_creator_user(
         email=f"ui_fullscope_setup_only_{uuid.uuid4().hex}@example.com",
         name="FullScope Setup Only Creator",
@@ -1247,10 +1247,12 @@ def test_setup_and_account_pages_keep_fullscope_sources_limited_before_webhook_s
 
     assert setup_response.status_code == 200
     assert account_response.status_code == 200
-    assert "These FullScope sources can generate tracked redirects now" in setup_response.text
-    assert "Saved FullScope sources can generate tracked redirects now" in setup_response.text
-    assert "Billable now</strong>: Not yet. Saved FullScope sources can generate tracked redirects now" in setup_response.text
-    assert "billable-now and creator-readiness still require a Calendly link" in account_response.text
+    assert "Billable now, but not ready to track" in setup_response.text
+    assert "Billable now, but not ready to track" in account_response.text
+    assert "Billable now</strong>: Done. At least one booking link has amount and currency saved." in setup_response.text
+    assert "Billable now</strong>: Done. At least one booking link has amount and currency saved." in account_response.text
+    assert "Ready to track</strong>: Not yet. Create tracked content so shared links can lead to attributed bookings." in setup_response.text
+    assert "Ready to track</strong>: Not yet. Create tracked content so shared links can lead to attributed bookings." in account_response.text
 
 
 def test_booking_links_page_empty_state_renders_form_and_next_step_copy():
@@ -1396,7 +1398,7 @@ def test_booking_links_page_validation_feedback_preserves_input_and_page_state()
     assert 'value="USDX"' in response.text
 
 
-def test_booking_links_page_create_fullscope_source_shows_bridge_ready_success_state():
+def test_booking_links_page_create_fullscope_source_shows_end_to_end_success_state():
     inserted = _insert_creator_user(
         email=f"ui_booking_links_fullscope_{uuid.uuid4().hex}@example.com",
         name="FullScope Setup Creator",
@@ -1432,8 +1434,8 @@ def test_booking_links_page_create_fullscope_source_shows_bridge_ready_success_s
     assert "FullScope source saved" in page_response.text
     assert "FS1 Personal Calendar" in page_response.text
     assert "https://links.fullscope.tools/widget/bookings/fs1-personal-calendar" in page_response.text
-    assert "Tracked redirect ready" in page_response.text
-    assert "End-to-end booking capture still lands in the later FullScope webhook story" in page_response.text
+    assert "Ready for tracked content now." in page_response.text
+    assert "verified webhook capture, and billing" in page_response.text
 
 
 def test_booking_links_page_fullscope_validation_requires_supported_calendar_confirmation():
@@ -1532,7 +1534,7 @@ def test_content_page_without_booking_links_explains_prerequisite():
     assert 'class="wrap-anywhere"' not in response.text
 
 
-def test_content_page_shows_fullscope_sources_as_bridge_ready_and_selectable():
+def test_content_page_shows_fullscope_sources_as_supported_and_selectable():
     inserted = _insert_creator_user(
         email=f"ui_content_fullscope_{uuid.uuid4().hex}@example.com",
         name="FullScope Content Creator",
@@ -1555,9 +1557,9 @@ def test_content_page_shows_fullscope_sources_as_bridge_ready_and_selectable():
         response = client.get("/app/content", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "FullScope bridge boundary" in response.text
-    assert "Supported FullScope links can generate tracked redirects now" in response.text
-    assert "FS1 Personal Calendar (FullScope redirect ready - webhook capture later)" in response.text
+    assert "FullScope support boundary" in response.text
+    assert "Supported FullScope Personal Calendar and direct Service Calendar links work end to end here today." in response.text
+    assert ">FS1 Personal Calendar</option>" in response.text
     assert '<button type="submit">Generate tracked link</button>' in response.text
 
 
@@ -2456,6 +2458,7 @@ def test_health_page_renders_creator_scoped_snapshot():
     assert response.status_code == 200
     assert "Health" in response.text
     assert '<a href="/app/health" class="nav-link active">Health</a>' in response.text
+    assert "FullScope ingress" in response.text
     assert "1 unattributed booking" in response.text
     assert "1 failed event currently need operator review." in response.text
     assert "1 backlog event" in response.text

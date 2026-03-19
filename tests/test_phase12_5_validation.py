@@ -785,6 +785,8 @@ def test_phase12_5_claim_snapshot_replay_and_health_compose_end_to_end():
     ]
     assert health_response.json()["calendly_ingress"]["backlog_event_count"] == 0
     assert health_response.json()["calendly_ingress"]["failed_event_count"] == 0
+    assert health_response.json()["fullscope_ingress"]["backlog_event_count"] == 0
+    assert health_response.json()["fullscope_ingress"]["failed_event_count"] == 0
     assert health_response.json()["payment_provenance"]["settled_state_counts"] == [
         {"state": PAYMENT_PROVENANCE_STATE_MATCHED, "row_count": 1},
         {"state": PAYMENT_PROVENANCE_STATE_PENDING, "row_count": 0},

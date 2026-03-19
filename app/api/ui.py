@@ -42,6 +42,7 @@ from app.models.auth_user import AuthUser
 from app.models.booking_provider import (
     BOOKING_PROVIDER_CALENDLY,
     BOOKING_PROVIDER_FULLSCOPE,
+    booking_provider_supports_tracked_destination,
     booking_provider_supports_tracked_content,
 )
 from app.models.support_request import SupportRequestRecord
@@ -735,8 +736,8 @@ async def creator_content_create(
                     form_values=form_values,
                     field_errors={
                         "booking_link_id": (
-                            "This saved FullScope source is setup-only for now. "
-                            "Use a Calendly link for tracked content until the FullScope bridge lands."
+                            "This saved booking source cannot generate tracked content yet. "
+                            "Choose a supported tracked destination instead."
                         ),
                     },
                     status_value=None,
@@ -1737,7 +1738,7 @@ def _render_account_page(
     stripe_state = _account_stripe_management_state(readiness=readiness)
     booking_links_count = readiness.booking_links_count
     trackable_booking_links_count = readiness.trackable_booking_links_count
-    setup_only_booking_links_count = readiness.setup_only_booking_links_count
+    limited_tracking_booking_links_count = readiness.limited_tracking_booking_links_count
     billing_ready_count = readiness.billing_ready_count
 
     stripe_detail_lines = []
@@ -1755,19 +1756,28 @@ def _render_account_page(
     booking_links_summary = "No booking links are saved yet for this workspace."
     if booking_links_count > 0:
         booking_links_summary = f"This workspace currently has {html.escape(_count_copy(booking_links_count, 'saved booking link'))}. "
-        if trackable_booking_links_count == 0 and setup_only_booking_links_count > 0:
+        if trackable_booking_links_count == 0 and limited_tracking_booking_links_count > 0:
             booking_links_summary += (
-                "Those FullScope sources are saved for setup, but tracked content and billable-now "
-                "readiness still require a Calendly link until the later bridge story lands."
+                "Those FullScope sources can generate tracked redirects now, but billable-now "
+                "and creator-readiness still require a Calendly link until the later FullScope "
+                "webhook story lands."
             )
         else:
             booking_links_summary += html.escape(
                 _account_billing_ready_summary_copy(billing_ready_count)
             )
-            if setup_only_booking_links_count > 0:
+            if limited_tracking_booking_links_count > 0:
+                limited_tracking_summary = (
+                    "1 FullScope source stays limited to tracked redirects until the later "
+                    "FullScope webhook story lands."
+                    if limited_tracking_booking_links_count == 1
+                    else (
+                        f"{limited_tracking_booking_links_count} FullScope sources stay limited "
+                        "to tracked redirects until the later FullScope webhook story lands."
+                    )
+                )
                 booking_links_summary += (
-                    f" {html.escape(_count_copy(setup_only_booking_links_count, 'FullScope source'))} "
-                    "stay setup-only until the later bridge story lands."
+                    f" {html.escape(limited_tracking_summary)}"
                 )
 
     body = f"""
@@ -2298,7 +2308,7 @@ def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[st
     stripe_status = readiness.stripe_status
     booking_links_count = readiness.booking_links_count
     trackable_booking_links_count = readiness.trackable_booking_links_count
-    setup_only_booking_links_count = readiness.setup_only_booking_links_count
+    limited_tracking_booking_links_count = readiness.limited_tracking_booking_links_count
 
     if readiness.connected:
         connected_line = ("Connected", "Done", "Stripe is connected to this workspace.")
@@ -2320,12 +2330,12 @@ def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[st
     elif (
         readiness.connected
         and trackable_booking_links_count == 0
-        and setup_only_booking_links_count > 0
+        and limited_tracking_booking_links_count > 0
     ):
         billable_line = (
             "Billable now",
             "Not yet",
-            "Saved FullScope sources stay setup-only for now. Add a Calendly link before relying on tracked content or invoice readiness.",
+            "Saved FullScope sources can generate tracked redirects now, but billable-now and invoice readiness still need a Calendly link until the later FullScope webhook story lands.",
         )
     elif readiness.connected and booking_links_count > 0:
         billable_line = (
@@ -2421,7 +2431,7 @@ def _build_setup_home_progress(
     normalized_stripe_status = readiness.stripe_status
     booking_links_count = readiness.booking_links_count
     trackable_booking_links_count = readiness.trackable_booking_links_count
-    setup_only_booking_links_count = readiness.setup_only_booking_links_count
+    limited_tracking_booking_links_count = readiness.limited_tracking_booking_links_count
     billing_ready_count = readiness.billing_ready_count
     tracked_content_count = readiness.tracked_content_count
     billable_now = readiness.billable_now
@@ -2484,10 +2494,10 @@ def _build_setup_home_progress(
             f"{html.escape(_count_copy(booking_links_count, 'booking link'))} saved. "
             "Keep the Calendly link here aligned with what you actually share."
         )
-        if trackable_booking_links_count == 0 and setup_only_booking_links_count > 0:
+        if trackable_booking_links_count == 0 and limited_tracking_booking_links_count > 0:
             booking_link_copy_html = (
                 f"{html.escape(_count_copy(booking_links_count, 'booking link'))} saved. "
-                "These FullScope sources are setup-only for now, so tracked content still needs a Calendly link until the later bridge story lands."
+                "These FullScope sources can generate tracked redirects now, but end-to-end creator readiness still needs a Calendly link until the later FullScope webhook story lands."
             )
         booking_link_step = _setup_step(
             title="Save a booking link",
@@ -2531,10 +2541,10 @@ def _build_setup_home_progress(
             item_class="done",
             is_complete=True,
         )
-    elif trackable_booking_links_count == 0 and setup_only_booking_links_count > 0:
+    elif trackable_booking_links_count == 0 and limited_tracking_booking_links_count > 0:
         billing_defaults_step = _setup_step(
             title="Add billing defaults",
-            copy_html='Saved FullScope sources stay setup-only for now. Add a Calendly link if you need billable-now readiness before the later FullScope bridge story lands. <a href="/app/booking-links" class="inline-link">Open booking links</a>.',
+            copy_html='Saved FullScope sources can generate tracked redirects now. Add a Calendly link if you need billable-now readiness before the later FullScope webhook story lands. <a href="/app/booking-links" class="inline-link">Open booking links</a>.',
             label="Blocked",
             badge_class="disconnected",
             item_class="todo",
@@ -2543,7 +2553,7 @@ def _build_setup_home_progress(
         if next_action is None:
             next_action = {
                 "title": "Add a tracked-content-ready link",
-                "copy_html": "FullScope setup is saved, but billable-now readiness still needs a Calendly link until the later bridge story lands.",
+                "copy_html": "FullScope tracked redirects are ready, but billable-now readiness still needs a Calendly link until the later FullScope webhook story lands.",
                 "action_label": "Open booking links",
                 "action_href": "/app/booking-links",
                 "action_method": "get",
@@ -2754,9 +2764,14 @@ def _booking_link_provider_label(provider: str) -> str:
 def _booking_link_setup_state_copy(booking_link: BookingLinkResponse) -> str:
     if booking_provider_supports_tracked_content(booking_link.provider):
         return "Ready for tracked content now."
+    if booking_provider_supports_tracked_destination(booking_link.provider):
+        return (
+            "Tracked redirect ready. FullScope booking capture still waits for the later "
+            "webhook story."
+        )
     return (
-        "Setup only for now. This FullScope source is saved, but tracked content "
-        "stays disabled until the later FullScope attribution bridge lands."
+        "Setup only for now. This booking source is saved, but tracked redirects are "
+        "not available yet."
     )
 
 
@@ -2786,7 +2801,7 @@ def _render_booking_links_page(
         """
           <section class="notice">
             <p class="eyebrow">FullScope setup boundary</p>
-            <p>Only Personal Calendar and direct Service Calendar links are supported in this setup story. Saved FullScope sources stay setup-only until the later attribution bridge lands.</p>
+            <p>Only Personal Calendar and direct Service Calendar links are supported for the FullScope bridge. Those links can generate tracked redirects now, but end-to-end booking capture still lands in the later webhook story.</p>
           </section>
         """
         if selected_provider == BOOKING_PROVIDER_FULLSCOPE
@@ -2823,7 +2838,7 @@ def _render_booking_links_page(
             <option value="{BOOKING_PROVIDER_CALENDLY}"{" selected" if selected_provider == BOOKING_PROVIDER_CALENDLY else ""}>Calendly</option>
             <option value="{BOOKING_PROVIDER_FULLSCOPE}"{" selected" if selected_provider == BOOKING_PROVIDER_FULLSCOPE else ""}>FullScope</option>
           </select>
-          <p class="form-help">Use Calendly for tracked-content-ready links today. FullScope links can be saved now, but they stay setup-only until the later bridge story lands.</p>
+          <p class="form-help">Calendly works end to end today. FullScope Personal Calendar and direct Service Calendar links can generate tracked redirects now, but booking capture still lands in the later webhook story.</p>
           {_render_booking_link_field_error(field_errors.get("provider"))}
 
           <label for="name">Name</label>
@@ -3024,7 +3039,7 @@ def _render_booking_link_notice(
         return """
         <section class="notice success">
           <p class="eyebrow">FullScope source saved</p>
-          <p>The FullScope booking source is saved for setup, but tracked content stays disabled until the later FullScope attribution bridge lands.</p>
+          <p>The FullScope booking source can now be used for tracked redirects on supported Personal Calendar and direct Service Calendar links. End-to-end booking capture still lands in the later FullScope webhook story.</p>
         </section>
         """
 
@@ -3059,7 +3074,7 @@ def _render_content_page(
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Content</h1>
-        <p class="lede">Turn a public source URL into a tracked link that routes through the attribution redirect before it reaches your Calendly booking flow.</p>
+        <p class="lede">Turn a public source URL into a tracked link that routes through the attribution redirect before it reaches your supported booking flow.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -3080,8 +3095,8 @@ def _render_content_page(
           <p class="eyebrow">How tracking works</p>
           <h2>Copy the generated redirect URL into your post</h2>
         </div>
-        <p>The tracked link uses the stored content `tid`, so later redirect and supported booking flows can attribute the booking back to the right source URL.</p>
-        <p>Pick a saved booking link, paste in the public URL for the content you are publishing, then copy the generated tracked link into the content or CTA you share externally. FullScope sources stay visible here but disabled until the later bridge story lands.</p>
+        <p>The tracked link uses the stored content `tid`, so the redirect can carry attribution into the supported booking flow before later booking capture reads it.</p>
+        <p>Pick a saved booking link, paste in the public URL for the content you are publishing, then copy the generated tracked link into the content or CTA you share externally. Calendly works end to end today. Supported FullScope links can now receive the redirect prefill, but booking capture still lands in the later webhook story.</p>
         <a href="/app/booking-links" class="inline-link">Review booking links</a>
       </article>
     </section>
@@ -3123,20 +3138,21 @@ def _render_content_form_panel(
     selectable_booking_links = [
         booking_link
         for booking_link in booking_links
-        if booking_provider_supports_tracked_content(booking_link.provider)
+        if booking_provider_supports_tracked_destination(booking_link.provider)
     ]
-    setup_only_booking_links = [
+    bridge_ready_booking_links = [
         booking_link
         for booking_link in booking_links
-        if not booking_provider_supports_tracked_content(booking_link.provider)
+        if booking_provider_supports_tracked_destination(booking_link.provider)
+        and not booking_provider_supports_tracked_content(booking_link.provider)
     ]
     submit_disabled = " disabled" if not selectable_booking_links else ""
-    setup_only_note = ""
-    if setup_only_booking_links:
-        setup_only_note = """
+    bridge_ready_note = ""
+    if bridge_ready_booking_links:
+        bridge_ready_note = """
         <section class="notice">
-          <p class="eyebrow">Setup-only booking sources</p>
-          <p>Saved FullScope sources stay visible here, but tracked content still requires a Calendly link until the later FullScope attribution bridge lands.</p>
+          <p class="eyebrow">FullScope bridge boundary</p>
+          <p>Supported FullScope links can generate tracked redirects now. Booking capture and setup readiness still wait for the later FullScope webhook story.</p>
         </section>
         """
 
@@ -3147,7 +3163,7 @@ def _render_content_form_panel(
         <h2>Add a source URL</h2>
         <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
       </div>
-      {setup_only_note}
+      {bridge_ready_note}
       <form action="/app/content" method="post">
         <label for="source_url">Public source URL</label>
         <input
@@ -3175,7 +3191,7 @@ def _render_content_form_panel(
               selected_booking_link_id=form_values["booking_link_id"],
           )}
         </select>
-        <p class="form-help">This keeps the tracked content aligned with the creator-owned booking link that downstream booking capture expects. FullScope sources remain disabled here until the later bridge story lands.</p>
+        <p class="form-help">This keeps the tracked content aligned with the creator-owned booking link that downstream redirect handling expects. FullScope redirects can prefill attribution now, but end-to-end booking capture still waits for the later webhook story.</p>
         {_render_content_field_error(field_errors.get("booking_link_id"))}
 
         <button type="submit"{submit_disabled}>Generate tracked link</button>
@@ -3191,14 +3207,24 @@ def _render_content_booking_link_options(
 ) -> str:
     options = []
     for booking_link in booking_links:
-        supports_tracked_content = booking_provider_supports_tracked_content(booking_link.provider)
+        supports_tracked_destination = booking_provider_supports_tracked_destination(
+            booking_link.provider
+        )
+        supports_tracked_content = booking_provider_supports_tracked_content(
+            booking_link.provider
+        )
         selected_attr = " selected" if booking_link.id == selected_booking_link_id else ""
-        disabled_attr = "" if supports_tracked_content else " disabled"
+        disabled_attr = "" if supports_tracked_destination else " disabled"
         option_label = booking_link.name
-        if not supports_tracked_content:
+        if supports_tracked_destination and not supports_tracked_content:
             option_label = (
                 f"{booking_link.name} "
-                "(setup only - FullScope not yet available for tracked content)"
+                "(FullScope redirect ready - webhook capture later)"
+            )
+        elif not supports_tracked_destination:
+            option_label = (
+                f"{booking_link.name} "
+                "(tracked redirect not available yet)"
             )
         options.append(
             f'<option value="{html.escape(booking_link.id)}"{selected_attr}{disabled_attr}>'
@@ -4675,7 +4701,7 @@ def _render_blocked_billing_case_card(*, blocked_case: BlockedBillingCaseSummary
       <div class="content-card-header">
         <div>
           <p class="eyebrow">Blocked billing</p>
-          <h2>{html.escape(blocked_case.calendly_booking_uuid)}</h2>
+          <h2>{html.escape(blocked_case.provider_booking_id)}</h2>
         </div>
         <span class="status-pill pending">Blocked</span>
       </div>

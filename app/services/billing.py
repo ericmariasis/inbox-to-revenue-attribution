@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
+from app.models.booking_provider import BOOKING_PROVIDER_CALENDLY
 from app.models.invoice import Invoice
 from app.services.booking_attribution import (
     BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
@@ -34,6 +35,7 @@ CreateInvoiceReason = Literal[
     "missing_billing_defaults",
     "creator_not_billable",
     "booking_not_found",
+    "missing_provider_booking_identity",
     "booking_not_active",
     "booking_unattributed",
     "provider_error",
@@ -101,6 +103,19 @@ class BillingOrchestrator:
                     existing_invoice.status,
                 )
                 return _billing_invoice_result(existing_invoice, outcome="existing")
+
+            booking_provider, provider_booking_id = _resolve_booking_provider_identity(booking=booking)
+            if provider_booking_id is None:
+                logger.warning(
+                    "billing_invoice_create_deferred_missing_provider_booking_identity booking_id=%s creator_id=%s provider=%s",
+                    booking.id,
+                    booking.creator_id,
+                    booking_provider,
+                )
+                return BillingInvoiceResult(
+                    outcome="deferred",
+                    reason="missing_provider_booking_identity",
+                )
 
             attribution = get_booking_attribution_current_state(booking=booking)
             if attribution.status == BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED:
@@ -224,12 +239,13 @@ class BillingOrchestrator:
                     stripe_account_id=stripe_account_id,
                     amount_cents=amount_cents,
                     currency=currency.upper(),
-                    metadata={
-                        "creator_id": str(creator.id),
-                        "booking_uuid": booking.calendly_booking_uuid,
-                        "tid": booking.tid,
-                    },
-                    idempotency_key=f"billing:create:{booking.calendly_booking_uuid}",
+                    metadata=_billing_provider_metadata(
+                        creator_id=creator.id,
+                        booking_provider=booking_provider,
+                        provider_booking_id=provider_booking_id,
+                        tid=booking.tid,
+                    ),
+                    idempotency_key=f"billing:create:{booking_provider}:{provider_booking_id}",
                 )
             except StripeProviderError as exc:
                 record_blocked_billing_case(
@@ -309,8 +325,10 @@ class BillingOrchestrator:
             session.refresh(invoice)
 
             logger.info(
-                "billing_invoice_created booking_id=%s invoice_id=%s stripe_invoice_id=%s creator_id=%s tid=%s amount_cents=%s currency=%s",
+                "billing_invoice_created booking_id=%s provider=%s provider_booking_id=%s invoice_id=%s stripe_invoice_id=%s creator_id=%s tid=%s amount_cents=%s currency=%s",
                 booking.id,
+                booking_provider,
+                provider_booking_id,
                 invoice.id,
                 invoice.stripe_invoice_id,
                 invoice.creator_id,
@@ -412,6 +430,29 @@ def _billing_invoice_void_result(
         stripe_invoice_id=invoice.stripe_invoice_id,
         invoice_status=invoice.status,
     )
+
+
+def _resolve_booking_provider_identity(*, booking: Booking) -> tuple[str, str | None]:
+    return booking.provider or BOOKING_PROVIDER_CALENDLY, booking.resolved_provider_booking_id
+
+
+def _billing_provider_metadata(
+    *,
+    creator_id: uuid.UUID,
+    booking_provider: str,
+    provider_booking_id: str,
+    tid: str | None,
+) -> dict[str, str]:
+    metadata = {
+        "creator_id": str(creator_id),
+        "booking_provider": booking_provider,
+        "provider_booking_id": provider_booking_id,
+        # Preserve the legacy Stripe metadata key until the later payment/reporting seam is widened.
+        "booking_uuid": provider_booking_id,
+    }
+    if tid is not None:
+        metadata["tid"] = tid
+    return metadata
 
 
 def _resolve_booking_billing_terms(*, booking: Booking) -> tuple[int | None, str | None]:

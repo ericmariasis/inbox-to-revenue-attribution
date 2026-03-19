@@ -481,10 +481,12 @@ def test_phase7_invoice_creation_flow_end_to_end():
             "currency": "USD",
             "metadata": {
                 "creator_id": me_response.json()["id"],
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_phase7_valid",
                 "booking_uuid": "BOOK_phase7_valid",
                 "tid": billed_content["tid"],
             },
-            "idempotency_key": "billing:create:BOOK_phase7_valid",
+            "idempotency_key": "billing:create:calendly:BOOK_phase7_valid",
         }
     ]
     assert provider.void_calls == [

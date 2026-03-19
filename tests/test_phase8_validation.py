@@ -573,10 +573,12 @@ def test_phase8_payment_attribution_flow_end_to_end():
             "currency": "USD",
             "metadata": {
                 "creator_id": me_response.json()["id"],
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story50_paid",
                 "booking_uuid": "BOOK_story50_paid",
                 "tid": happy_content["tid"],
             },
-            "idempotency_key": "billing:create:BOOK_story50_paid",
+            "idempotency_key": "billing:create:calendly:BOOK_story50_paid",
         },
         {
             "stripe_account_id": provider.account_id,
@@ -584,10 +586,12 @@ def test_phase8_payment_attribution_flow_end_to_end():
             "currency": "USD",
             "metadata": {
                 "creator_id": me_response.json()["id"],
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story50_early",
                 "booking_uuid": "BOOK_story50_early",
                 "tid": early_content["tid"],
             },
-            "idempotency_key": "billing:create:BOOK_story50_early",
+            "idempotency_key": "billing:create:calendly:BOOK_story50_early",
         },
     ]
     assert provider.void_calls == []

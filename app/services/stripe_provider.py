@@ -6,7 +6,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.config import Settings, get_settings
 from app.db.session import SessionLocal
@@ -155,7 +155,7 @@ class StripeOAuthProvider:
         api_base_url: str = DEFAULT_STRIPE_API_BASE_URL,
         connect_token_url: str = DEFAULT_STRIPE_CONNECT_TOKEN_URL,
         transport: StripeHttpTransport | None = None,
-        booking_email_lookup: Callable[[str], str | None] | None = None,
+        booking_email_lookup: Callable[[str | None, str], str | None] | None = None,
     ):
         self._authorize_url = authorize_url.rstrip("?")
         self._client_id = client_id
@@ -164,7 +164,7 @@ class StripeOAuthProvider:
         self._api_base_url = api_base_url.rstrip("/")
         self._connect_token_url = connect_token_url
         self._transport = transport or UrllibStripeHttpTransport()
-        self._booking_email_lookup = booking_email_lookup or _lookup_booking_email_by_uuid
+        self._booking_email_lookup = booking_email_lookup or _lookup_booking_email
 
     def build_connect_onboarding_url(self, *, creator_id: str, state: str) -> str:
         del creator_id
@@ -319,8 +319,12 @@ class StripeOAuthProvider:
         metadata: dict[str, str],
         idempotency_key: str,
     ) -> str:
-        booking_uuid = metadata.get("booking_uuid")
-        booking_email = booking_uuid and self._booking_email_lookup(booking_uuid)
+        booking_provider, booking_identifier = _metadata_booking_identity(metadata)
+        booking_email = (
+            self._booking_email_lookup(booking_provider, booking_identifier)
+            if booking_identifier is not None
+            else None
+        )
         customer_params: dict[str, Any] = {
             "metadata": metadata,
         }
@@ -474,23 +478,50 @@ def _required_object_id(
     return object_id
 
 
-def _lookup_booking_email_by_uuid(booking_uuid: str) -> str | None:
+def _lookup_booking_email(booking_provider: str | None, provider_booking_id: str) -> str | None:
     with SessionLocal() as session:
-        return session.scalar(
-            select(Booking.email).where(Booking.calendly_booking_uuid == booking_uuid)
-        )
+        query = select(Booking.email)
+        if booking_provider:
+            query = query.where(
+                Booking.provider == booking_provider,
+                Booking.provider_booking_id == provider_booking_id,
+            )
+        else:
+            query = query.where(
+                or_(
+                    Booking.provider_booking_id == provider_booking_id,
+                    Booking.calendly_booking_uuid == provider_booking_id,
+                )
+            )
+        return session.scalar(query)
 
 
 def _invoice_description(metadata: Mapping[str, str]) -> str:
-    booking_uuid = metadata.get("booking_uuid")
+    _, booking_identifier = _metadata_booking_identity(metadata)
     tid = metadata.get("tid")
-    if booking_uuid and tid:
-        return f"Creator Compass booking {booking_uuid} ({tid})"
-    if booking_uuid:
-        return f"Creator Compass booking {booking_uuid}"
+    if booking_identifier and tid:
+        return f"Creator Compass booking {booking_identifier} ({tid})"
+    if booking_identifier:
+        return f"Creator Compass booking {booking_identifier}"
     if tid:
         return f"Creator Compass tracked booking {tid}"
     return "Creator Compass booking"
+
+
+def _metadata_booking_identity(metadata: Mapping[str, str]) -> tuple[str | None, str | None]:
+    booking_provider = metadata.get("booking_provider")
+    resolved_provider = (
+        booking_provider if isinstance(booking_provider, str) and booking_provider else None
+    )
+    provider_booking_id = metadata.get("provider_booking_id")
+    if isinstance(provider_booking_id, str) and provider_booking_id:
+        return resolved_provider, provider_booking_id
+
+    booking_uuid = metadata.get("booking_uuid")
+    if isinstance(booking_uuid, str) and booking_uuid:
+        return resolved_provider, booking_uuid
+
+    return resolved_provider, None
 
 
 def _operation_message(operation: str) -> str:

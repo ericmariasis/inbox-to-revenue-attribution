@@ -9,6 +9,13 @@ from app.services.calendly_webhooks import (
     CalendlyWebhookVerificationError,
     verify_and_parse_calendly_webhook,
 )
+from app.services.fullscope_webhooks import (
+    DEFAULT_FULLSCOPE_WEBHOOK_ROUTER,
+    FullScopeWebhookPayloadError,
+    FullScopeWebhookRouter,
+    FullScopeWebhookVerificationError,
+    verify_and_parse_fullscope_webhook,
+)
 from app.services.stripe_webhooks import (
     DEFAULT_STRIPE_WEBHOOK_ROUTER,
     StripeWebhookPayloadError,
@@ -21,6 +28,8 @@ from app.services.stripe_webhooks import (
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 INVALID_CALENDLY_WEBHOOK_SIGNATURE_DETAIL = "invalid calendly webhook signature"
 INVALID_CALENDLY_WEBHOOK_PAYLOAD_DETAIL = "invalid calendly webhook payload"
+INVALID_FULLSCOPE_WEBHOOK_SIGNATURE_DETAIL = "invalid fullscope webhook authorization"
+INVALID_FULLSCOPE_WEBHOOK_PAYLOAD_DETAIL = "invalid fullscope webhook payload"
 INVALID_STRIPE_WEBHOOK_SIGNATURE_DETAIL = "invalid stripe webhook signature"
 INVALID_STRIPE_WEBHOOK_PAYLOAD_DETAIL = "invalid stripe webhook payload"
 
@@ -35,6 +44,10 @@ def _stripe_webhook_router(request: Request) -> StripeWebhookRouter:
 
 def _calendly_webhook_router(request: Request) -> CalendlyWebhookRouter:
     return getattr(request.app.state, "calendly_webhook_router", DEFAULT_CALENDLY_WEBHOOK_ROUTER)
+
+
+def _fullscope_webhook_router(request: Request) -> FullScopeWebhookRouter:
+    return getattr(request.app.state, "fullscope_webhook_router", DEFAULT_FULLSCOPE_WEBHOOK_ROUTER)
 
 
 @router.post("/calendly", response_model=GenericOkResponse)
@@ -69,6 +82,42 @@ async def calendly_webhook(
     if journal_result.should_schedule_reducer:
         background_tasks.add_task(
             calendly_router.process_event,
+            record_id=journal_result.record_id,
+        )
+    return GenericOkResponse()
+
+
+@router.post("/fullscope", response_model=GenericOkResponse)
+async def fullscope_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> GenericOkResponse:
+    payload = await request.body()
+    authorization_header = request.headers.get("authorization")
+    settings = _settings(request)
+
+    try:
+        event = verify_and_parse_fullscope_webhook(
+            payload=payload,
+            authorization_header=authorization_header,
+            shared_secret=settings.fullscope_webhook_shared_secret,
+        )
+    except FullScopeWebhookVerificationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INVALID_FULLSCOPE_WEBHOOK_SIGNATURE_DETAIL,
+        ) from exc
+    except FullScopeWebhookPayloadError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INVALID_FULLSCOPE_WEBHOOK_PAYLOAD_DETAIL,
+        ) from exc
+
+    fullscope_router = _fullscope_webhook_router(request)
+    journal_result = fullscope_router.record_event(event=event)
+    if journal_result.should_schedule_reducer:
+        background_tasks.add_task(
+            fullscope_router.process_event,
             record_id=journal_result.record_id,
         )
     return GenericOkResponse()

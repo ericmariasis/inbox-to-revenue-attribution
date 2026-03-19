@@ -739,10 +739,12 @@ def test_calendly_webhook_billable_booking_created_persists_invoice_and_duplicat
         "currency": "USD",
         "metadata": {
             "creator_id": str(stored["creator_id"]),
+            "booking_provider": "calendly",
+            "provider_booking_id": "BOOK_story45_billable",
             "booking_uuid": "BOOK_story45_billable",
             "tid": stored["tid"],
         },
-        "idempotency_key": "billing:create:BOOK_story45_billable",
+        "idempotency_key": "billing:create:calendly:BOOK_story45_billable",
     }
     assert provider.void_calls == []
 
@@ -969,6 +971,8 @@ def test_calendly_webhook_booking_created_with_non_billable_creator_creates_no_i
     assert bookings[0].frozen_billing_currency == "USD"
     assert invoices == []
     assert len(blocked_cases) == 1
+    assert blocked_cases[0].provider == "calendly"
+    assert blocked_cases[0].provider_booking_id == "BOOK_story45_not_billable"
     assert blocked_cases[0].reason_code == "creator_not_billable"
     assert blocked_cases[0].status == "open"
     assert provider.readiness_calls == ["acct_story45_not_billable"]
@@ -1039,6 +1043,8 @@ def test_calendly_webhook_booking_canceled_closes_open_blocked_billing_case():
     assert bookings[0].frozen_billing_amount_cents == 22000
     assert bookings[0].frozen_billing_currency == "USD"
     assert len(blocked_cases) == 1
+    assert blocked_cases[0].provider == "calendly"
+    assert blocked_cases[0].provider_booking_id == "BOOK_story58_cancel_blocked"
     assert blocked_cases[0].status == "resolved"
     assert blocked_cases[0].resolution_code == "booking_canceled"
     assert blocked_cases[0].resolved_at == datetime(2026, 3, 9, 11, 30, tzinfo=timezone.utc)

@@ -270,7 +270,7 @@ def test_create_content_returns_same_404_for_unknown_and_not_owned_booking_link(
     assert _content_tids_for_creator(creator_id=creator_b["creator_id"]) == []
 
 
-def test_create_content_rejects_fullscope_booking_links_until_bridge_lands():
+def test_create_content_accepts_fullscope_booking_links_once_bridge_lands():
     inserted = _insert_creator_user(email=f"content_{uuid.uuid4().hex}@example.com")
     token = _access_token(
         user_id=inserted["user_id"],
@@ -284,19 +284,31 @@ def test_create_content_rejects_fullscope_booking_links_until_bridge_lands():
         provider="fullscope",
         destination_url="https://links.fullscope.tools/widget/bookings/fs1-personal-calendar",
     )
+    tracked_base_url = get_settings().tracked_link_base_url.rstrip("/")
 
     with TestClient(app) as client:
         response = client.post(
             "/content",
             headers={"Authorization": f"Bearer {token}"},
             json={
-                "source_url": "https://example.com/posts/fullscope-setup-only",
+                "source_url": "https://example.com/posts/fullscope-bridge-ready",
                 "booking_link_id": booking_link_id,
             },
         )
 
-    assert response.status_code == 409
-    assert response.json() == {
-        "detail": "booking link provider not supported for tracked content"
+    assert response.status_code == 201
+    assert response.headers.get("X-Request-Id")
+    payload = response.json()
+    assert payload["booking_link_id"] == booking_link_id
+    assert payload["source_url"] == "https://example.com/posts/fullscope-bridge-ready"
+    assert payload["tracked_url"] == f"{tracked_base_url}/r/{payload['tid']}"
+
+    persisted = _content_row(payload["id"])
+    assert persisted == {
+        "id": payload["id"],
+        "creator_id": inserted["creator_id"],
+        "booking_link_id": booking_link_id,
+        "source_url": "https://example.com/posts/fullscope-bridge-ready",
+        "tid": payload["tid"],
     }
-    assert _content_tids_for_creator(creator_id=inserted["creator_id"]) == []
+    assert _content_tids_for_creator(creator_id=inserted["creator_id"]) == [payload["tid"]]

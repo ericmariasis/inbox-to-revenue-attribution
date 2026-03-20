@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
+from app.models.billing_provider import BILLING_PROVIDER_STRIPE
 from app.models.creator import Creator
 from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
@@ -156,19 +157,43 @@ class InvoicePaymentEventService:
         received_at: datetime | None = None,
         hints: InvoicePaidEventHints | None = None,
     ) -> InvoicePaidHandleResult:
+        return self.handle_provider_invoice_paid_event(
+            payment_provider=BILLING_PROVIDER_STRIPE,
+            provider_event_id=stripe_event_id,
+            provider_event_type=stripe_event_type,
+            provider_account_id=stripe_account_id,
+            provider_invoice_id=stripe_invoice_id,
+            paid_at=paid_at,
+            received_at=received_at,
+            hints=hints,
+        )
+
+    def handle_provider_invoice_paid_event(
+        self,
+        *,
+        payment_provider: str,
+        provider_event_id: str,
+        provider_event_type: str,
+        provider_account_id: str | None,
+        provider_invoice_id: str,
+        paid_at: datetime,
+        received_at: datetime | None = None,
+        hints: InvoicePaidEventHints | None = None,
+    ) -> InvoicePaidHandleResult:
         resolved_received_at = received_at or self._now_fn()
         resolved_hints = hints or InvoicePaidEventHints()
 
         with self._session_factory() as session:
-            existing_payment_event = session.scalar(
-                select(InvoicePaymentEvent).where(
-                    InvoicePaymentEvent.stripe_event_id == stripe_event_id
-                )
+            existing_payment_event = _find_payment_event_by_provider_identity(
+                session=session,
+                payment_provider=payment_provider,
+                provider_event_id=provider_event_id,
             )
             if existing_payment_event is not None:
                 if existing_payment_event.status == "unmatched":
-                    reconciliation = self.reconcile_unmatched_payment_event(
-                        stripe_event_id=stripe_event_id
+                    reconciliation = self.reconcile_provider_unmatched_payment_event(
+                        payment_provider=payment_provider,
+                        provider_event_id=provider_event_id,
                     )
                     if reconciliation.outcome == "reconciled":
                         return InvoicePaidHandleResult(
@@ -202,21 +227,21 @@ class InvoicePaymentEventService:
                     unattributed_reason=existing_payment_event.unattributed_reason,
                 )
 
-            invoice = session.scalar(
-                select(Invoice)
-                .where(
-                    Invoice.stripe_invoice_id == stripe_invoice_id,
-                    Invoice.stripe_account_id == stripe_account_id,
-                )
-                .with_for_update()
+            invoice = _find_invoice_by_provider_identity(
+                session=session,
+                payment_provider=payment_provider,
+                provider_account_id=provider_account_id,
+                provider_invoice_id=provider_invoice_id,
+                with_for_update=True,
             )
             if invoice is None:
                 return self._persist_unmatched_payment_event(
                     session=session,
-                    stripe_event_id=stripe_event_id,
-                    stripe_event_type=stripe_event_type,
-                    stripe_account_id=stripe_account_id,
-                    stripe_invoice_id=stripe_invoice_id,
+                    payment_provider=payment_provider,
+                    provider_event_id=provider_event_id,
+                    provider_event_type=provider_event_type,
+                    provider_account_id=provider_account_id,
+                    provider_invoice_id=provider_invoice_id,
                     paid_at=paid_at,
                     received_at=resolved_received_at,
                     hints=resolved_hints,
@@ -247,10 +272,11 @@ class InvoicePaymentEventService:
             invoice.status = "paid"
             invoice.paid_at = paid_at
             payment_event = InvoicePaymentEvent(
-                stripe_event_id=stripe_event_id,
-                stripe_event_type=stripe_event_type,
-                stripe_account_id=stripe_account_id,
-                stripe_invoice_id=stripe_invoice_id,
+                payment_provider=payment_provider,
+                provider_event_id=provider_event_id,
+                provider_event_type=provider_event_type,
+                provider_account_id=provider_account_id,
+                provider_invoice_id=provider_invoice_id,
                 invoice_id=invoice.id,
                 creator_id=invoice.creator_id,
                 booking_id=invoice.booking_id,
@@ -266,10 +292,10 @@ class InvoicePaymentEventService:
                 session.commit()
             except IntegrityError:
                 session.rollback()
-                persisted_payment_event = session.scalar(
-                    select(InvoicePaymentEvent).where(
-                        InvoicePaymentEvent.stripe_event_id == stripe_event_id
-                    )
+                persisted_payment_event = _find_payment_event_by_provider_identity(
+                    session=session,
+                    payment_provider=payment_provider,
+                    provider_event_id=provider_event_id,
                 )
                 return InvoicePaidHandleResult(
                     outcome="duplicate",
@@ -326,11 +352,23 @@ class InvoicePaymentEventService:
         *,
         stripe_event_id: str,
     ) -> InvoicePaymentReconciliationResult:
+        return self.reconcile_provider_unmatched_payment_event(
+            payment_provider=BILLING_PROVIDER_STRIPE,
+            provider_event_id=stripe_event_id,
+        )
+
+    def reconcile_provider_unmatched_payment_event(
+        self,
+        *,
+        payment_provider: str,
+        provider_event_id: str,
+    ) -> InvoicePaymentReconciliationResult:
         with self._session_factory() as session:
-            payment_event = session.scalar(
-                select(InvoicePaymentEvent)
-                .where(InvoicePaymentEvent.stripe_event_id == stripe_event_id)
-                .with_for_update()
+            payment_event = _find_payment_event_by_provider_identity(
+                session=session,
+                payment_provider=payment_provider,
+                provider_event_id=provider_event_id,
+                with_for_update=True,
             )
             if payment_event is None:
                 return InvoicePaymentReconciliationResult(
@@ -356,7 +394,7 @@ class InvoicePaymentEventService:
                     ),
                 )
 
-            if payment_event.stripe_account_id is None:
+            if payment_event.resolved_provider_account_id is None:
                 return InvoicePaymentReconciliationResult(
                     outcome="pending",
                     reason="missing_stripe_account_id",
@@ -371,13 +409,12 @@ class InvoicePaymentEventService:
                     tid=payment_event.tid,
                 )
 
-            invoice = session.scalar(
-                select(Invoice)
-                .where(
-                    Invoice.stripe_invoice_id == payment_event.stripe_invoice_id,
-                    Invoice.stripe_account_id == payment_event.stripe_account_id,
-                )
-                .with_for_update()
+            invoice = _find_invoice_by_provider_identity(
+                session=session,
+                payment_provider=payment_event.resolved_payment_provider,
+                provider_account_id=payment_event.resolved_provider_account_id,
+                provider_invoice_id=payment_event.resolved_provider_invoice_id,
+                with_for_update=True,
             )
             if invoice is None:
                 return InvoicePaymentReconciliationResult(
@@ -499,20 +536,24 @@ class InvoicePaymentEventService:
         self,
         *,
         session: Session,
-        stripe_event_id: str,
-        stripe_event_type: str,
-        stripe_account_id: str,
-        stripe_invoice_id: str,
+        payment_provider: str,
+        provider_event_id: str,
+        provider_event_type: str,
+        provider_account_id: str | None,
+        provider_invoice_id: str,
         paid_at: datetime,
         received_at: datetime,
         hints: InvoicePaidEventHints,
     ) -> InvoicePaidHandleResult:
-        creator = session.scalar(
-            select(Creator).where(Creator.stripe_account_id == stripe_account_id)
+        creator = _find_creator_by_provider_account(
+            session=session,
+            payment_provider=payment_provider,
+            provider_account_id=provider_account_id,
         )
         booking = _find_booking_for_account(
             session=session,
-            stripe_account_id=stripe_account_id,
+            payment_provider=payment_provider,
+            provider_account_id=provider_account_id,
             booking_uuid=hints.booking_uuid,
         )
         unattributed_reason = _resolve_unattributed_reason(
@@ -520,10 +561,11 @@ class InvoicePaymentEventService:
             hints=hints,
         )
         payment_event = InvoicePaymentEvent(
-            stripe_event_id=stripe_event_id,
-            stripe_event_type=stripe_event_type,
-            stripe_account_id=stripe_account_id,
-            stripe_invoice_id=stripe_invoice_id,
+            payment_provider=payment_provider,
+            provider_event_id=provider_event_id,
+            provider_event_type=provider_event_type,
+            provider_account_id=provider_account_id,
+            provider_invoice_id=provider_invoice_id,
             invoice_id=None,
             creator_id=booking.creator_id if booking is not None else (creator.id if creator is not None else None),
             booking_id=booking.id if booking is not None else None,
@@ -540,10 +582,10 @@ class InvoicePaymentEventService:
             session.commit()
         except IntegrityError:
             session.rollback()
-            persisted_payment_event = session.scalar(
-                select(InvoicePaymentEvent).where(
-                    InvoicePaymentEvent.stripe_event_id == stripe_event_id
-                )
+            persisted_payment_event = _find_payment_event_by_provider_identity(
+                session=session,
+                payment_provider=payment_provider,
+                provider_event_id=provider_event_id,
             )
             return InvoicePaidHandleResult(
                 outcome="duplicate",
@@ -656,21 +698,117 @@ def list_current_unmatched_payment_events(
     ]
 
 
+def _find_payment_event_by_provider_identity(
+    *,
+    session: Session,
+    payment_provider: str,
+    provider_event_id: str,
+    with_for_update: bool = False,
+) -> InvoicePaymentEvent | None:
+    query = select(InvoicePaymentEvent).where(
+        InvoicePaymentEvent.payment_provider == payment_provider,
+        InvoicePaymentEvent.provider_event_id == provider_event_id,
+    )
+    if with_for_update:
+        query = query.with_for_update()
+
+    payment_event = session.scalar(query)
+    if payment_event is not None or payment_provider != BILLING_PROVIDER_STRIPE:
+        return payment_event
+
+    legacy_query = select(InvoicePaymentEvent).where(
+        InvoicePaymentEvent.stripe_event_id == provider_event_id
+    )
+    if with_for_update:
+        legacy_query = legacy_query.with_for_update()
+    return session.scalar(legacy_query)
+
+
+def _find_invoice_by_provider_identity(
+    *,
+    session: Session,
+    payment_provider: str,
+    provider_account_id: str | None,
+    provider_invoice_id: str | None,
+    with_for_update: bool = False,
+) -> Invoice | None:
+    if provider_invoice_id is None:
+        return None
+
+    query = select(Invoice).where(
+        Invoice.payment_provider == payment_provider,
+        Invoice.provider_invoice_id == provider_invoice_id,
+    )
+    if provider_account_id is None:
+        query = query.where(Invoice.provider_account_id.is_(None))
+    else:
+        query = query.where(Invoice.provider_account_id == provider_account_id)
+    if with_for_update:
+        query = query.with_for_update()
+
+    invoice = session.scalar(query)
+    if invoice is not None or payment_provider != BILLING_PROVIDER_STRIPE:
+        return invoice
+
+    legacy_query = select(Invoice).where(Invoice.stripe_invoice_id == provider_invoice_id)
+    if provider_account_id is None:
+        legacy_query = legacy_query.where(Invoice.stripe_account_id.is_(None))
+    else:
+        legacy_query = legacy_query.where(Invoice.stripe_account_id == provider_account_id)
+    if with_for_update:
+        legacy_query = legacy_query.with_for_update()
+    return session.scalar(legacy_query)
+
+
+def _find_creator_by_provider_account(
+    *,
+    session: Session,
+    payment_provider: str,
+    provider_account_id: str | None,
+) -> Creator | None:
+    if provider_account_id is None:
+        return None
+
+    creator = session.scalar(
+        select(Creator).where(
+            Creator.billing_provider == payment_provider,
+            Creator.billing_account_id == provider_account_id,
+        )
+    )
+    if creator is not None or payment_provider != BILLING_PROVIDER_STRIPE:
+        return creator
+
+    return session.scalar(select(Creator).where(Creator.stripe_account_id == provider_account_id))
+
+
 def _find_booking_for_account(
     *,
     session: Session,
-    stripe_account_id: str,
+    payment_provider: str,
+    provider_account_id: str | None,
     booking_uuid: str | None,
 ) -> Booking | None:
-    if booking_uuid is None:
+    if booking_uuid is None or provider_account_id is None:
         return None
+
+    booking = session.scalar(
+        select(Booking)
+        .join(Creator, Creator.id == Booking.creator_id)
+        .where(
+            Booking.calendly_booking_uuid == booking_uuid,
+            Creator.billing_provider == payment_provider,
+            Creator.billing_account_id == provider_account_id,
+        )
+    )
+    if booking is not None or payment_provider != BILLING_PROVIDER_STRIPE:
+        return booking
 
     return session.scalar(
         select(Booking)
         .join(Creator, Creator.id == Booking.creator_id)
         .where(
             Booking.calendly_booking_uuid == booking_uuid,
-            Creator.stripe_account_id == stripe_account_id,
+            Creator.stripe_account_id == provider_account_id,
         )
     )
 

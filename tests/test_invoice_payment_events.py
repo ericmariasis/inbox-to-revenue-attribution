@@ -175,6 +175,121 @@ def test_reconcile_unmatched_payment_event_links_invoice_and_is_idempotent():
     assert invoice.status == "paid"
     assert invoice.paid_at == paid_at
     assert payment_event is not None
+    assert payment_event.payment_provider == "stripe"
+    assert payment_event.provider_event_id == "evt_story49_reconcile"
+    assert payment_event.provider_event_type == "invoice.paid"
+    assert payment_event.provider_account_id == "acct_story49_reconcile"
+    assert payment_event.provider_invoice_id == "in_story49_reconcile"
+    assert payment_event.invoice_id == invoice_id
+    assert payment_event.creator_id == creator_id
+    assert payment_event.booking_id == booking_id
+    assert payment_event.tid == tid
+    assert payment_event.status == "reconciled"
+    assert payment_event.unattributed_reason is None
+    assert payment_event.processed_at is not None
+
+
+def test_provider_neutral_service_reconciles_unmatched_event_without_legacy_stripe_identity():
+    engine = _engine()
+    service = InvoicePaymentEventService(session_factory=lambda: Session(engine))
+    paid_at = datetime(2026, 3, 8, 23, 40, tzinfo=timezone.utc)
+
+    with Session(engine) as session:
+        creator = Creator(
+            name="PP-3 Neutral Event Creator",
+            billing_provider="paypal",
+            billing_connect_status="connected",
+            billing_account_id="merchant_pp3_service",
+        )
+        session.add(creator)
+        session.flush()
+        content, booking = _create_booking_chain(session, creator=creator, suffix="pp3_paypal")
+        creator_id = creator.id
+        booking_id = booking.id
+        booking_uuid = booking.calendly_booking_uuid
+        tid = content.tid
+        session.commit()
+
+    first_result = service.handle_provider_invoice_paid_event(
+        payment_provider="paypal",
+        provider_event_id="WH-PP3-SERVICE",
+        provider_event_type="INVOICING.INVOICE.PAID",
+        provider_account_id="merchant_pp3_service",
+        provider_invoice_id="INV-PP3-SERVICE",
+        paid_at=paid_at,
+        received_at=datetime(2026, 3, 8, 23, 41, tzinfo=timezone.utc),
+        hints=InvoicePaidEventHints(
+            booking_uuid=booking_uuid,
+            tid=tid,
+        ),
+    )
+
+    assert first_result.outcome == "unmatched"
+    assert first_result.creator_id == creator_id
+    assert first_result.booking_id == booking_id
+    assert first_result.tid == tid
+    assert first_result.unattributed_reason == UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID
+
+    with Session(engine) as session:
+        creator = session.get(Creator, creator_id)
+        booking = session.get(Booking, booking_id)
+        assert creator is not None
+        assert booking is not None
+        invoice = Invoice(
+            creator_id=creator.id,
+            booking_id=booking.id,
+            tid=tid,
+            payment_provider="paypal",
+            provider_account_id="merchant_pp3_service",
+            provider_invoice_id="INV-PP3-SERVICE",
+            amount_cents=20500,
+            currency="USD",
+            status="open",
+            issued_at=datetime(2026, 3, 8, 23, 42, tzinfo=timezone.utc),
+        )
+        session.add(invoice)
+        session.flush()
+        invoice_id = invoice.id
+        session.commit()
+
+    reconciliation = service.reconcile_provider_unmatched_payment_event(
+        payment_provider="paypal",
+        provider_event_id="WH-PP3-SERVICE",
+    )
+    second_reconciliation = service.reconcile_provider_unmatched_payment_event(
+        payment_provider="paypal",
+        provider_event_id="WH-PP3-SERVICE",
+    )
+
+    with Session(engine) as session:
+        invoice = session.get(Invoice, invoice_id)
+        payment_event = session.scalar(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.payment_provider == "paypal",
+                InvoicePaymentEvent.provider_event_id == "WH-PP3-SERVICE",
+            )
+        )
+
+    assert reconciliation.outcome == "reconciled"
+    assert reconciliation.invoice_id == invoice_id
+    assert reconciliation.creator_id == creator_id
+    assert reconciliation.booking_id == booking_id
+    assert reconciliation.booking_uuid == booking_uuid
+    assert reconciliation.tid == tid
+    assert second_reconciliation.outcome == "already_reconciled"
+    assert invoice is not None
+    assert invoice.status == "paid"
+    assert invoice.paid_at == paid_at
+    assert payment_event is not None
+    assert payment_event.payment_provider == "paypal"
+    assert payment_event.provider_event_id == "WH-PP3-SERVICE"
+    assert payment_event.provider_event_type == "INVOICING.INVOICE.PAID"
+    assert payment_event.provider_account_id == "merchant_pp3_service"
+    assert payment_event.provider_invoice_id == "INV-PP3-SERVICE"
+    assert payment_event.stripe_event_id is None
+    assert payment_event.stripe_event_type is None
+    assert payment_event.stripe_account_id is None
+    assert payment_event.stripe_invoice_id is None
     assert payment_event.invoice_id == invoice_id
     assert payment_event.creator_id == creator_id
     assert payment_event.booking_id == booking_id

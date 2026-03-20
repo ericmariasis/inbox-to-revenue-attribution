@@ -33,6 +33,7 @@ class Creator(Base):
     )
     billing_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     billing_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    billing_provider_correlation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     stripe_connect_status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,

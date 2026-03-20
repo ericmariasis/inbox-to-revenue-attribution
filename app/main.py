@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.middleware.request_id import RequestIDMiddleware
 from app.services.click_events import DEFAULT_CLICK_EVENT_PUBLISHER
+from app.services.billing_provider import build_billing_provider_registry
 from app.services.calendly_webhooks import build_default_calendly_webhook_router
 from app.services.content_fetch import build_default_content_fetch_provider
 from app.services.email_provider import build_default_email_provider
@@ -47,14 +48,22 @@ async def lifespan(app: FastAPI):
         app.state.stripe_provider = build_default_stripe_provider(settings=app.state.settings)
     if not hasattr(app.state, "paypal_provider"):
         app.state.paypal_provider = build_default_paypal_provider(settings=app.state.settings)
+    app.state.billing_providers = build_billing_provider_registry(
+        providers=[
+            app.state.stripe_provider,
+            app.state.paypal_provider,
+        ]
+    )
     if not hasattr(app.state, "stripe_webhook_router"):
         app.state.stripe_webhook_router = DEFAULT_STRIPE_WEBHOOK_ROUTER
     if not hasattr(app.state, "calendly_webhook_router"):
         app.state.calendly_webhook_router = build_default_calendly_webhook_router(
-            provider=app.state.stripe_provider
+            providers=app.state.billing_providers
         )
     if not hasattr(app.state, "fullscope_webhook_router"):
-        app.state.fullscope_webhook_router = build_default_fullscope_webhook_router()
+        app.state.fullscope_webhook_router = build_default_fullscope_webhook_router(
+            providers=app.state.billing_providers
+        )
     yield
 
 

@@ -26,6 +26,8 @@ from app.services.billing import (
     BillingInvoiceVoidResult,
     BillingOrchestrator,
 )
+from app.services.billing_provider import build_billing_provider_registry
+from app.services.paypal_provider import build_default_paypal_provider
 from app.services.stripe_provider import build_default_stripe_provider
 
 
@@ -537,12 +539,29 @@ DEFAULT_CALENDLY_WEBHOOK_ROUTER = DefaultCalendlyWebhookRouter()
 def build_default_calendly_webhook_router(
     *,
     provider: BillingProvider | None = None,
+    providers: dict[str, BillingProvider] | None = None,
     session_factory: Callable[[], Session] = SessionLocal,
 ) -> DefaultCalendlyWebhookRouter:
-    billing_service = BillingOrchestrator(
-        session_factory=session_factory,
-        provider=provider or build_default_stripe_provider(),
-    )
+    if providers is not None:
+        billing_service = BillingOrchestrator(
+            session_factory=session_factory,
+            providers=providers,
+        )
+    elif provider is not None:
+        billing_service = BillingOrchestrator(
+            session_factory=session_factory,
+            provider=provider,
+        )
+    else:
+        billing_service = BillingOrchestrator(
+            session_factory=session_factory,
+            providers=build_billing_provider_registry(
+                providers=[
+                    build_default_stripe_provider(),
+                    build_default_paypal_provider(),
+                ]
+            ),
+        )
     return DefaultCalendlyWebhookRouter(
         booking_created_handler=BookingCreatedCalendlyWebhookHandler(
             session_factory=session_factory,

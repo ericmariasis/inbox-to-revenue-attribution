@@ -15,7 +15,10 @@ from app.models.invoice import Invoice
 from app.services.billing_provider import (
     BillingProvider,
     BillingProviderError,
+    BillingProviderRegistry,
+    BillingProviderResolutionError,
     create_billing_invoice,
+    resolve_billing_provider,
     resolve_billing_provider_name,
     stop_billing_invoice,
 )
@@ -84,11 +87,15 @@ class BillingOrchestrator:
         self,
         *,
         session_factory: Callable[[], Session],
-        provider: BillingProvider,
+        provider: BillingProvider | None = None,
+        providers: BillingProviderRegistry | None = None,
         now_fn: Callable[[], datetime] | None = None,
     ):
+        if provider is None and providers is None:
+            raise TypeError("provider or providers is required")
         self._session_factory = session_factory
         self._provider = provider
+        self._providers = providers
         self._now_fn = now_fn or _utc_now
 
     def create_invoice_for_booking(
@@ -173,15 +180,29 @@ class BillingOrchestrator:
                 return BillingInvoiceResult(outcome="deferred", reason="booking_not_active")
 
             creator = booking.creator
-            provider_name = resolve_billing_provider_name(provider=self._provider)
+            try:
+                provider = self._provider_for_creator(creator=creator)
+            except BillingProviderResolutionError:
+                logger.warning(
+                    "billing_invoice_create_deferred_provider_missing booking_id=%s creator_id=%s billing_provider=%s",
+                    booking.id,
+                    creator.id,
+                    creator.resolved_billing_provider,
+                )
+                return BillingInvoiceResult(
+                    outcome="deferred",
+                    reason="provider_error",
+                )
+
+            provider_name = resolve_billing_provider_name(provider=provider)
             provider_account_id = _resolve_creator_provider_account_id(
                 creator=creator,
-                provider=self._provider,
+                provider=provider,
             )
             try:
                 creator_is_billable = creator_can_create_invoices(
                     creator=creator,
-                    provider=self._provider,
+                    provider=provider,
                 )
             except BillingProviderError as exc:
                 record_blocked_billing_case(
@@ -257,7 +278,7 @@ class BillingOrchestrator:
 
             try:
                 created_invoice = create_billing_invoice(
-                    provider=self._provider,
+                    provider=provider,
                     provider_account_id=provider_account_id,
                     amount_cents=amount_cents,
                     currency=currency.upper(),
@@ -413,8 +434,23 @@ class BillingOrchestrator:
                 )
 
             try:
+                provider = self._provider_for_invoice(invoice=invoice)
+            except BillingProviderResolutionError:
+                logger.warning(
+                    "billing_invoice_void_noop_provider_missing booking_id=%s invoice_id=%s payment_provider=%s",
+                    booking_id,
+                    invoice.id,
+                    invoice.resolved_payment_provider,
+                )
+                return _billing_invoice_void_result(
+                    invoice,
+                    outcome="noop",
+                    reason="provider_error",
+                )
+
+            try:
                 stopped_invoice = stop_billing_invoice(
-                    provider=self._provider,
+                    provider=provider,
                     provider_account_id=provider_account_id,
                     provider_invoice_id=provider_invoice_id,
                 )
@@ -447,6 +483,24 @@ class BillingOrchestrator:
                 invoice.voided_at.isoformat(),
             )
             return _billing_invoice_void_result(invoice, outcome="voided")
+
+    def _provider_for_creator(self, *, creator) -> BillingProvider:
+        if self._providers is not None:
+            return resolve_billing_provider(
+                providers=self._providers,
+                provider_name=creator.resolved_billing_provider,
+            )
+        assert self._provider is not None
+        return self._provider
+
+    def _provider_for_invoice(self, *, invoice: Invoice) -> BillingProvider:
+        if self._providers is not None:
+            return resolve_billing_provider(
+                providers=self._providers,
+                provider_name=invoice.resolved_payment_provider,
+            )
+        assert self._provider is not None
+        return self._provider
 
 
 def _utc_now() -> datetime:

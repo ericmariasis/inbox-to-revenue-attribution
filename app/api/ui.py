@@ -56,6 +56,7 @@ from app.schemas.content import (
     ContentTopicReviewResponse,
 )
 from app.services.auth_magic_link import start_magic_link
+from app.services.billing_provider import build_billing_provider_registry
 from app.services.blocked_billing import (
     BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
     BLOCKED_BILLING_REASON_PROVIDER_ERROR,
@@ -112,6 +113,7 @@ from app.services.next_content_experiments import (
     get_current_creator_next_content_experiments_unsupported_explanation,
     get_latest_creator_next_content_experiments_run,
 )
+from app.services.paypal_provider import build_default_paypal_provider
 from app.services.rate_limit import (
     DEFAULT_SHARED_RATE_LIMITER,
     SUPPORT_REQUEST_SUBMIT_POLICY,
@@ -1208,7 +1210,7 @@ def creator_attention_retry_blocked_billing_case(
 
     retry_service = BlockedBillingRetryService(
         session_factory=SessionLocal,
-        provider=_ui_stripe_provider(request),
+        providers=_ui_billing_providers(request),
     )
     retry_result = retry_service.retry_case(
         case_id=case_id,
@@ -1359,6 +1361,20 @@ def _html_response(content: str) -> HTMLResponse:
 
 def _ui_stripe_provider(request: Request):
     return getattr(request.app.state, "stripe_provider", build_default_stripe_provider())
+
+
+def _ui_billing_providers(request: Request):
+    settings = getattr(request.app.state, "settings", get_settings())
+    return build_billing_provider_registry(
+        providers=[
+            _ui_stripe_provider(request),
+            getattr(
+                request.app.state,
+                "paypal_provider",
+                build_default_paypal_provider(settings=settings),
+            ),
+        ]
+    )
 
 
 def _empty_booking_link_form_values() -> dict[str, str]:

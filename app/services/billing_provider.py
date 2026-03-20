@@ -1,6 +1,8 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.models.billing_provider import DEFAULT_BILLING_PROVIDER
 from app.models.billing_provider import BILLING_PROVIDER_STRIPE
 
 
@@ -21,6 +23,12 @@ class BillingProviderError(ValueError):
         self.http_status = http_status
         self.error_code = error_code
         self.error_type = error_type
+
+
+class BillingProviderResolutionError(LookupError):
+    def __init__(self, *, provider_name: str):
+        super().__init__(f"billing provider {provider_name!r} is not configured")
+        self.provider_name = provider_name
 
 
 @dataclass(frozen=True)
@@ -69,6 +77,9 @@ class BillingProvider(Protocol):
     ) -> BillingProviderInvoiceStopResult: ...
 
 
+BillingProviderRegistry = Mapping[str, BillingProvider]
+
+
 def resolve_billing_provider_name(*, provider: object) -> str:
     provider_name = getattr(provider, "billing_provider_name", None)
     if isinstance(provider_name, str) and provider_name:
@@ -76,6 +87,25 @@ def resolve_billing_provider_name(*, provider: object) -> str:
     # Transitional fallback while older Stripe-oriented test doubles still use the
     # pre-PP-4 method names and do not expose an explicit provider name.
     return BILLING_PROVIDER_STRIPE
+
+
+def build_billing_provider_registry(*, providers: list[BillingProvider]) -> dict[str, BillingProvider]:
+    registry: dict[str, BillingProvider] = {}
+    for provider in providers:
+        registry[resolve_billing_provider_name(provider=provider)] = provider
+    return registry
+
+
+def resolve_billing_provider(
+    *,
+    providers: BillingProviderRegistry,
+    provider_name: str | None,
+) -> BillingProvider:
+    resolved_provider_name = provider_name or DEFAULT_BILLING_PROVIDER
+    provider = providers.get(resolved_provider_name)
+    if provider is None:
+        raise BillingProviderResolutionError(provider_name=resolved_provider_name)
+    return provider
 
 
 def get_billing_account_readiness(

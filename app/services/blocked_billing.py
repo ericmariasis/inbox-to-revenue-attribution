@@ -11,7 +11,7 @@ from app.models.billing_provider import BILLING_PROVIDER_STRIPE
 from app.models.blocked_billing_case import BlockedBillingCase
 from app.models.booking import Booking
 from app.models.invoice import Invoice
-from app.services.billing_provider import BillingProvider
+from app.services.billing_provider import BillingProvider, BillingProviderRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -88,11 +88,15 @@ class BlockedBillingRetryService:
         self,
         *,
         session_factory: Callable[[], Session],
-        provider: BillingProvider,
+        provider: BillingProvider | None = None,
+        providers: BillingProviderRegistry | None = None,
         now_fn: Callable[[], datetime] | None = None,
     ):
+        if provider is None and providers is None:
+            raise TypeError("provider or providers is required")
         self._session_factory = session_factory
         self._provider = provider
+        self._providers = providers
         self._now_fn = now_fn or _utc_now
 
     def retry_case(
@@ -165,6 +169,7 @@ class BlockedBillingRetryService:
         orchestrator = BillingOrchestrator(
             session_factory=self._session_factory,
             provider=self._provider,
+            providers=self._providers,
             now_fn=self._now_fn,
         )
         result = orchestrator.create_invoice_for_booking(booking_id=booking_id)

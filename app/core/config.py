@@ -189,6 +189,7 @@ class Settings(BaseSettings):
     paypal_partner_attribution_id: str = ""
     paypal_sandbox_api_base_url: str = DEFAULT_PAYPAL_SANDBOX_API_BASE_URL
     paypal_connect_redirect_uri: str = DEFAULT_PAYPAL_CONNECT_REDIRECT_URI
+    paypal_sandbox_webhook_id: str = ""
     stripe_webhook_tolerance_seconds: int = 300
     calendly_webhook_signing_key: str = DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY
     calendly_webhook_tolerance_seconds: int = 300

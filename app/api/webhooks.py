@@ -16,6 +16,14 @@ from app.services.fullscope_webhooks import (
     FullScopeWebhookVerificationError,
     verify_and_parse_fullscope_webhook,
 )
+from app.services.paypal_provider import PayPalProvider, build_default_paypal_provider
+from app.services.paypal_webhooks import (
+    DEFAULT_PAYPAL_WEBHOOK_ROUTER,
+    PayPalWebhookPayloadError,
+    PayPalWebhookRouter,
+    PayPalWebhookVerificationError,
+    verify_and_parse_paypal_webhook,
+)
 from app.services.stripe_webhooks import (
     DEFAULT_STRIPE_WEBHOOK_ROUTER,
     StripeWebhookPayloadError,
@@ -30,6 +38,8 @@ INVALID_CALENDLY_WEBHOOK_SIGNATURE_DETAIL = "invalid calendly webhook signature"
 INVALID_CALENDLY_WEBHOOK_PAYLOAD_DETAIL = "invalid calendly webhook payload"
 INVALID_FULLSCOPE_WEBHOOK_SIGNATURE_DETAIL = "invalid fullscope webhook authorization"
 INVALID_FULLSCOPE_WEBHOOK_PAYLOAD_DETAIL = "invalid fullscope webhook payload"
+INVALID_PAYPAL_WEBHOOK_SIGNATURE_DETAIL = "invalid paypal webhook verification"
+INVALID_PAYPAL_WEBHOOK_PAYLOAD_DETAIL = "invalid paypal webhook payload"
 INVALID_STRIPE_WEBHOOK_SIGNATURE_DETAIL = "invalid stripe webhook signature"
 INVALID_STRIPE_WEBHOOK_PAYLOAD_DETAIL = "invalid stripe webhook payload"
 
@@ -48,6 +58,17 @@ def _calendly_webhook_router(request: Request) -> CalendlyWebhookRouter:
 
 def _fullscope_webhook_router(request: Request) -> FullScopeWebhookRouter:
     return getattr(request.app.state, "fullscope_webhook_router", DEFAULT_FULLSCOPE_WEBHOOK_ROUTER)
+
+
+def _paypal_provider(request: Request) -> PayPalProvider:
+    provider = getattr(request.app.state, "paypal_provider", None)
+    if provider is not None:
+        return provider
+    return build_default_paypal_provider(settings=_settings(request))
+
+
+def _paypal_webhook_router(request: Request) -> PayPalWebhookRouter:
+    return getattr(request.app.state, "paypal_webhook_router", DEFAULT_PAYPAL_WEBHOOK_ROUTER)
 
 
 @router.post("/calendly", response_model=GenericOkResponse)
@@ -120,6 +141,33 @@ async def fullscope_webhook(
             fullscope_router.process_event,
             record_id=journal_result.record_id,
         )
+    return GenericOkResponse()
+
+
+@router.post("/paypal", response_model=GenericOkResponse)
+async def paypal_webhook(request: Request) -> GenericOkResponse:
+    payload = await request.body()
+    settings = _settings(request)
+
+    try:
+        event = verify_and_parse_paypal_webhook(
+            payload=payload,
+            headers=request.headers,
+            provider=_paypal_provider(request),
+            webhook_id=settings.paypal_sandbox_webhook_id,
+        )
+    except PayPalWebhookVerificationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INVALID_PAYPAL_WEBHOOK_SIGNATURE_DETAIL,
+        ) from exc
+    except PayPalWebhookPayloadError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INVALID_PAYPAL_WEBHOOK_PAYLOAD_DETAIL,
+        ) from exc
+
+    _paypal_webhook_router(request).handle_event(event=event)
     return GenericOkResponse()
 
 

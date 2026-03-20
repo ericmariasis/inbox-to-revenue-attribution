@@ -14,6 +14,7 @@ from app.services.invoice_payment_events import (
     InvoicePaidEventHints,
     InvoicePaymentEventService,
     UNATTRIBUTED_REASON_MISSING_TID,
+    UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID,
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
 )
 
@@ -297,6 +298,39 @@ def test_provider_neutral_service_reconciles_unmatched_event_without_legacy_stri
     assert payment_event.status == "reconciled"
     assert payment_event.unattributed_reason is None
     assert payment_event.processed_at is not None
+
+
+def test_provider_neutral_service_persists_explicit_unmatched_reason_override():
+    engine = _engine()
+    service = InvoicePaymentEventService(session_factory=lambda: Session(engine))
+    paid_at = datetime(2026, 3, 8, 23, 45, tzinfo=timezone.utc)
+
+    result = service.handle_provider_invoice_paid_event(
+        payment_provider="paypal",
+        provider_event_id="WH-PP8-UNMATCHED",
+        provider_event_type="INVOICING.INVOICE.PAID",
+        provider_account_id=None,
+        provider_invoice_id="INV-PP8-UNMATCHED",
+        paid_at=paid_at,
+        received_at=datetime(2026, 3, 8, 23, 46, tzinfo=timezone.utc),
+        unmatched_reason_override=UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID,
+    )
+
+    with Session(engine) as session:
+        payment_event = session.scalar(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.payment_provider == "paypal",
+                InvoicePaymentEvent.provider_event_id == "WH-PP8-UNMATCHED",
+            )
+        )
+
+    assert result.outcome == "unmatched"
+    assert result.unattributed_reason == UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID
+    assert payment_event is not None
+    assert payment_event.status == "unmatched"
+    assert payment_event.unattributed_reason == UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID
+    assert payment_event.provider_account_id is None
+    assert payment_event.provider_invoice_id == "INV-PP8-UNMATCHED"
 
 
 def test_summarize_paid_revenue_groups_by_tid_and_unattributed_reasons():

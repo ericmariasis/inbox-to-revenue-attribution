@@ -140,12 +140,17 @@ def test_stripe_connect_callback_persists_connected_fields_and_me_reflects_them(
     with _engine().connect() as conn:
         creator_row = conn.execute(
             text(
-                "SELECT stripe_connect_status, stripe_account_id, stripe_connected_at "
+                "SELECT billing_provider, billing_connect_status, billing_account_id, billing_connected_at, "
+                "stripe_connect_status, stripe_account_id, stripe_connected_at "
                 "FROM creators WHERE id = :creator_id"
             ),
             {"creator_id": inserted["creator_id"]},
         ).mappings().one()
 
+    assert creator_row["billing_provider"] == "stripe"
+    assert creator_row["billing_connect_status"] == "connected"
+    assert creator_row["billing_account_id"] == provider.account_id
+    assert creator_row["billing_connected_at"] is not None
     assert creator_row["stripe_connect_status"] == "connected"
     assert creator_row["stripe_account_id"] == provider.account_id
     assert creator_row["stripe_connected_at"] is not None
@@ -153,9 +158,16 @@ def test_stripe_connect_callback_persists_connected_fields_and_me_reflects_them(
     assert me_response.status_code == 200
     payload = me_response.json()
     assert payload["id"] == inserted["creator_id"]
+    assert payload["billing_provider"] == "stripe"
+    assert payload["billing_connect_status"] == "connected"
+    assert payload["billing_account_id"] == provider.account_id
+    assert payload["billing_connected_at"] is not None
     assert payload["stripe_connect_status"] == "connected"
     assert payload["stripe_account_id"] == provider.account_id
     assert payload["stripe_connected_at"] is not None
+    assert datetime.fromisoformat(payload["billing_connected_at"]).astimezone(timezone.utc) == creator_row[
+        "billing_connected_at"
+    ].astimezone(timezone.utc)
     assert datetime.fromisoformat(payload["stripe_connected_at"]).astimezone(timezone.utc) == creator_row[
         "stripe_connected_at"
     ].astimezone(timezone.utc)
@@ -193,17 +205,26 @@ def test_stripe_connect_callback_rejects_invalid_state_without_mutating_creator(
     with _engine().connect() as conn:
         creator_row = conn.execute(
             text(
-                "SELECT stripe_connect_status, stripe_account_id, stripe_connected_at "
+                "SELECT billing_provider, billing_connect_status, billing_account_id, billing_connected_at, "
+                "stripe_connect_status, stripe_account_id, stripe_connected_at "
                 "FROM creators WHERE id = :creator_id"
             ),
             {"creator_id": inserted["creator_id"]},
         ).mappings().one()
 
+    assert creator_row["billing_provider"] == "stripe"
+    assert creator_row["billing_connect_status"] == "pending"
+    assert creator_row["billing_account_id"] is None
+    assert creator_row["billing_connected_at"] is None
     assert creator_row["stripe_connect_status"] == "pending"
     assert creator_row["stripe_account_id"] is None
     assert creator_row["stripe_connected_at"] is None
 
     assert me_response.status_code == 200
+    assert me_response.json()["billing_provider"] == "stripe"
+    assert me_response.json()["billing_connect_status"] == "pending"
+    assert me_response.json()["billing_account_id"] is None
+    assert me_response.json()["billing_connected_at"] is None
     assert me_response.json()["stripe_connect_status"] == "pending"
     assert me_response.json()["stripe_account_id"] is None
     assert me_response.json()["stripe_connected_at"] is None
@@ -241,17 +262,26 @@ def test_stripe_connect_callback_returns_generic_error_when_provider_exchange_fa
     with _engine().connect() as conn:
         creator_row = conn.execute(
             text(
-                "SELECT stripe_connect_status, stripe_account_id, stripe_connected_at "
+                "SELECT billing_provider, billing_connect_status, billing_account_id, billing_connected_at, "
+                "stripe_connect_status, stripe_account_id, stripe_connected_at "
                 "FROM creators WHERE id = :creator_id"
             ),
             {"creator_id": inserted["creator_id"]},
         ).mappings().one()
 
+    assert creator_row["billing_provider"] == "stripe"
+    assert creator_row["billing_connect_status"] == "pending"
+    assert creator_row["billing_account_id"] is None
+    assert creator_row["billing_connected_at"] is None
     assert creator_row["stripe_connect_status"] == "pending"
     assert creator_row["stripe_account_id"] is None
     assert creator_row["stripe_connected_at"] is None
 
     assert me_response.status_code == 200
+    assert me_response.json()["billing_provider"] == "stripe"
+    assert me_response.json()["billing_connect_status"] == "pending"
+    assert me_response.json()["billing_account_id"] is None
+    assert me_response.json()["billing_connected_at"] is None
     assert me_response.json()["stripe_connect_status"] == "pending"
     assert me_response.json()["stripe_account_id"] is None
     assert me_response.json()["stripe_connected_at"] is None

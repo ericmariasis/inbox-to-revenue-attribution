@@ -1,15 +1,20 @@
 from datetime import datetime, timezone
 
+from app.services.billing_provider import BillingAccountReadiness
 from app.models.billing_provider import BILLING_PROVIDER_PAYPAL, BILLING_PROVIDER_STRIPE
 from app.models.creator import Creator
 from app.services.stripe_account_readiness import (
+    creator_can_create_invoices,
     creator_has_billable_stripe_account,
+    get_creator_billing_account_readiness,
     get_creator_stripe_account_readiness,
 )
 from app.services.stripe_provider import StripeAccountReadiness
 
 
 class _StubStripeProvider:
+    billing_provider_name = BILLING_PROVIDER_STRIPE
+
     def __init__(self, *, readiness: StripeAccountReadiness):
         self.readiness = readiness
         self.readiness_calls: list[str] = []
@@ -23,6 +28,34 @@ class _StubStripeProvider:
     def get_account_readiness(self, *, stripe_account_id: str) -> StripeAccountReadiness:
         self.readiness_calls.append(stripe_account_id)
         return self.readiness
+
+
+def test_get_creator_billing_account_readiness_returns_none_without_stored_account_id():
+    creator = Creator(name="PP4 Pending Creator", stripe_connect_status="pending")
+    provider = _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=True))
+
+    readiness = get_creator_billing_account_readiness(creator=creator, provider=provider)
+
+    assert readiness is None
+    assert creator_can_create_invoices(creator=creator, provider=provider) is False
+    assert provider.readiness_calls == []
+
+
+def test_get_creator_billing_account_readiness_uses_active_billing_identity_fields():
+    creator = Creator(
+        name="PP4 Stripe Billing Identity Creator",
+        billing_provider=BILLING_PROVIDER_STRIPE,
+        billing_connect_status="connected",
+        billing_account_id="acct_pp4_lookup",
+    )
+    provider = _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=True))
+
+    readiness = get_creator_billing_account_readiness(creator=creator, provider=provider)
+
+    assert readiness == BillingAccountReadiness(can_create_invoices=True)
+    assert provider.readiness_calls == ["acct_pp4_lookup"]
+    assert creator_can_create_invoices(creator=creator, provider=provider) is True
+    assert provider.readiness_calls == ["acct_pp4_lookup", "acct_pp4_lookup"]
 
 
 def test_get_creator_stripe_account_readiness_returns_none_without_stored_account_id():

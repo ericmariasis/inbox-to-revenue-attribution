@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from app.services.billing_provider import BillingAccountReadiness
 from app.services.stripe_provider import (
     StripeApiRequestError,
     StripeOAuthProvider,
@@ -146,6 +147,18 @@ def test_get_account_readiness_reads_charges_enabled_from_stripe_account():
     ]
 
 
+def test_get_billing_account_readiness_maps_charges_enabled_to_can_create_invoices():
+    transport = _StubStripeTransport(
+        responses=[{"id": "acct_story57_ready", "charges_enabled": True}]
+    )
+    provider = _provider(transport=transport)
+
+    readiness = provider.get_billing_account_readiness(provider_account_id="acct_story57_ready")
+
+    assert readiness == BillingAccountReadiness(can_create_invoices=True)
+    assert provider.billing_provider_name == "stripe"
+
+
 def test_create_invoice_creates_customer_invoice_item_invoice_and_finalizes():
     transport = _StubStripeTransport(
         responses=[
@@ -235,6 +248,37 @@ def test_create_invoice_creates_customer_invoice_item_invoice_and_finalizes():
             idempotency_key="billing:create:BOOK_story57:finalize",
         ),
     ]
+
+
+def test_create_billing_invoice_returns_provider_neutral_invoice_identity():
+    transport = _StubStripeTransport(
+        responses=[
+            {"id": "cus_story57"},
+            {"id": "ii_story57"},
+            {"id": "in_story57"},
+            {"id": "in_story57", "status": "open"},
+        ]
+    )
+    provider = _provider(
+        transport=transport,
+        booking_email="story57-booked@example.com",
+    )
+
+    result = provider.create_billing_invoice(
+        provider_account_id="acct_story57_billable",
+        amount_cents=19500,
+        currency="USD",
+        metadata={
+            "creator_id": "creator_story57",
+            "booking_uuid": "BOOK_story57",
+            "tid": "story57_tid",
+        },
+        idempotency_key="billing:create:BOOK_story57",
+    )
+
+    assert result.provider_account_id == "acct_story57_billable"
+    assert result.provider_invoice_id == "in_story57"
+    assert result.invoice_status == "open"
 
 
 def test_create_invoice_accepts_paid_status_when_stripe_finalizes_zero_amount_invoice():
@@ -365,6 +409,25 @@ def test_void_invoice_retrieves_and_voids_open_invoice():
             idempotency_key="billing:void:in_story57_void",
         ),
     ]
+
+
+def test_stop_billing_invoice_returns_provider_neutral_stop_result():
+    transport = _StubStripeTransport(
+        responses=[
+            {"id": "in_story57_void", "status": "open"},
+            {"id": "in_story57_void", "status": "void"},
+        ]
+    )
+    provider = _provider(transport=transport)
+
+    result = provider.stop_billing_invoice(
+        provider_account_id="acct_story57_billable",
+        provider_invoice_id="in_story57_void",
+    )
+
+    assert result.provider_account_id == "acct_story57_billable"
+    assert result.provider_invoice_id == "in_story57_void"
+    assert result.invoice_status == "void"
 
 
 def test_void_invoice_is_idempotent_when_invoice_is_already_void():

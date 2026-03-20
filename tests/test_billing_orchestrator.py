@@ -200,6 +200,8 @@ def test_billing_orchestrator_persists_open_invoice_from_trusted_booking_data():
 
     assert result.outcome == "created"
     assert result.reason is None
+    assert result.provider_account_id == "acct_story44_billable"
+    assert result.provider_invoice_id == "in_story44_primary"
     assert result.stripe_invoice_id == "in_story44_primary"
     assert result.invoice_status == "open"
     assert provider.readiness_calls == ["acct_story44_billable"]
@@ -268,6 +270,8 @@ def test_billing_orchestrator_uses_provider_aware_identity_for_fullscope_booking
     invoices = _invoice_rows()
 
     assert result.outcome == "created"
+    assert result.provider_account_id == "acct_story44_billable"
+    assert result.provider_invoice_id == "in_story44_fullscope"
     assert result.stripe_invoice_id == "in_story44_fullscope"
     assert provider.create_calls == [
         {
@@ -323,6 +327,8 @@ def test_billing_orchestrator_create_is_idempotent_for_same_booking():
     assert second_result.outcome == "existing"
     assert second_result.reason is None
     assert second_result.invoice_id == first_result.invoice_id
+    assert second_result.provider_account_id == "acct_story44_billable"
+    assert second_result.provider_invoice_id == "in_story44_idempotent"
     assert second_result.stripe_invoice_id == "in_story44_idempotent"
     assert provider.readiness_calls == ["acct_story44_billable"]
     assert len(provider.create_calls) == 1
@@ -360,6 +366,8 @@ def test_billing_orchestrator_persists_paid_invoice_when_provider_returns_paid_s
 
     assert result.outcome == "created"
     assert result.reason is None
+    assert result.provider_account_id == "acct_story44_billable"
+    assert result.provider_invoice_id == "in_story57_paid"
     assert result.stripe_invoice_id == "in_story57_paid"
     assert result.invoice_status == "paid"
     assert len(invoices) == 1
@@ -752,6 +760,10 @@ def test_blocked_billing_retry_uses_frozen_inputs_and_is_idempotent():
     assert initial_result.reason == "creator_not_billable"
     assert first_retry.outcome == "created"
     assert second_retry.outcome == "already_resolved"
+    assert first_retry.provider_account_id == "acct_story58_retry"
+    assert first_retry.provider_invoice_id == "in_story58_retry_recovered"
+    assert second_retry.provider_account_id == "acct_story58_retry"
+    assert second_retry.provider_invoice_id == "in_story58_retry_recovered"
     assert len(retry_provider.create_calls) == 1
     assert retry_provider.create_calls[0]["amount_cents"] == 15000
     assert retry_provider.create_calls[0]["currency"] == "USD"
@@ -881,6 +893,8 @@ def test_billing_orchestrator_voids_open_invoice_and_is_idempotent():
 
     assert first_result.outcome == "voided"
     assert first_result.reason is None
+    assert first_result.provider_account_id == "acct_story44_billable"
+    assert first_result.provider_invoice_id == "in_story44_void"
     assert first_result.stripe_invoice_id == "in_story44_void"
     assert first_result.invoice_status == "void"
     assert second_result.outcome == "noop"

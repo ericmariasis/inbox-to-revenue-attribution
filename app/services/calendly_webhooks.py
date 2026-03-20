@@ -18,6 +18,7 @@ from app.models.booking import Booking
 from app.models.booking_provider import BOOKING_PROVIDER_CALENDLY
 from app.models.calendly_webhook_event import CalendlyWebhookEventRecord
 from app.models.content import Content
+from app.services.billing_provider import BillingProvider
 from app.services.booking_attribution import BOOKING_ATTRIBUTION_STATUS_ATTRIBUTED
 from app.services.blocked_billing import resolve_blocked_billing_case_for_booking_canceled
 from app.services.billing import (
@@ -25,7 +26,7 @@ from app.services.billing import (
     BillingInvoiceVoidResult,
     BillingOrchestrator,
 )
-from app.services.stripe_provider import StripeProvider, build_default_stripe_provider
+from app.services.stripe_provider import build_default_stripe_provider
 
 
 logger = logging.getLogger(__name__)
@@ -172,13 +173,13 @@ class BillingBackedUnpaidInvoiceVoider:
     def void_unpaid_invoice(self, *, booking: CanceledBookingContext) -> None:
         result = self._billing_service.void_open_invoice_for_booking(booking_id=booking.booking_id)
         logger.info(
-            "calendly_webhook_booking_canceled_invoice_result booking_id=%s calendly_booking_uuid=%s outcome=%s reason=%s invoice_id=%s stripe_invoice_id=%s invoice_status=%s",
+            "calendly_webhook_booking_canceled_invoice_result booking_id=%s calendly_booking_uuid=%s outcome=%s reason=%s invoice_id=%s provider_invoice_id=%s invoice_status=%s",
             booking.booking_id,
             booking.calendly_booking_uuid,
             result.outcome,
             result.reason,
             result.invoice_id,
-            result.stripe_invoice_id,
+            result.provider_invoice_id,
             result.invoice_status,
         )
 
@@ -298,13 +299,13 @@ class BookingCreatedCalendlyWebhookHandler:
                 booking_id=booking_id_for_billing
             )
             logger.info(
-                "calendly_webhook_booking_created_invoice_result booking_id=%s calendly_booking_uuid=%s outcome=%s reason=%s invoice_id=%s stripe_invoice_id=%s invoice_status=%s",
+                "calendly_webhook_booking_created_invoice_result booking_id=%s calendly_booking_uuid=%s outcome=%s reason=%s invoice_id=%s provider_invoice_id=%s invoice_status=%s",
                 booking_id_for_billing,
                 event.calendly_booking_uuid,
                 billing_result.outcome,
                 billing_result.reason,
                 billing_result.invoice_id,
-                billing_result.stripe_invoice_id,
+                billing_result.provider_invoice_id,
                 billing_result.invoice_status,
             )
         return CalendlyWebhookReducerResult(processing_status="applied")
@@ -535,7 +536,7 @@ DEFAULT_CALENDLY_WEBHOOK_ROUTER = DefaultCalendlyWebhookRouter()
 
 def build_default_calendly_webhook_router(
     *,
-    provider: StripeProvider | None = None,
+    provider: BillingProvider | None = None,
     session_factory: Callable[[], Session] = SessionLocal,
 ) -> DefaultCalendlyWebhookRouter:
     billing_service = BillingOrchestrator(
@@ -560,7 +561,7 @@ def build_default_calendly_webhook_router(
 def reprocess_calendly_webhook_event(
     *,
     record_id: uuid.UUID,
-    provider: StripeProvider | None = None,
+    provider: BillingProvider | None = None,
     session_factory: Callable[[], Session] = SessionLocal,
 ) -> CalendlyWebhookReplayResult:
     router = build_default_calendly_webhook_router(

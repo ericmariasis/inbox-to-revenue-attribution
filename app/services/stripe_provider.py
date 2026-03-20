@@ -10,14 +10,21 @@ from sqlalchemy import or_, select
 
 from app.core.config import Settings, get_settings
 from app.db.session import SessionLocal
+from app.models.billing_provider import BILLING_PROVIDER_STRIPE
 from app.models.booking import Booking
+from app.services.billing_provider import (
+    BillingAccountReadiness,
+    BillingProviderError,
+    BillingProviderInvoiceCreateResult,
+    BillingProviderInvoiceStopResult,
+)
 
 
 DEFAULT_STRIPE_API_BASE_URL = "https://api.stripe.com/v1"
 DEFAULT_STRIPE_CONNECT_TOKEN_URL = "https://connect.stripe.com/oauth/token"
 
 
-class StripeProviderError(ValueError):
+class StripeProviderError(BillingProviderError):
     def __init__(
         self,
         message: str,
@@ -27,11 +34,14 @@ class StripeProviderError(ValueError):
         error_code: str | None = None,
         error_type: str | None = None,
     ):
-        super().__init__(message)
-        self.operation = operation
-        self.http_status = http_status
-        self.error_code = error_code
-        self.error_type = error_type
+        super().__init__(
+            message,
+            provider_name=BILLING_PROVIDER_STRIPE,
+            operation=operation,
+            http_status=http_status,
+            error_code=error_code,
+            error_type=error_type,
+        )
 
 
 @dataclass(frozen=True)
@@ -145,6 +155,8 @@ class UrllibStripeHttpTransport:
 
 
 class StripeOAuthProvider:
+    billing_provider_name = BILLING_PROVIDER_STRIPE
+
     def __init__(
         self,
         *,
@@ -212,6 +224,14 @@ class StripeOAuthProvider:
             )
         return StripeAccountReadiness(charges_enabled=charges_enabled)
 
+    def get_billing_account_readiness(
+        self,
+        *,
+        provider_account_id: str,
+    ) -> BillingAccountReadiness:
+        readiness = self.get_account_readiness(stripe_account_id=provider_account_id)
+        return BillingAccountReadiness(can_create_invoices=readiness.charges_enabled)
+
     def create_invoice(
         self,
         *,
@@ -277,6 +297,28 @@ class StripeOAuthProvider:
             status=finalized_status,
         )
 
+    def create_billing_invoice(
+        self,
+        *,
+        provider_account_id: str,
+        amount_cents: int,
+        currency: str,
+        metadata: dict[str, str],
+        idempotency_key: str,
+    ) -> BillingProviderInvoiceCreateResult:
+        invoice = self.create_invoice(
+            stripe_account_id=provider_account_id,
+            amount_cents=amount_cents,
+            currency=currency,
+            metadata=metadata,
+            idempotency_key=idempotency_key,
+        )
+        return BillingProviderInvoiceCreateResult(
+            provider_account_id=provider_account_id,
+            provider_invoice_id=invoice.stripe_invoice_id,
+            invoice_status=invoice.status,
+        )
+
     def void_invoice(self, *, stripe_account_id: str, stripe_invoice_id: str) -> None:
         invoice_response = self._request(
             operation="stripe_invoice_retrieve_for_void",
@@ -311,6 +353,22 @@ class StripeOAuthProvider:
                 "stripe invoice void failed",
                 operation="stripe_invoice_void",
             )
+
+    def stop_billing_invoice(
+        self,
+        *,
+        provider_account_id: str,
+        provider_invoice_id: str,
+    ) -> BillingProviderInvoiceStopResult:
+        self.void_invoice(
+            stripe_account_id=provider_account_id,
+            stripe_invoice_id=provider_invoice_id,
+        )
+        return BillingProviderInvoiceStopResult(
+            provider_account_id=provider_account_id,
+            provider_invoice_id=provider_invoice_id,
+            invoice_status="void",
+        )
 
     def _create_customer(
         self,

@@ -18,6 +18,7 @@ from app.models.booking_link import BookingLink
 from app.models.booking_provider import BOOKING_PROVIDER_FULLSCOPE
 from app.models.content import Content
 from app.models.fullscope_webhook_event import FullScopeWebhookEventRecord
+from app.services.billing_provider import BillingProvider
 from app.services.booking_attribution import BOOKING_ATTRIBUTION_STATUS_ATTRIBUTED
 from app.services.blocked_billing import resolve_blocked_billing_case_for_booking_canceled
 from app.services.billing import (
@@ -25,7 +26,7 @@ from app.services.billing import (
     BillingInvoiceVoidResult,
     BillingOrchestrator,
 )
-from app.services.stripe_provider import StripeProvider, build_default_stripe_provider
+from app.services.stripe_provider import build_default_stripe_provider
 
 
 logger = logging.getLogger(__name__)
@@ -155,13 +156,13 @@ class BillingBackedUnpaidInvoiceVoider:
     def void_unpaid_invoice(self, *, booking: FullScopeCanceledBookingContext) -> None:
         result = self._billing_service.void_open_invoice_for_booking(booking_id=booking.booking_id)
         logger.info(
-            "fullscope_webhook_booking_canceled_invoice_result booking_id=%s provider_booking_id=%s outcome=%s reason=%s invoice_id=%s stripe_invoice_id=%s invoice_status=%s",
+            "fullscope_webhook_booking_canceled_invoice_result booking_id=%s provider_booking_id=%s outcome=%s reason=%s invoice_id=%s provider_invoice_id=%s invoice_status=%s",
             booking.booking_id,
             booking.provider_booking_id,
             result.outcome,
             result.reason,
             result.invoice_id,
-            result.stripe_invoice_id,
+            result.provider_invoice_id,
             result.invoice_status,
         )
 
@@ -342,13 +343,13 @@ class BookingCreatedFullScopeWebhookHandler:
                 booking_id=booking_id_for_billing
             )
             logger.info(
-                "fullscope_webhook_booking_created_invoice_result booking_id=%s provider_booking_id=%s outcome=%s reason=%s invoice_id=%s stripe_invoice_id=%s invoice_status=%s",
+                "fullscope_webhook_booking_created_invoice_result booking_id=%s provider_booking_id=%s outcome=%s reason=%s invoice_id=%s provider_invoice_id=%s invoice_status=%s",
                 booking_id_for_billing,
                 event.appointment_id,
                 billing_result.outcome,
                 billing_result.reason,
                 billing_result.invoice_id,
-                billing_result.stripe_invoice_id,
+                billing_result.provider_invoice_id,
                 billing_result.invoice_status,
             )
         return FullScopeWebhookReducerResult(processing_status="applied")
@@ -580,7 +581,7 @@ DEFAULT_FULLSCOPE_WEBHOOK_ROUTER = DefaultFullScopeWebhookRouter()
 
 def build_default_fullscope_webhook_router(
     *,
-    provider: StripeProvider | None = None,
+    provider: BillingProvider | None = None,
     session_factory: Callable[[], Session] = SessionLocal,
 ) -> DefaultFullScopeWebhookRouter:
     billing_service = BillingOrchestrator(

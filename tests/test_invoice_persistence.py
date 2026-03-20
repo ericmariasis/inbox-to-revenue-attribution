@@ -327,10 +327,20 @@ def test_invoice_payment_event_can_persist_against_canonical_invoice_chain():
         )
 
         assert fetched is not None
+        assert fetched.payment_provider == "stripe"
+        assert fetched.provider_event_id == "evt_story47_primary"
+        assert fetched.provider_event_type == "invoice.paid"
+        assert fetched.provider_account_id == "acct_story47_primary"
+        assert fetched.provider_invoice_id == "in_story47_primary"
         assert fetched.stripe_event_id == "evt_story47_primary"
         assert fetched.stripe_event_type == "invoice.paid"
         assert fetched.stripe_account_id == "acct_story47_primary"
         assert fetched.stripe_invoice_id == "in_story47_primary"
+        assert fetched.resolved_payment_provider == "stripe"
+        assert fetched.resolved_provider_event_id == "evt_story47_primary"
+        assert fetched.resolved_provider_event_type == "invoice.paid"
+        assert fetched.resolved_provider_account_id == "acct_story47_primary"
+        assert fetched.resolved_provider_invoice_id == "in_story47_primary"
         assert fetched.invoice_id == invoice.id
         assert fetched.creator_id == creator.id
         assert fetched.booking_id == booking.id
@@ -352,6 +362,60 @@ def test_invoice_payment_event_can_persist_against_canonical_invoice_chain():
         assert fetched.content is not None
         assert fetched.content.tid == content.tid
         assert fetched.invoice.payment_events[0].id == fetched.id
+
+
+def test_provider_neutral_payment_event_can_persist_without_legacy_stripe_identity():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    paid_at = datetime(2026, 3, 8, 18, 10, tzinfo=timezone.utc)
+    received_at = datetime(2026, 3, 8, 18, 11, tzinfo=timezone.utc)
+
+    with Session(engine) as session:
+        session.add(
+            InvoicePaymentEvent(
+                payment_provider="paypal",
+                provider_event_id="WH-PP3-PERSIST-PRIMARY",
+                provider_event_type="INVOICING.INVOICE.PAID",
+                provider_account_id="merchant_pp3_persist",
+                provider_invoice_id="INV-PP3-PERSIST-PRIMARY",
+                invoice_id=None,
+                creator_id=None,
+                booking_id=None,
+                tid=None,
+                status="unmatched",
+                unattributed_reason="UNKNOWN_STRIPE_INVOICE_ID",
+                paid_at=paid_at,
+                received_at=received_at,
+                processed_at=None,
+            )
+        )
+        session.commit()
+
+        fetched = session.scalar(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.provider_event_id == "WH-PP3-PERSIST-PRIMARY"
+            )
+        )
+
+        assert fetched is not None
+        assert fetched.payment_provider == "paypal"
+        assert fetched.provider_event_id == "WH-PP3-PERSIST-PRIMARY"
+        assert fetched.provider_event_type == "INVOICING.INVOICE.PAID"
+        assert fetched.provider_account_id == "merchant_pp3_persist"
+        assert fetched.provider_invoice_id == "INV-PP3-PERSIST-PRIMARY"
+        assert fetched.stripe_event_id is None
+        assert fetched.stripe_event_type is None
+        assert fetched.stripe_account_id is None
+        assert fetched.stripe_invoice_id is None
+        assert fetched.resolved_payment_provider == "paypal"
+        assert fetched.resolved_provider_event_id == "WH-PP3-PERSIST-PRIMARY"
+        assert fetched.resolved_provider_event_type == "INVOICING.INVOICE.PAID"
+        assert fetched.resolved_provider_account_id == "merchant_pp3_persist"
+        assert fetched.resolved_provider_invoice_id == "INV-PP3-PERSIST-PRIMARY"
+        assert fetched.status == "unmatched"
+        assert fetched.unattributed_reason == "UNKNOWN_STRIPE_INVOICE_ID"
+        assert fetched.paid_at == paid_at
+        assert fetched.received_at == received_at
+        assert fetched.processed_at is None
 
 
 def test_provider_neutral_invoice_can_persist_without_legacy_stripe_identity():
@@ -427,6 +491,11 @@ def test_invoice_payment_event_can_persist_unmatched_state_with_null_local_linka
         )
 
         assert fetched is not None
+        assert fetched.payment_provider == "stripe"
+        assert fetched.provider_event_id == "evt_story47_unmatched"
+        assert fetched.provider_event_type == "invoice.paid"
+        assert fetched.provider_account_id == "acct_story47_unmatched"
+        assert fetched.provider_invoice_id == "in_story47_unmatched"
         assert fetched.invoice_id is None
         assert fetched.creator_id is None
         assert fetched.booking_id is None
@@ -481,6 +550,53 @@ def test_duplicate_invoice_payment_event_stripe_event_id_is_blocked_by_db_constr
         rows = session.scalars(
             select(InvoicePaymentEvent).where(
                 InvoicePaymentEvent.stripe_event_id == "evt_story47_duplicate"
+            )
+        ).all()
+        assert len(rows) == 1
+
+
+def test_duplicate_provider_event_identity_is_blocked_by_db_constraint():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+
+    with Session(engine) as session:
+        session.add(
+            InvoicePaymentEvent(
+                payment_provider="paypal",
+                provider_event_id="WH-PP3-DUPLICATE",
+                provider_event_type="INVOICING.INVOICE.PAID",
+                provider_account_id="merchant_pp3_duplicate_a",
+                provider_invoice_id="INV-PP3-DUPLICATE-A",
+                status="unmatched",
+                unattributed_reason="UNKNOWN_STRIPE_INVOICE_ID",
+                paid_at=datetime(2026, 3, 8, 20, 4, tzinfo=timezone.utc),
+                received_at=datetime(2026, 3, 8, 20, 5, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+
+        session.add(
+            InvoicePaymentEvent(
+                payment_provider="paypal",
+                provider_event_id="WH-PP3-DUPLICATE",
+                provider_event_type="INVOICING.INVOICE.PAID",
+                provider_account_id="merchant_pp3_duplicate_b",
+                provider_invoice_id="INV-PP3-DUPLICATE-B",
+                status="unmatched",
+                unattributed_reason="UNKNOWN_STRIPE_INVOICE_ID",
+                paid_at=datetime(2026, 3, 8, 20, 6, tzinfo=timezone.utc),
+                received_at=datetime(2026, 3, 8, 20, 7, tzinfo=timezone.utc),
+            )
+        )
+
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+        session.rollback()
+
+        rows = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.payment_provider == "paypal",
+                InvoicePaymentEvent.provider_event_id == "WH-PP3-DUPLICATE",
             )
         ).all()
         assert len(rows) == 1

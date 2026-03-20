@@ -282,6 +282,11 @@ def test_stripe_webhook_invoice_paid_marks_matched_invoice_paid_and_persists_lin
     assert persisted_invoice.status == "paid"
     assert persisted_invoice.paid_at == paid_at
     assert len(payment_events) == 1
+    assert payment_events[0].payment_provider == "stripe"
+    assert payment_events[0].provider_event_id == "evt_story48_matched"
+    assert payment_events[0].provider_event_type == "invoice.paid"
+    assert payment_events[0].provider_account_id == "acct_story48_matched"
+    assert payment_events[0].provider_invoice_id == "in_story48_matched"
     assert payment_events[0].stripe_event_id == "evt_story48_matched"
     assert payment_events[0].stripe_event_type == "invoice.paid"
     assert payment_events[0].stripe_account_id == "acct_story48_matched"
@@ -398,6 +403,11 @@ def test_stripe_webhook_invoice_paid_persists_one_unmatched_payment_event_when_l
     assert second_response.status_code == 200
     assert invoice_count == 0
     assert len(payment_events) == 1
+    assert payment_events[0].payment_provider == "stripe"
+    assert payment_events[0].provider_event_id == "evt_story49_unmatched"
+    assert payment_events[0].provider_event_type == "invoice.paid"
+    assert payment_events[0].provider_account_id == "acct_story49_unmatched"
+    assert payment_events[0].provider_invoice_id == "in_story49_unmatched"
     assert payment_events[0].status == "unmatched"
     assert payment_events[0].unattributed_reason == UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID
     assert payment_events[0].invoice_id is None
@@ -442,6 +452,11 @@ def test_stripe_webhook_invoice_paid_records_missing_tid_reason_for_unmatched_ev
 
     assert response.status_code == 200
     assert payment_event is not None
+    assert payment_event.payment_provider == "stripe"
+    assert payment_event.provider_event_id == "evt_story49_missing_tid"
+    assert payment_event.provider_event_type == "invoice.paid"
+    assert payment_event.provider_account_id == "acct_story49_missing_tid"
+    assert payment_event.provider_invoice_id == "in_story49_missing_tid"
     assert payment_event.status == "unmatched"
     assert payment_event.unattributed_reason == UNATTRIBUTED_REASON_MISSING_TID
     assert payment_event.creator_id == creator.id

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
 from app.models.booking_provider import BOOKING_PROVIDER_CALENDLY
+from app.models.billing_provider import BILLING_PROVIDER_STRIPE
 from app.models.invoice import Invoice
 from app.services.booking_attribution import (
     BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
@@ -280,6 +281,9 @@ class BillingOrchestrator:
                 creator_id=creator.id,
                 booking_id=booking.id,
                 tid=booking.tid,
+                payment_provider=BILLING_PROVIDER_STRIPE,
+                provider_account_id=stripe_account_id,
+                provider_invoice_id=created_invoice.stripe_invoice_id,
                 stripe_account_id=stripe_account_id,
                 stripe_invoice_id=created_invoice.stripe_invoice_id,
                 amount_cents=amount_cents,

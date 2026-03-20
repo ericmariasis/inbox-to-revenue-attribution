@@ -226,6 +226,9 @@ def test_billing_orchestrator_persists_open_invoice_from_trusted_booking_data():
     assert invoices[0].creator_id == creator_id
     assert invoices[0].booking_id == booking_id
     assert invoices[0].tid == content_tid
+    assert invoices[0].payment_provider == "stripe"
+    assert invoices[0].provider_account_id == "acct_story44_billable"
+    assert invoices[0].provider_invoice_id == "in_story44_primary"
     assert invoices[0].stripe_account_id == "acct_story44_billable"
     assert invoices[0].stripe_invoice_id == "in_story44_primary"
     assert invoices[0].amount_cents == 15000
@@ -283,6 +286,9 @@ def test_billing_orchestrator_uses_provider_aware_identity_for_fullscope_booking
     ]
     assert len(invoices) == 1
     assert invoices[0].booking_id == booking_id
+    assert invoices[0].payment_provider == "stripe"
+    assert invoices[0].provider_account_id == "acct_story44_billable"
+    assert invoices[0].provider_invoice_id == "in_story44_fullscope"
     assert invoices[0].stripe_invoice_id == "in_story44_fullscope"
     assert _blocked_case_rows() == []
 
@@ -360,6 +366,9 @@ def test_billing_orchestrator_persists_paid_invoice_when_provider_returns_paid_s
     assert len(_booking_rows()) == 1
     assert _booking_rows()[0].frozen_billing_amount_cents == 15000
     assert _booking_rows()[0].frozen_billing_currency == "USD"
+    assert invoices[0].payment_provider == "stripe"
+    assert invoices[0].provider_account_id == "acct_story44_billable"
+    assert invoices[0].provider_invoice_id == "in_story57_paid"
     assert invoices[0].status == "paid"
     assert invoices[0].issued_at == issued_at
     assert invoices[0].paid_at == issued_at

@@ -113,22 +113,37 @@ def _insert_creator_user(
     stripe_connect_status: str = "pending",
     stripe_account_id: str | None = None,
     stripe_connected_at: datetime | None = None,
+    billing_provider: str = "stripe",
+    billing_connect_status: str | None = None,
+    billing_account_id: str | None = None,
+    billing_connected_at: datetime | None = None,
 ) -> dict[str, str]:
     creator_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
+    resolved_billing_connect_status = billing_connect_status or stripe_connect_status
+    resolved_billing_account_id = billing_account_id if billing_account_id is not None else stripe_account_id
+    resolved_billing_connected_at = (
+        billing_connected_at if billing_connected_at is not None else stripe_connected_at
+    )
 
     with _engine().begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO creators ("
-                "id, name, stripe_connect_status, stripe_account_id, stripe_connected_at"
+                "id, name, billing_provider, billing_connect_status, billing_account_id, billing_connected_at, "
+                "stripe_connect_status, stripe_account_id, stripe_connected_at"
                 ") VALUES ("
-                ":id, :name, :stripe_connect_status, :stripe_account_id, :stripe_connected_at"
+                ":id, :name, :billing_provider, :billing_connect_status, :billing_account_id, :billing_connected_at, "
+                ":stripe_connect_status, :stripe_account_id, :stripe_connected_at"
                 ")"
             ),
             {
                 "id": creator_id,
                 "name": name,
+                "billing_provider": billing_provider,
+                "billing_connect_status": resolved_billing_connect_status,
+                "billing_account_id": resolved_billing_account_id,
+                "billing_connected_at": resolved_billing_connected_at,
                 "stripe_connect_status": stripe_connect_status,
                 "stripe_account_id": stripe_account_id,
                 "stripe_connected_at": stripe_connected_at,
@@ -1137,7 +1152,7 @@ def test_setup_home_pending_stripe_state_shows_connect_cta_and_checklist():
     assert response.status_code == 200
     assert "Setup Home" in response.text
     assert "0 of 4 setup steps done" in response.text
-    assert "Stripe setup is still pending" in response.text
+    assert "Billing setup is still pending" in response.text
     assert "Start Stripe setup" in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
     assert "Save a booking link" in response.text
@@ -1145,7 +1160,7 @@ def test_setup_home_pending_stripe_state_shows_connect_cta_and_checklist():
     assert "Add billing defaults" in response.text
     assert "Create a tracked link" in response.text
     assert 'href="/app/content"' in response.text
-    assert "Finish Stripe setup" in response.text
+    assert "Finish billing setup" in response.text
     assert 'href="/app/reports"' in response.text
     assert 'class="wrap-anywhere"' in response.text
     assert "Blocked billing and unresolved payments will appear on" in response.text
@@ -1210,8 +1225,8 @@ def test_setup_and_account_pages_reuse_connected_but_not_billable_now_vocabulary
     assert account_response.status_code == 200
     assert "Connected, but not billable now" in setup_response.text
     assert "Connected, but not billable now" in account_response.text
-    assert "Connected</strong>: Done. Stripe is connected to this workspace." in setup_response.text
-    assert "Connected</strong>: Done. Stripe is connected to this workspace." in account_response.text
+    assert "Connected</strong>: Done. A billing provider is connected to this workspace." in setup_response.text
+    assert "Connected</strong>: Done. A billing provider is connected to this workspace." in account_response.text
     assert "Billable now</strong>: Not yet. Add amount and currency to at least one saved booking link." in setup_response.text
     assert "Billable now</strong>: Not yet. Add amount and currency to at least one saved booking link." in account_response.text
     assert "Ready to track</strong>: Not yet. This milestone starts after the workspace is billable now." in setup_response.text
@@ -2261,7 +2276,7 @@ def test_attention_page_renders_blocked_and_unmatched_cases():
     assert booking_uuid in response.text
     assert "Creator not billable" in response.text
     assert "creator_not_billable" in response.text
-    assert "Finish the Stripe or billing setup and then retry invoice creation." in response.text
+    assert "Finish the billing setup and then retry invoice creation." in response.text
     assert "Retry invoice creation" in response.text
     assert f'/app/attention/blocked-billing/{case_id}/retry' in response.text
     assert stripe_event_id in response.text
@@ -2911,7 +2926,7 @@ def test_reports_page_without_tracked_content_explains_prerequisite():
 
     assert response.status_code == 200
     assert "Billable now comes before paid results" in response.text
-    assert "Stripe is connected, but this workspace is not billable now yet." in response.text
+    assert "A billing provider is connected, but this workspace is not billable now yet." in response.text
     assert 'href="/app/booking-links"' in response.text
 
 
@@ -3220,7 +3235,7 @@ def test_setup_home_disconnected_stripe_state_shows_reconnect_cta():
         response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Stripe is disconnected" in response.text
+    assert "Billing connection is disconnected" in response.text
     assert "Reconnect Stripe" in response.text
     assert "Reconnect it before new bookings can move into invoicing." in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
@@ -3247,10 +3262,10 @@ def test_setup_home_connected_stripe_state_shows_connected_details():
         response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Stripe is connected" in response.text
+    assert "Billing provider is connected" in response.text
     assert "acct_ui_connected" in response.text
     assert 'action="/app/stripe/connect/start"' not in response.text
-    assert "Connected account" in response.text
+    assert "Billing account" in response.text
 
 
 def test_account_page_connected_state_renders_entry_points_and_policy_copy():
@@ -3287,8 +3302,8 @@ def test_account_page_connected_state_renders_entry_points_and_policy_copy():
     assert inserted["email"] in response.text
     assert "Signing out ends this browser session only." in response.text
     assert 'action="/sign-out"' in response.text
-    assert "This workspace is connected to Stripe and billable now for future invoicing." in response.text
-    assert "Changing the Stripe connection affects future billing readiness." in response.text
+    assert "This workspace has a connected billing provider and is billable now for future invoicing." in response.text
+    assert "Changing the billing connection affects future billing readiness." in response.text
     assert "acct_ui_account_connected" in response.text
     assert "Reconnect Stripe" in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
@@ -3370,7 +3385,7 @@ def test_account_page_disconnected_state_renders_reconnect_copy_without_destruct
 
     assert response.status_code == 200
     assert "Disconnected" in response.text
-    assert "This workspace is not currently connected to Stripe for invoicing." in response.text
+    assert "This workspace is not currently connected to a billing provider for invoicing." in response.text
     assert "Reconnect Stripe" in response.text
     assert "No booking links are saved yet for this workspace." in response.text
     assert "Workspace reset and account deletion stay support-assisted during beta." in response.text
@@ -3922,7 +3937,7 @@ def test_setup_home_connect_cta_redirects_to_stripe_and_callback_returns_to_app(
         ).mappings().one()
 
     assert app_response.status_code == 200
-    assert "Stripe is connected" in app_response.text
+    assert "Billing provider is connected" in app_response.text
     assert "acct_story38_browser" in app_response.text
     assert creator_row["billing_provider"] == "stripe"
     assert creator_row["billing_connect_status"] == "connected"

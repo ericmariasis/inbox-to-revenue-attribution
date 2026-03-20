@@ -493,3 +493,100 @@ def test_creator_settled_paid_evidence_keeps_paid_invoices_settled_and_surfaces_
         (item.reason_code, item.case_count)
         for item in snapshot.blocked_billing_backlog.reasons
     ] == [("creator_not_billable", 1)]
+
+
+def test_creator_settled_paid_evidence_surfaces_paypal_provider_identity():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator = Creator(
+            name="Settled Evidence PayPal Creator",
+            billing_provider="paypal",
+            billing_connect_status="connected",
+            billing_account_id="merchant_settled_paypal",
+        )
+        session.add(creator)
+        session.flush()
+
+        booking_link = BookingLink(
+            creator_id=creator.id,
+            name="Settled Evidence PayPal Link",
+            calendly_url="https://calendly.com/example/settled-evidence-paypal-link",
+            billing_amount_cents=19500,
+            billing_currency="USD",
+        )
+        session.add(booking_link)
+        session.flush()
+
+        content = Content(
+            creator_id=creator.id,
+            booking_link_id=booking_link.id,
+            source_url="https://example.com/posts/settled-paypal",
+            tid="settled_paypal_tid",
+        )
+        session.add(content)
+        session.flush()
+
+        booking = Booking(
+            creator_id=creator.id,
+            booking_link_id=booking_link.id,
+            tid=content.tid,
+            calendly_booking_uuid="BOOK_SETTLED_PAYPAL",
+            email="settled-paypal@example.com",
+            status="created",
+            booked_at=datetime(2026, 3, 9, 8, 0, tzinfo=timezone.utc),
+        )
+        session.add(booking)
+        session.flush()
+
+        invoice = Invoice(
+            creator_id=creator.id,
+            booking_id=booking.id,
+            tid=booking.tid,
+            payment_provider="paypal",
+            provider_account_id="merchant_settled_paypal",
+            provider_invoice_id="INV_SETTLED_PAYPAL",
+            amount_cents=19500,
+            currency="USD",
+            status="paid",
+            issued_at=datetime(2026, 3, 9, 8, 30, tzinfo=timezone.utc),
+            paid_at=datetime(2026, 3, 9, 9, 0, tzinfo=timezone.utc),
+        )
+        session.add(invoice)
+        session.flush()
+
+        session.add(
+            InvoicePaymentEvent(
+                payment_provider="paypal",
+                provider_event_id="WH_SETTLED_PAYPAL",
+                provider_event_type="INVOICING.INVOICE.PAID",
+                provider_account_id="merchant_settled_paypal",
+                provider_invoice_id="INV_SETTLED_PAYPAL",
+                invoice_id=invoice.id,
+                creator_id=creator.id,
+                booking_id=booking.id,
+                tid=booking.tid,
+                status="applied",
+                paid_at=invoice.paid_at,
+                received_at=invoice.paid_at,
+                processed_at=invoice.paid_at,
+            )
+        )
+        creator_id = creator.id
+        session.commit()
+
+    with Session(engine) as session:
+        snapshot = get_creator_settled_paid_evidence(
+            creator_id=creator_id,
+            db=session,
+            start_date=date(2026, 3, 9),
+            end_date=date(2026, 3, 9),
+        )
+
+    assert len(snapshot.settled_rows) == 1
+    row = snapshot.settled_rows[0]
+    assert row.payment_provider == "paypal"
+    assert row.provider_invoice_id == "INV_SETTLED_PAYPAL"
+    assert row.provider_event_id == "WH_SETTLED_PAYPAL"
+    assert row.stripe_invoice_id is None
+    assert row.stripe_event_id is None

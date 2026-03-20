@@ -80,10 +80,18 @@ class PaymentProvenanceReasonCountResponse(BaseModel):
     event_count: int
 
 
+class PaymentProviderHealthResponse(BaseModel):
+    payment_provider: str
+    settled_state_counts: list["PaymentProvenanceStateCountResponse"]
+    current_backlog_event_count: int
+    current_backlog_reasons: list["PaymentProvenanceReasonCountResponse"]
+
+
 class PaymentProvenanceHealthResponse(BaseModel):
     settled_state_counts: list[PaymentProvenanceStateCountResponse]
     current_backlog_event_count: int
     current_backlog_reasons: list[PaymentProvenanceReasonCountResponse]
+    provider_health: list[PaymentProviderHealthResponse] = []
 
 
 class BlockedBillingHealthResponse(BaseModel):

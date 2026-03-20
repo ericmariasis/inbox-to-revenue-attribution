@@ -13,6 +13,7 @@ from app.schemas.reporting import (
     BookingAttributionHealthResponse,
     BookingAttributionReasonCountResponse,
     EvidenceIngressHealthResponse,
+    PaymentProviderHealthResponse,
     PaymentProvenanceHealthResponse,
     PaymentProvenanceReasonCountResponse,
     PaymentProvenanceStateCountResponse,
@@ -129,6 +130,27 @@ def _build_reports_health_response(
                     event_count=item.event_count,
                 )
                 for item in snapshot.payment_provenance.current_backlog_reasons
+            ],
+            provider_health=[
+                PaymentProviderHealthResponse(
+                    payment_provider=item.payment_provider,
+                    settled_state_counts=[
+                        PaymentProvenanceStateCountResponse(
+                            state=state_count.state,
+                            row_count=state_count.row_count,
+                        )
+                        for state_count in item.settled_state_counts
+                    ],
+                    current_backlog_event_count=item.current_backlog_event_count,
+                    current_backlog_reasons=[
+                        PaymentProvenanceReasonCountResponse(
+                            reason=reason_count.reason,
+                            event_count=reason_count.event_count,
+                        )
+                        for reason_count in item.current_backlog_reasons
+                    ],
+                )
+                for item in snapshot.payment_provenance.provider_health
             ],
         ),
         blocked_billing=BlockedBillingHealthResponse(

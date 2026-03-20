@@ -921,6 +921,117 @@ def test_creator_evidence_ingress_health_snapshot_surfaces_degraded_current_stat
     ]
 
 
+def test_creator_evidence_ingress_health_snapshot_groups_payment_provenance_by_provider():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator = Creator(
+            name="Health PayPal Creator",
+            billing_provider="paypal",
+            billing_connect_status="connected",
+            billing_account_id="merchant_health_paypal",
+        )
+        session.add(creator)
+        session.flush()
+
+        booking_link = _create_booking_link(session, creator=creator, suffix="paypal")
+        content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="paypal",
+        )
+        booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_HEALTH_PAYPAL",
+            booked_at=datetime(2026, 3, 13, 8, 0, tzinfo=timezone.utc),
+        )
+        invoice = Invoice(
+            creator_id=creator.id,
+            booking_id=booking.id,
+            tid=booking.tid,
+            payment_provider="paypal",
+            provider_account_id="merchant_health_paypal",
+            provider_invoice_id="INV_HEALTH_PAYPAL",
+            amount_cents=19500,
+            currency="USD",
+            status="paid",
+            issued_at=datetime(2026, 3, 13, 8, 30, tzinfo=timezone.utc),
+            paid_at=datetime(2026, 3, 13, 9, 0, tzinfo=timezone.utc),
+        )
+        session.add(invoice)
+        session.flush()
+
+        session.add(
+            InvoicePaymentEvent(
+                payment_provider="paypal",
+                provider_event_id="WH_HEALTH_PAYPAL",
+                provider_event_type="INVOICING.INVOICE.PAID",
+                provider_account_id="merchant_health_paypal",
+                provider_invoice_id="INV_HEALTH_PAYPAL",
+                invoice_id=invoice.id,
+                creator_id=creator.id,
+                booking_id=booking.id,
+                tid=booking.tid,
+                status="applied",
+                paid_at=invoice.paid_at,
+                received_at=invoice.paid_at,
+                processed_at=invoice.paid_at,
+            )
+        )
+        session.add(
+            InvoicePaymentEvent(
+                payment_provider="paypal",
+                provider_event_id="WH_HEALTH_PAYPAL_UNMATCHED",
+                provider_event_type="INVOICING.INVOICE.PAID",
+                provider_account_id="merchant_health_paypal",
+                provider_invoice_id="INV_HEALTH_PAYPAL_UNMATCHED",
+                invoice_id=None,
+                creator_id=creator.id,
+                booking_id=None,
+                tid=None,
+                status="unmatched",
+                unattributed_reason=UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
+                paid_at=datetime(2026, 3, 13, 10, 0, tzinfo=timezone.utc),
+                received_at=datetime(2026, 3, 13, 10, 0, tzinfo=timezone.utc),
+                processed_at=None,
+            )
+        )
+        creator_id = creator.id
+        session.commit()
+
+    with Session(engine) as session:
+        snapshot = get_creator_evidence_ingress_health_snapshot(
+            creator_id=creator_id,
+            db=session,
+        )
+
+    provider_health = {
+        item.payment_provider: item
+        for item in snapshot.payment_provenance.provider_health
+    }
+    assert [
+        (item.state, item.row_count)
+        for item in provider_health["paypal"].settled_state_counts
+    ] == [
+        (PAYMENT_PROVENANCE_STATE_MATCHED, 1),
+        (PAYMENT_PROVENANCE_STATE_PENDING, 0),
+        (PAYMENT_PROVENANCE_STATE_UNMATCHED, 0),
+        (PAYMENT_PROVENANCE_STATE_CONFLICTING, 0),
+    ]
+    assert provider_health["paypal"].current_backlog_event_count == 1
+    assert [
+        (item.reason, item.event_count)
+        for item in provider_health["paypal"].current_backlog_reasons
+    ] == [
+        (UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID, 1),
+    ]
+    assert provider_health["stripe"].current_backlog_event_count == 0
+
+
 def test_reports_health_requires_auth():
     with TestClient(app) as client:
         response = client.get("/reports/health")
@@ -1039,6 +1150,8 @@ def test_reports_health_returns_creator_scoped_snapshot_and_logs_counts():
     assert response.json()["fullscope_ingress"]["failed_event_count"] == 1
     assert response.json()["blocked_billing"]["open_case_count"] == 1
     assert response.json()["payment_provenance"]["current_backlog_event_count"] == 0
+    assert response.json()["payment_provenance"]["provider_health"][0]["payment_provider"] == "stripe"
+    assert response.json()["payment_provenance"]["provider_health"][1]["payment_provider"] == "paypal"
     assert response.json()["authoritative_content"]["lagging_content_count"] == 0
     info_log.assert_called_once()
     assert (

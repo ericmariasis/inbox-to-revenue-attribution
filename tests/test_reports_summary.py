@@ -714,6 +714,92 @@ def test_creator_paid_attribution_explanation_keeps_settled_invoice_when_provide
     assert explanation.evidence[0].payment_provenance.state == PAYMENT_PROVENANCE_STATE_CONFLICTING
 
 
+def test_creator_paid_attribution_explanation_surfaces_paypal_provider_identity():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator = Creator(
+            name="Reports PayPal Creator",
+            billing_provider="paypal",
+            billing_connect_status="connected",
+            billing_account_id="merchant_reports_paypal",
+        )
+        session.add(creator)
+        session.flush()
+
+        booking_link = _create_booking_link(
+            session,
+            creator=creator,
+            suffix="paypal",
+        )
+        content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="paypal",
+        )
+        booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_REPORTS_PAYPAL",
+            booked_at=datetime(2026, 3, 9, 8, 0, tzinfo=timezone.utc),
+        )
+        invoice = Invoice(
+            creator_id=creator.id,
+            booking_id=booking.id,
+            tid=booking.tid,
+            payment_provider="paypal",
+            provider_account_id="merchant_reports_paypal",
+            provider_invoice_id="INV_REPORTS_PAYPAL",
+            amount_cents=19500,
+            currency="USD",
+            status="paid",
+            issued_at=datetime(2026, 3, 9, 8, 30, tzinfo=timezone.utc),
+            paid_at=datetime(2026, 3, 9, 9, 0, tzinfo=timezone.utc),
+        )
+        session.add(invoice)
+        session.flush()
+        session.add(
+            InvoicePaymentEvent(
+                payment_provider="paypal",
+                provider_event_id="WH_REPORTS_PAYPAL",
+                provider_event_type="INVOICING.INVOICE.PAID",
+                provider_account_id="merchant_reports_paypal",
+                provider_invoice_id="INV_REPORTS_PAYPAL",
+                invoice_id=invoice.id,
+                creator_id=creator.id,
+                booking_id=booking.id,
+                tid=booking.tid,
+                status="applied",
+                paid_at=invoice.paid_at,
+                received_at=invoice.paid_at,
+                processed_at=invoice.paid_at,
+            )
+        )
+        creator_id = creator.id
+        content_tid = content.tid
+        session.commit()
+
+    with Session(engine) as session:
+        explanation = get_creator_paid_attribution_explanation(
+            creator_id=creator_id,
+            tid=content_tid,
+            db=session,
+            start_date=date(2026, 3, 9),
+            end_date=date(2026, 3, 9),
+        )
+
+    assert explanation is not None
+    assert len(explanation.evidence) == 1
+    assert explanation.evidence[0].payment_provider == "paypal"
+    assert explanation.evidence[0].provider_invoice_id == "INV_REPORTS_PAYPAL"
+    assert explanation.evidence[0].provider_event_id == "WH_REPORTS_PAYPAL"
+    assert explanation.evidence[0].stripe_invoice_id is None
+    assert explanation.evidence[0].stripe_event_id is None
+
+
 def test_reports_summary_requires_auth():
     with TestClient(app) as client:
         response = client.get("/reports/summary")

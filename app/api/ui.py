@@ -39,6 +39,7 @@ from app.api.stripe import (
 from app.core.config import get_settings
 from app.db.session import SessionLocal, get_db
 from app.models.auth_user import AuthUser
+from app.models.billing_provider import BILLING_PROVIDER_PAYPAL, BILLING_PROVIDER_STRIPE
 from app.models.booking_provider import (
     BOOKING_PROVIDER_CALENDLY,
     BOOKING_PROVIDER_FULLSCOPE,
@@ -351,7 +352,7 @@ def creator_app_shell(
         db=db,
     )
     workspace_state = build_creator_workspace_state(
-        raw_stripe_status=current_user.creator.stripe_connect_status,
+        raw_billing_connect_status=current_user.creator.resolved_billing_connect_status,
         booking_links=booking_links,
         content_items=content_items,
         paid_invoice_count=summary.paid_invoice_count,
@@ -393,7 +394,7 @@ def creator_account_page(
         db=db,
     )
     readiness = build_creator_workspace_readiness(
-        raw_stripe_status=current_user.creator.stripe_connect_status,
+        raw_billing_connect_status=current_user.creator.resolved_billing_connect_status,
         booking_links=booking_links,
         content_items=content_items,
         paid_invoice_count=summary.paid_invoice_count,
@@ -1026,7 +1027,7 @@ def creator_reports_page(
             field_errors["date_range"] = "Start date must be on or before end date."
 
     readiness = build_creator_workspace_readiness(
-        raw_stripe_status=current_user.creator.stripe_connect_status,
+        raw_billing_connect_status=current_user.creator.resolved_billing_connect_status,
         booking_links=booking_links,
         content_items=content_items,
         paid_invoice_count=overall_summary.paid_invoice_count,
@@ -1654,7 +1655,7 @@ def _render_sign_in_page(status_value: str | None) -> str:
     <section class="hero">
       <p class="eyebrow">Self-serve setup</p>
       <h1>Sign in to your creator workspace</h1>
-      <p class="lede">Use your email to get a secure sign-in link, then open it on this same device and browser to finish Stripe, Calendly, and tracked-link setup inside the app.</p>
+      <p class="lede">Use your email to get a secure sign-in link, then open it on this same device and browser to finish billing, booking-link, and tracked-link setup inside the app.</p>
       {message_block}
       <form action="/sign-in" method="post" class="card">
         <label for="email">Email</label>
@@ -1676,28 +1677,32 @@ def _render_app_shell(
     readiness = workspace_state.readiness
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
-    stripe_status = _stripe_setup_home_state(readiness=readiness)
+    billing_status = _billing_setup_home_state(readiness=readiness)
     setup_progress = _build_setup_home_progress(
         workspace_state=workspace_state,
     )
 
-    stripe_detail_lines = []
-    if current_user.creator.stripe_account_id:
-        stripe_detail_lines.append(
-            f"<p><strong>Connected account</strong>: "
-            f"{html.escape(current_user.creator.stripe_account_id)}</p>"
+    billing_detail_lines = []
+    if current_user.creator.resolved_billing_account_id:
+        billing_detail_lines.append(
+            f"<p><strong>Billing provider</strong>: "
+            f"{html.escape(_billing_provider_label(current_user.creator.resolved_billing_provider))}</p>"
         )
-    if current_user.creator.stripe_connected_at:
-        stripe_detail_lines.append(
+        billing_detail_lines.append(
+            f"<p><strong>Billing account</strong>: "
+            f"{html.escape(current_user.creator.resolved_billing_account_id)}</p>"
+        )
+    if current_user.creator.resolved_billing_connected_at:
+        billing_detail_lines.append(
             f"<p><strong>Connected on</strong>: "
-            f"{_format_connected_at(current_user.creator.stripe_connected_at)}</p>"
+            f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
         )
 
-    stripe_action = ""
-    if stripe_status["button_label"]:
-        stripe_action = f"""
+    billing_action = ""
+    if billing_status["button_label"]:
+        billing_action = f"""
         <form action="/app/stripe/connect/start" method="post">
-          <button type="submit">{html.escape(stripe_status["button_label"])}</button>
+          <button type="submit">{html.escape(billing_status["button_label"])}</button>
         </form>
         """
 
@@ -1719,18 +1724,18 @@ def _render_app_shell(
         <p class="eyebrow">Account</p>
         <h2 class="wrap-anywhere">{creator_name}</h2>
         <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong></p>
-        <p>This workspace holds your Stripe connection, booking links, tracked content, and any blocked or unresolved items that still need review.</p>
+        <p>This workspace holds your billing connection, booking links, tracked content, and any blocked or unresolved items that still need review.</p>
       </article>
       <article class="card accent">
-        <p class="eyebrow">Stripe status</p>
+        <p class="eyebrow">Billing status</p>
         <div class="status-row">
-          <h2>{html.escape(stripe_status['heading'])}</h2>
-          <span class="status-pill {html.escape(stripe_status['badge_class'])}">{html.escape(stripe_status['label'])}</span>
+          <h2>{html.escape(billing_status['heading'])}</h2>
+          <span class="status-pill {html.escape(billing_status['badge_class'])}">{html.escape(billing_status['label'])}</span>
         </div>
-        <p>{html.escape(stripe_status['description'])}</p>
-        {"".join(stripe_detail_lines)}
+        <p>{html.escape(billing_status['description'])}</p>
+        {"".join(billing_detail_lines)}
         {_render_readiness_summary(readiness=readiness)}
-        {stripe_action}
+        {billing_action}
       </article>
     </section>
     {_render_setup_progress_section(setup_progress=setup_progress)}
@@ -1767,22 +1772,26 @@ def _render_account_page(
 ) -> str:
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
-    stripe_state = _account_stripe_management_state(readiness=readiness)
+    billing_state = _account_billing_management_state(readiness=readiness)
     booking_links_count = readiness.booking_links_count
     trackable_booking_links_count = readiness.trackable_booking_links_count
     limited_tracking_booking_links_count = readiness.limited_tracking_booking_links_count
     billing_ready_count = readiness.billing_ready_count
 
-    stripe_detail_lines = []
-    if current_user.creator.stripe_account_id:
-        stripe_detail_lines.append(
-            f"<p><strong>Connected account</strong>: "
-            f"{html.escape(current_user.creator.stripe_account_id)}</p>"
+    billing_detail_lines = []
+    if current_user.creator.resolved_billing_account_id:
+        billing_detail_lines.append(
+            f"<p><strong>Billing provider</strong>: "
+            f"{html.escape(_billing_provider_label(current_user.creator.resolved_billing_provider))}</p>"
         )
-    if current_user.creator.stripe_connected_at:
-        stripe_detail_lines.append(
+        billing_detail_lines.append(
+            f"<p><strong>Billing account</strong>: "
+            f"{html.escape(current_user.creator.resolved_billing_account_id)}</p>"
+        )
+    if current_user.creator.resolved_billing_connected_at:
+        billing_detail_lines.append(
             f"<p><strong>Connected on</strong>: "
-            f"{_format_connected_at(current_user.creator.stripe_connected_at)}</p>"
+            f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
         )
 
     booking_links_summary = "No booking links are saved yet for this workspace."
@@ -1832,7 +1841,7 @@ def _render_account_page(
           <p class="eyebrow">Current workspace</p>
           <h2 class="wrap-anywhere">{creator_name}</h2>
         </div>
-        <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong>. This workspace currently holds your Stripe connection, booking links, tracked content, reports, and any blocked or unresolved items still waiting on review.</p>
+        <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong>. This workspace currently holds your billing connection, booking links, tracked content, reports, and any blocked or unresolved items still waiting on review.</p>
       </article>
       <article class="card stack">
         <div>
@@ -1849,18 +1858,18 @@ def _render_account_page(
       <article class="card stack">
         <div class="status-row">
           <div>
-            <p class="eyebrow">Stripe connection</p>
-            <h2>Stripe connection</h2>
+            <p class="eyebrow">Billing connection</p>
+            <h2>Billing connection</h2>
           </div>
-          <span class="status-pill {html.escape(stripe_state['badge_class'])}">{html.escape(stripe_state['label'])}</span>
+          <span class="status-pill {html.escape(billing_state['badge_class'])}">{html.escape(billing_state['label'])}</span>
         </div>
-        <p>{html.escape(stripe_state['body'])}</p>
-        {"".join(stripe_detail_lines)}
+        <p>{html.escape(billing_state['body'])}</p>
+        {"".join(billing_detail_lines)}
         {_render_readiness_summary(readiness=readiness)}
         <p><strong>What this changes</strong></p>
-        <p>Changing the Stripe connection affects future billing readiness. It does not erase local history already recorded for this workspace, and it does not delete anything from Stripe automatically.</p>
+        <p>Changing the billing connection affects future billing readiness. It does not erase local history already recorded for this workspace, and it does not delete anything from the payment provider automatically.</p>
         <form action="/app/stripe/connect/start" method="post">
-          <button type="submit">{html.escape(stripe_state['action_label'])}</button>
+          <button type="submit">{html.escape(billing_state['action_label'])}</button>
         </form>
       </article>
       <article class="card stack">
@@ -1889,7 +1898,7 @@ def _render_account_page(
           </div>
           <p>Use this only if you want to start over with the same email. During beta, workspace reset is reviewed manually before anything changes.</p>
           <p><strong>What reset may change</strong></p>
-          <p>A reset can break tracked links, remove local setup state, and make earlier reports or history unavailable from this workspace. Reset does not delete or reverse anything in Stripe or Calendly automatically.</p>
+          <p>A reset can break tracked links, remove local setup state, and make earlier reports or history unavailable from this workspace. Reset does not delete or reverse anything in the payment provider or booking provider automatically.</p>
           <p>If your workspace already has booking, billing, or payment history, we may not be able to reset it safely.</p>
           {_render_account_request_current_state(
               request_record=support_requests.get(SUPPORT_REQUEST_TYPE_WORKSPACE_RESET),
@@ -1907,7 +1916,7 @@ def _render_account_page(
           </div>
           <p>Use this if you want to close this local account and remove this workspace from the product. During beta, deletion is handled manually so we can avoid false promises about what is removed.</p>
           <p><strong>Before you request deletion</strong></p>
-          <p>Deleting this account can remove local workspace data and end access to tracked links, reports, and historical workspace views. Some detached diagnostics may remain without workspace links, and Stripe or Calendly accounts are not deleted automatically.</p>
+          <p>Deleting this account can remove local workspace data and end access to tracked links, reports, and historical workspace views. Some detached diagnostics may remain without workspace links, and payment-provider or booking-provider accounts are not deleted automatically.</p>
           <p>After deletion is complete, you may sign up again later with the same email, but it will be treated as a new workspace.</p>
           {_render_account_request_current_state(
               request_record=support_requests.get(SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION),
@@ -2331,7 +2340,7 @@ def _readiness_stage_summary(readiness: CreatorWorkspaceReadiness) -> dict[str, 
             ),
         }
 
-    if readiness.connected:
+    if readiness.billing_connected:
         return {
             "title": "Connected, but not billable now",
             "copy": (
@@ -2343,28 +2352,28 @@ def _readiness_stage_summary(readiness: CreatorWorkspaceReadiness) -> dict[str, 
     return {
         "title": "Connected comes first",
         "copy": (
-            "Value does not arrive right after sign-in. Connect Stripe first, then make one "
-            "booking link billable now, then create tracked content."
+            "Value does not arrive right after sign-in. Connect a billing provider first, "
+            "then make one booking link billable now, then create tracked content."
         ),
     }
 
 
 def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[str, str, str]]:
-    stripe_status = readiness.stripe_status
+    billing_connect_status = readiness.billing_connect_status
     booking_links_count = readiness.booking_links_count
     trackable_booking_links_count = readiness.trackable_booking_links_count
     limited_tracking_booking_links_count = readiness.limited_tracking_booking_links_count
 
-    if readiness.connected:
-        connected_line = ("Connected", "Done", "Stripe is connected to this workspace.")
-    elif stripe_status == "disconnected":
+    if readiness.billing_connected:
+        connected_line = ("Connected", "Done", "A billing provider is connected to this workspace.")
+    elif billing_connect_status == "disconnected":
         connected_line = (
             "Connected",
             "Not yet",
-            "Reconnect Stripe before relying on new bookings.",
+            "Reconnect billing setup before relying on new bookings.",
         )
     else:
-        connected_line = ("Connected", "Not yet", "Finish Stripe setup first.")
+        connected_line = ("Connected", "Not yet", "Finish billing setup first.")
 
     if readiness.billable_now:
         billable_line = (
@@ -2372,25 +2381,25 @@ def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[st
             "Done",
             "At least one booking link has amount and currency saved.",
         )
-    elif readiness.connected and _has_limited_tracking_only_booking_links(readiness):
+    elif readiness.billing_connected and _has_limited_tracking_only_booking_links(readiness):
         billable_line = (
             "Billable now",
             "Not yet",
             "Saved booking sources can generate tracked redirects now, but billable-now and invoice readiness still wait for end-to-end provider support.",
         )
-    elif readiness.connected and _has_inactive_creator_booking_links(readiness):
+    elif readiness.billing_connected and _has_inactive_creator_booking_links(readiness):
         billable_line = (
             "Billable now",
             "Not yet",
             "Saved booking sources are not active for creator-tracked workflows right now. Add a currently supported booking link.",
         )
-    elif readiness.connected and booking_links_count > 0:
+    elif readiness.billing_connected and booking_links_count > 0:
         billable_line = (
             "Billable now",
             "Not yet",
             "Add amount and currency to at least one saved booking link.",
         )
-    elif readiness.connected:
+    elif readiness.billing_connected:
         billable_line = (
             "Billable now",
             "Not yet",
@@ -2400,7 +2409,7 @@ def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[st
         billable_line = (
             "Billable now",
             "Not yet",
-            "Stripe must be connected before this workspace can be billable now.",
+            "A billing provider must be connected before this workspace can be billable now.",
         )
 
     if readiness.ready_to_track:
@@ -2475,7 +2484,7 @@ def _build_setup_home_progress(
     workspace_state: CreatorWorkspaceState,
 ) -> dict[str, object]:
     readiness = workspace_state.readiness
-    normalized_stripe_status = readiness.stripe_status
+    normalized_billing_status = readiness.billing_connect_status
     booking_links_count = readiness.booking_links_count
     trackable_booking_links_count = readiness.trackable_booking_links_count
     limited_tracking_booking_links_count = readiness.limited_tracking_booking_links_count
@@ -2486,11 +2495,11 @@ def _build_setup_home_progress(
     paid_invoice_count = readiness.paid_invoice_count
     attention_count = workspace_state.attention_count
 
-    if normalized_stripe_status == "connected":
-        stripe_step = _setup_step(
-            title="Connect Stripe",
+    if normalized_billing_status == "connected":
+        billing_step = _setup_step(
+            title="Connect billing provider",
             copy_html=(
-                "Stripe is connected. "
+                "A billing provider is connected. "
                 + (
                     "This workspace is already billable now while you finish the rest of setup."
                     if billable_now
@@ -2507,33 +2516,33 @@ def _build_setup_home_progress(
             is_complete=True,
         )
         next_action = None
-    elif normalized_stripe_status == "disconnected":
-        stripe_step = _setup_step(
-            title="Connect Stripe",
-            copy_html="Stripe was connected before, but it is disconnected now. Reconnect it before new bookings can move into invoicing.",
+    elif normalized_billing_status == "disconnected":
+        billing_step = _setup_step(
+            title="Connect billing provider",
+            copy_html="A billing provider was connected before, but it is disconnected now. Reconnect it before new bookings can move into invoicing.",
             label="Blocked",
             badge_class="disconnected",
             item_class="todo",
             is_complete=False,
         )
         next_action = {
-            "title": "Reconnect Stripe",
-            "copy_html": "Stripe is the first setup blocker. Reconnect it from this page before you rely on new bookings.",
+            "title": "Reconnect billing setup",
+            "copy_html": "Billing setup is the first setup blocker. Reconnect Stripe from this page before you rely on new bookings.",
             "action_label": "Reconnect Stripe",
             "action_href": "/app/stripe/connect/start",
             "action_method": "post",
         }
     else:
-        stripe_step = _setup_step(
-            title="Connect Stripe",
-            copy_html="Finish Stripe onboarding so this workspace has a payment account ready for invoicing.",
+        billing_step = _setup_step(
+            title="Connect billing provider",
+            copy_html="Finish billing setup so this workspace has a payment account ready for invoicing.",
             label="Needs action",
             badge_class="pending",
             item_class="todo",
             is_complete=False,
         )
         next_action = {
-            "title": "Finish Stripe setup",
+            "title": "Finish billing setup",
             "copy_html": "Start Stripe first so the rest of the setup flow leads to a billable workspace.",
             "action_label": "Start Stripe setup",
             "action_href": "/app/stripe/connect/start",
@@ -2589,7 +2598,7 @@ def _build_setup_home_progress(
                 + (
                     "already has amount and currency so this workspace is billable now."
                     if billable_now
-                    else "already has amount and currency. Connect Stripe so this workspace becomes billable now."
+                    else "already has amount and currency. Connect billing setup so this workspace becomes billable now."
                 )
             ),
             label="Done",
@@ -2704,7 +2713,7 @@ def _build_setup_home_progress(
         )
 
     steps = [
-        stripe_step,
+        billing_step,
         booking_link_step,
         billing_defaults_step,
         tracked_link_step,
@@ -2737,9 +2746,9 @@ def _build_setup_home_progress(
                 "action_method": "get",
             }
 
-    progress_copy = "Connect Stripe first, then make one booking link billable now and create tracked content."
-    if readiness.connected:
-        progress_copy = "Stripe is connected. The next milestone is billable now."
+    progress_copy = "Connect billing setup first, then make one booking link billable now and create tracked content."
+    if readiness.billing_connected:
+        progress_copy = "Billing setup is connected. The next milestone is billable now."
     if billable_now:
         progress_copy = "This workspace is billable now. Create tracked content next to become ready to track."
     if ready_to_track and paid_invoice_count == 0:
@@ -4632,12 +4641,12 @@ def _render_reports_empty_state(
         </section>
         """
 
-    if readiness.connected:
+    if readiness.billing_connected:
         return """
         <section class="empty-state">
           <p class="eyebrow">Not billable now</p>
           <h2>Billable now comes before paid results</h2>
-          <p>Stripe is connected, but this workspace is not billable now yet. Save amount and currency on at least one booking link, then create tracked content.</p>
+          <p>A billing provider is connected, but this workspace is not billable now yet. Save amount and currency on at least one booking link, then create tracked content.</p>
           <a href="/app/booking-links" class="inline-link">Add billing defaults</a>
         </section>
         """
@@ -4646,7 +4655,7 @@ def _render_reports_empty_state(
     <section class="empty-state">
       <p class="eyebrow">Not connected yet</p>
       <h2>Connected comes before paid results</h2>
-      <p>Connect Stripe first. Then make one booking link billable now and create tracked content before Reports can fill in.</p>
+      <p>Connect billing setup first. Then make one booking link billable now and create tracked content before Reports can fill in.</p>
       <a href="/app" class="inline-link">Open setup home</a>
     </section>
     """
@@ -4674,10 +4683,10 @@ def _render_blocked_billing_case_list(
 def _render_blocked_billing_case_card(*, blocked_case: BlockedBillingCaseSummary) -> str:
     reason_copy = _blocked_billing_reason_copy(blocked_case.reason_code)
     invoice_copy = "Not created yet"
-    if blocked_case.invoice_id is not None or blocked_case.stripe_invoice_id is not None:
+    if blocked_case.invoice_id is not None or blocked_case.provider_invoice_id is not None:
         invoice_copy = (
             f'{html.escape(str(blocked_case.invoice_id or ""))} / '
-            f'{html.escape(blocked_case.stripe_invoice_id or "missing provider id")}'
+            f'{html.escape(blocked_case.provider_invoice_id or "missing provider id")}'
         ).strip(" /")
 
     provider_details = ""
@@ -4709,7 +4718,7 @@ def _render_blocked_billing_case_card(*, blocked_case: BlockedBillingCaseSummary
       <p><strong>TID</strong>: <code>{html.escape(blocked_case.tid)}</code></p>
       <p><strong>Invoice</strong>: {invoice_copy}</p>
       <p><strong>Frozen billing</strong>: {html.escape(_reports_currency_amount_copy(blocked_case.frozen_currency, blocked_case.frozen_amount_cents))}</p>
-      <p><strong>Stripe account</strong>: <code>{html.escape(blocked_case.stripe_account_id or "not_connected")}</code></p>
+      <p><strong>Billing account</strong>: <code>{html.escape(blocked_case.provider_account_id or "not_connected")}</code></p>
       <p><strong>First blocked</strong>: {_format_timestamp_in_utc(blocked_case.first_blocked_at)}</p>
       <p><strong>Last blocked</strong>: {_format_timestamp_in_utc(blocked_case.last_blocked_at)}</p>
       <p><strong>Last retry</strong>: {last_retry_copy}</p>
@@ -4729,7 +4738,7 @@ def _render_unmatched_payment_event_list(
         <section class="empty-state">
           <p class="eyebrow">Clear</p>
           <h2>No unmatched payment events are waiting right now</h2>
-          <p>If a paid Stripe event cannot be linked back to canonical local booking or invoice state yet, it will appear here with the reason, likely cause, and next step.</p>
+          <p>If a paid provider event cannot be linked back to canonical local booking or invoice state yet, it will appear here with the reason, likely cause, and next step.</p>
         </section>
         """
 
@@ -4776,9 +4785,10 @@ def _render_unmatched_payment_event_card(*, payment_event: UnmatchedPaymentEvent
       <p>{html.escape(reason_copy.summary)}</p>
       <p><strong>Likely cause</strong>: {html.escape(reason_copy.likely_cause)}</p>
       <p><strong>What to do next</strong>: {html.escape(reason_copy.next_step)}</p>
-      <p><strong>Stripe event</strong>: <code>{html.escape(payment_event.stripe_event_id)}</code></p>
-      <p><strong>Stripe invoice</strong>: <code>{html.escape(payment_event.stripe_invoice_id)}</code></p>
-      <p><strong>Stripe account</strong>: <code>{html.escape(payment_event.stripe_account_id or "unknown")}</code></p>
+      <p><strong>Payment provider</strong>: <code>{html.escape(_billing_provider_label(payment_event.payment_provider))}</code></p>
+      <p><strong>Payment event</strong>: <code>{html.escape(payment_event.provider_event_id)}</code></p>
+      <p><strong>Provider invoice</strong>: <code>{html.escape(payment_event.provider_invoice_id)}</code></p>
+      <p><strong>Billing account</strong>: <code>{html.escape(payment_event.provider_account_id or "unknown")}</code></p>
       <p><strong>Booking</strong>: {booking_copy}</p>
       <p><strong>TID</strong>: {tid_copy}</p>
       <p><strong>Reason code</strong>: <code>{html.escape(payment_event.unattributed_reason or "unknown")}</code></p>
@@ -4945,6 +4955,7 @@ def _render_reports_paid_evidence_card(
     index: int,
     evidence: PaidAttributionEvidence,
 ) -> str:
+    payment_provider_label = _billing_provider_label(evidence.payment_provider)
     payment_event_status_label = (
         _reports_payment_event_status_label(evidence.payment_event_status)
         if evidence.payment_event_status is not None
@@ -4952,10 +4963,10 @@ def _render_reports_paid_evidence_card(
     )
     payment_event_line = (
         f"<p><strong>Payment event</strong>: "
-        f"<code>{html.escape(evidence.stripe_event_id or '')}</code> "
+        f"<code>{html.escape(evidence.provider_event_id or '')}</code> "
         f"stored as {html.escape(payment_event_status_label)} "
         f"and received {_format_timestamp_in_utc(evidence.payment_event_received_at)}.</p>"
-        if evidence.stripe_event_id is not None and evidence.payment_event_received_at is not None
+        if evidence.provider_event_id is not None and evidence.payment_event_received_at is not None
         else "<p><strong>Payment event</strong>: No linked payment event is stored for this invoice yet.</p>"
     )
     payment_paid_line = (
@@ -4974,7 +4985,8 @@ def _render_reports_paid_evidence_card(
         <p class="pill-note">{html.escape(payment_event_status_label)}</p>
       </div>
       <p><strong>Booking</strong>: <code>{html.escape(evidence.booking_uuid)}</code> captured {_format_timestamp_in_utc(evidence.booked_at)}.</p>
-      <p><strong>Invoice</strong>: <code>{html.escape(evidence.stripe_invoice_id)}</code> marked paid {_format_timestamp_in_utc(evidence.invoice_paid_at)}.</p>
+      <p><strong>Payment provider</strong>: <code>{html.escape(payment_provider_label)}</code></p>
+      <p><strong>Invoice</strong>: <code>{html.escape(evidence.provider_invoice_id)}</code> marked paid {_format_timestamp_in_utc(evidence.invoice_paid_at)}.</p>
       {payment_event_line}
       {payment_paid_line}
     </article>
@@ -5114,7 +5126,7 @@ def _render_attention_notice(*, status_value: str | None) -> str:
     if status_value == "still-blocked":
         return """
         <section class="notice error">
-          <p><strong>Still blocked.</strong> The retry was safe, but the current Stripe readiness or provider state still prevented invoice creation.</p>
+          <p><strong>Still blocked.</strong> The retry was safe, but the current billing-readiness or provider state still prevented invoice creation.</p>
         </section>
         """
     if status_value == "already-handled":
@@ -5237,29 +5249,29 @@ def _format_money_from_cents(amount_cents: int) -> str:
     return f"{amount_cents / 100:,.2f}"
 
 
-def _stripe_setup_home_state(*, readiness: CreatorWorkspaceReadiness) -> dict[str, str]:
-    normalized_status = readiness.stripe_status
+def _billing_setup_home_state(*, readiness: CreatorWorkspaceReadiness) -> dict[str, str]:
+    normalized_status = readiness.billing_connect_status
     if normalized_status == "connected":
         description = (
-            "Stripe is connected, but this workspace is not billable now yet. Save amount "
+            "A billing provider is connected, but this workspace is not billable now yet. Save amount "
             "and currency on at least one booking link."
         )
         checklist_copy = (
-            "Stripe is connected. The next milestone is billable now, which needs amount "
+            "Billing setup is connected. The next milestone is billable now, which needs amount "
             "and currency on at least one booking link."
         )
         if readiness.billable_now:
             description = (
-                "Stripe is connected and this workspace is billable now. Keep going until "
+                "A billing provider is connected and this workspace is billable now. Keep going until "
                 "it is also ready to track."
             )
             checklist_copy = (
-                "Stripe is connected. This workspace is already billable now while you "
+                "Billing setup is connected. This workspace is already billable now while you "
                 "finish the rest of setup."
             )
         return {
             "label": "Connected",
-            "heading": "Stripe is connected",
+            "heading": "Billing provider is connected",
             "description": description,
             "button_label": "",
             "badge_class": "connected",
@@ -5271,42 +5283,42 @@ def _stripe_setup_home_state(*, readiness: CreatorWorkspaceReadiness) -> dict[st
     if normalized_status == "disconnected":
         return {
             "label": "Disconnected",
-            "heading": "Stripe is disconnected",
+            "heading": "Billing connection is disconnected",
             "description": "This workspace was connected before, but it is disconnected now. Reconnect it before new bookings can move into invoicing.",
             "button_label": "Reconnect Stripe",
             "badge_class": "disconnected",
             "item_class": "todo",
             "checklist_label": "Blocked",
-            "checklist_copy": "Reconnect Stripe before new bookings can move into invoicing for this workspace.",
+            "checklist_copy": "Reconnect billing setup before new bookings can move into invoicing for this workspace.",
         }
 
     return {
         "label": "Pending",
-        "heading": "Stripe setup is still pending",
-        "description": "Stripe is required before this workspace can turn new bookings into invoices. Start or resume the connection from this page.",
+        "heading": "Billing setup is still pending",
+        "description": "A billing provider is required before this workspace can turn new bookings into invoices. Start or resume the connection from this page.",
         "button_label": "Start Stripe setup",
         "badge_class": "pending",
         "item_class": "todo",
         "checklist_label": "Needs action",
-        "checklist_copy": "Finish Stripe onboarding so this workspace has a payment account ready for invoicing.",
+        "checklist_copy": "Finish billing setup so this workspace has a payment account ready for invoicing.",
     }
 
 
-def _account_stripe_management_state(
+def _account_billing_management_state(
     *,
     readiness: CreatorWorkspaceReadiness,
 ) -> dict[str, str]:
-    normalized_status = readiness.stripe_status
+    normalized_status = readiness.billing_connect_status
     if normalized_status == "connected":
         body = (
-            "This workspace is connected to Stripe, but it is not billable now yet. Save "
+            "This workspace has a connected billing provider, but it is not billable now yet. Save "
             "amount and currency on at least one booking link before new bookings can move "
             "into invoicing."
         )
         if readiness.billable_now:
             body = (
-                "This workspace is connected to Stripe and billable now for future "
-                "invoicing. You can reconnect or replace that connection without deleting "
+                "This workspace has a connected billing provider and is billable now for future "
+                "invoicing. You can reconnect that setup without deleting "
                 "your historical bookings, invoices, reports, or recovery history."
             )
         return {
@@ -5320,8 +5332,8 @@ def _account_stripe_management_state(
         return {
             "label": "Disconnected",
             "body": (
-                "This workspace is not currently connected to Stripe for invoicing. "
-                "You can connect or reconnect Stripe here when you are ready."
+                "This workspace is not currently connected to a billing provider for invoicing. "
+                "You can reconnect Stripe here when you are ready."
             ),
             "action_label": "Reconnect Stripe",
             "badge_class": "disconnected",
@@ -5330,8 +5342,8 @@ def _account_stripe_management_state(
     return {
         "label": "Pending",
         "body": (
-            "This workspace is not currently connected to Stripe for invoicing. "
-            "You can connect or reconnect Stripe here when you are ready."
+            "This workspace is not currently connected to a billing provider for invoicing. "
+            "You can start Stripe setup here when you are ready."
         ),
         "action_label": "Start Stripe setup",
         "badge_class": "pending",
@@ -5366,6 +5378,17 @@ def _format_timestamp_in_utc(value) -> str:
 
 def _format_connected_at(value) -> str:
     return _format_timestamp_in_utc(value)
+
+
+def _billing_provider_label(raw_provider: str | None) -> str:
+    normalized_provider = (raw_provider or "").strip().lower()
+    if normalized_provider == BILLING_PROVIDER_STRIPE:
+        return "Stripe"
+    if normalized_provider == BILLING_PROVIDER_PAYPAL:
+        return "PayPal"
+    if normalized_provider:
+        return normalized_provider.replace("_", " ").title()
+    return "Not connected"
 
 
 def _count_copy(count: int, singular: str, plural: str | None = None) -> str:
@@ -5406,8 +5429,9 @@ def _account_request_flow(request_type: str) -> dict[str, str] | None:
             "confirm_title": "Request account deletion?",
             "confirm_body": (
                 "This sends a manual request to remove this local workspace where possible. "
-                "It does not automatically delete Stripe or Calendly accounts, and historical "
-                "workspace access may not be recoverable after deletion work begins."
+                "It does not automatically delete payment-provider or booking-provider "
+                "accounts, and historical workspace access may not be recoverable after "
+                "deletion work begins."
             ),
             "confirm_button": "Submit deletion request",
             "cancel_button": "Keep account",
@@ -5814,11 +5838,11 @@ def _blocked_billing_reason_copy(reason_code: str) -> _DiagnosticCopy:
                 "billable when invoice creation ran."
             ),
             likely_cause=(
-                "This is usually creator-fixable setup work: Stripe connection, billing "
+                "This is usually creator-fixable setup work: billing connection, billing "
                 "readiness, or required account details were not ready yet."
             ),
             next_step=(
-                "Finish the Stripe or billing setup and then retry invoice creation. Until an "
+                "Finish the billing setup and then retry invoice creation. Until an "
                 "invoice exists, this booking stays outside paid totals."
             ),
         )

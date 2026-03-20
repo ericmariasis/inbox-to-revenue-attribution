@@ -121,10 +121,11 @@ class CreatorPaidRevenueSummary:
 @dataclass(frozen=True)
 class UnmatchedPaymentEventSummary:
     payment_event_id: uuid.UUID
-    stripe_event_id: str
-    stripe_event_type: str
-    stripe_account_id: str | None
-    stripe_invoice_id: str
+    payment_provider: str
+    provider_event_id: str
+    provider_event_type: str
+    provider_account_id: str | None
+    provider_invoice_id: str
     creator_id: uuid.UUID | None
     booking_id: uuid.UUID | None
     booking_uuid: str | None
@@ -134,6 +135,30 @@ class UnmatchedPaymentEventSummary:
     paid_at: datetime | None
     received_at: datetime
     processed_at: datetime | None
+
+    @property
+    def stripe_event_id(self) -> str | None:
+        if self.payment_provider == BILLING_PROVIDER_STRIPE:
+            return self.provider_event_id
+        return None
+
+    @property
+    def stripe_event_type(self) -> str | None:
+        if self.payment_provider == BILLING_PROVIDER_STRIPE:
+            return self.provider_event_type
+        return None
+
+    @property
+    def stripe_account_id(self) -> str | None:
+        if self.payment_provider == BILLING_PROVIDER_STRIPE:
+            return self.provider_account_id
+        return None
+
+    @property
+    def stripe_invoice_id(self) -> str | None:
+        if self.payment_provider == BILLING_PROVIDER_STRIPE:
+            return self.provider_invoice_id
+        return None
 
 
 class InvoicePaymentEventService:
@@ -673,17 +698,21 @@ def list_current_unmatched_payment_events(
         )
         .order_by(
             InvoicePaymentEvent.received_at.desc(),
-            InvoicePaymentEvent.stripe_event_id.asc(),
+            func.coalesce(
+                InvoicePaymentEvent.provider_event_id,
+                InvoicePaymentEvent.stripe_event_id,
+            ).asc(),
         )
     ).all()
 
     return [
         UnmatchedPaymentEventSummary(
             payment_event_id=payment_event.id,
-            stripe_event_id=payment_event.stripe_event_id,
-            stripe_event_type=payment_event.stripe_event_type,
-            stripe_account_id=payment_event.stripe_account_id,
-            stripe_invoice_id=payment_event.stripe_invoice_id,
+            payment_provider=payment_event.resolved_payment_provider,
+            provider_event_id=payment_event.resolved_provider_event_id or "missing",
+            provider_event_type=payment_event.resolved_provider_event_type or "unknown",
+            provider_account_id=payment_event.resolved_provider_account_id,
+            provider_invoice_id=payment_event.resolved_provider_invoice_id or "missing",
             creator_id=payment_event.creator_id,
             booking_id=payment_event.booking_id,
             booking_uuid=booking_uuid,

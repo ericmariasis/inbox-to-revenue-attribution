@@ -432,7 +432,7 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert initial_home_response.status_code == 200
     assert "Setup Home" in initial_home_response.text
     assert "0 of 4 setup steps done" in initial_home_response.text
-    assert "Finish Stripe setup" in initial_home_response.text
+    assert "Finish billing setup" in initial_home_response.text
     assert "Blocked billing and unresolved payments will appear" in initial_home_response.text
 
     assert invalid_link_response.status_code == 303
@@ -460,7 +460,7 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
 
     assert booking_link_setup_response.status_code == 200
     assert "2 of 4 setup steps done" in booking_link_setup_response.text
-    assert "Finish Stripe setup" in booking_link_setup_response.text
+    assert "Finish billing setup" in booking_link_setup_response.text
     assert "Billing-ready links" in booking_link_setup_response.text
 
     assert content_page_response.status_code == 200
@@ -476,7 +476,7 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
 
     assert content_setup_response.status_code == 200
     assert "3 of 4 setup steps done" in content_setup_response.text
-    assert "Finish Stripe setup" in content_setup_response.text
+    assert "Finish billing setup" in content_setup_response.text
 
     assert connect_start_response.status_code == 303
     assert connect_start_response.headers["location"].startswith(
@@ -490,7 +490,7 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert "This workspace is ready to track and waiting for the first paid result." in setup_complete_response.text
     assert "Ready to track and waiting for first paid result" in setup_complete_response.text
     assert "Waiting for first paid result" in setup_complete_response.text
-    assert "Connected account" in setup_complete_response.text
+    assert "Billing account" in setup_complete_response.text
     assert provider.account_id in setup_complete_response.text
 
     assert paid_booking_response.status_code == 200

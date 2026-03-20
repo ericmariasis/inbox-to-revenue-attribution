@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.models.billing_provider import BILLING_PROVIDER_STRIPE
 from app.services.invoice_payment_events import PaymentProvenanceSummary
 from app.services.settled_paid_evidence import (
     CURRENT_UNMATCHED_PAYMENT_BACKLOG_SCOPE,
@@ -75,16 +76,29 @@ class PaidAttributionEvidence:
     booking_uuid: str
     booked_at: datetime
     invoice_id: UUID
-    stripe_invoice_id: str
+    payment_provider: str
+    provider_invoice_id: str
     invoice_amount_cents: int
     invoice_currency: str
     invoice_paid_at: datetime
     payment_event_id: UUID | None
-    stripe_event_id: str | None
+    provider_event_id: str | None
     payment_event_status: str | None
     payment_event_paid_at: datetime | None
     payment_event_received_at: datetime | None
     payment_provenance: PaymentProvenanceSummary
+
+    @property
+    def stripe_invoice_id(self) -> str | None:
+        if self.payment_provider == BILLING_PROVIDER_STRIPE:
+            return self.provider_invoice_id
+        return None
+
+    @property
+    def stripe_event_id(self) -> str | None:
+        if self.payment_provider == BILLING_PROVIDER_STRIPE:
+            return self.provider_event_id
+        return None
 
 
 @dataclass(frozen=True)
@@ -177,12 +191,13 @@ def get_creator_paid_attribution_explanation(
             booking_uuid=row.booking_uuid,
             booked_at=row.booked_at,
             invoice_id=row.invoice_id,
-            stripe_invoice_id=row.stripe_invoice_id,
+            payment_provider=row.payment_provider,
+            provider_invoice_id=row.provider_invoice_id,
             invoice_amount_cents=row.invoice_amount_cents,
             invoice_currency=row.invoice_currency,
             invoice_paid_at=row.invoice_paid_at,
             payment_event_id=row.payment_event_id,
-            stripe_event_id=row.stripe_event_id,
+            provider_event_id=row.provider_event_id,
             payment_event_status=row.payment_event_status,
             payment_event_paid_at=row.payment_event_paid_at,
             payment_event_received_at=row.payment_event_received_at,

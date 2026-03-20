@@ -38,14 +38,14 @@ def _content(*, booking_link_id: str = "booking-link-1") -> ContentResponse:
 
 def test_build_creator_workspace_readiness_connected_but_not_billable_now():
     readiness = build_creator_workspace_readiness(
-        raw_stripe_status=" Connected ",
+        raw_billing_connect_status=" Connected ",
         booking_links=[_booking_link()],
         content_items=[],
         paid_invoice_count=0,
     )
 
-    assert readiness.stripe_status == "connected"
-    assert readiness.connected is True
+    assert readiness.billing_connect_status == "connected"
+    assert readiness.billing_connected is True
     assert readiness.billable_now is False
     assert readiness.ready_to_track is False
     assert readiness.waiting_for_first_paid_result is False
@@ -59,13 +59,13 @@ def test_build_creator_workspace_readiness_connected_but_not_billable_now():
 
 def test_build_creator_workspace_readiness_ready_to_track_waiting_for_first_paid_result():
     readiness = build_creator_workspace_readiness(
-        raw_stripe_status="connected",
+        raw_billing_connect_status="connected",
         booking_links=[_booking_link(billing_amount_cents=15000, billing_currency="USD")],
         content_items=[_content()],
         paid_invoice_count=0,
     )
 
-    assert readiness.connected is True
+    assert readiness.billing_connected is True
     assert readiness.billable_now is True
     assert readiness.ready_to_track is True
     assert readiness.waiting_for_first_paid_result is True
@@ -79,7 +79,7 @@ def test_build_creator_workspace_readiness_ready_to_track_waiting_for_first_paid
 
 def test_build_creator_workspace_readiness_paid_results_clear_waiting_state():
     readiness = build_creator_workspace_readiness(
-        raw_stripe_status="connected",
+        raw_billing_connect_status="connected",
         booking_links=[_booking_link(billing_amount_cents=15000, billing_currency="USD")],
         content_items=[_content()],
         paid_invoice_count=2,
@@ -93,7 +93,7 @@ def test_build_creator_workspace_readiness_paid_results_clear_waiting_state():
 
 def test_build_creator_workspace_readiness_keeps_fullscope_links_out_of_billable_now():
     readiness = build_creator_workspace_readiness(
-        raw_stripe_status="connected",
+        raw_billing_connect_status="connected",
         booking_links=[
             _booking_link(
                 provider="fullscope",
@@ -117,7 +117,7 @@ def test_build_creator_workspace_readiness_keeps_fullscope_links_out_of_billable
 
 def test_build_creator_workspace_state_sums_attention_backlog_counts():
     workspace_state = build_creator_workspace_state(
-        raw_stripe_status="pending",
+        raw_billing_connect_status="pending",
         booking_links=[],
         content_items=[],
         paid_invoice_count=0,
@@ -125,7 +125,7 @@ def test_build_creator_workspace_state_sums_attention_backlog_counts():
         unmatched_payment_count=3,
     )
 
-    assert workspace_state.readiness.connected is False
+    assert workspace_state.readiness.billing_connected is False
     assert workspace_state.readiness.billable_now is False
     assert workspace_state.readiness.ready_to_track is False
     assert workspace_state.readiness.waiting_for_first_paid_result is False

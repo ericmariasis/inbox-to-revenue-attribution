@@ -10,8 +10,8 @@ from app.schemas.content import ContentResponse
 
 @dataclass(frozen=True)
 class CreatorWorkspaceReadiness:
-    stripe_status: str
-    connected: bool
+    billing_connect_status: str
+    billing_connected: bool
     billable_now: bool
     ready_to_track: bool
     waiting_for_first_paid_result: bool
@@ -21,6 +21,14 @@ class CreatorWorkspaceReadiness:
     billing_ready_count: int
     tracked_content_count: int
     paid_invoice_count: int
+
+    @property
+    def stripe_status(self) -> str:
+        return self.billing_connect_status
+
+    @property
+    def connected(self) -> bool:
+        return self.billing_connected
 
 
 @dataclass(frozen=True)
@@ -33,12 +41,12 @@ class CreatorWorkspaceState:
 
 def build_creator_workspace_readiness(
     *,
-    raw_stripe_status: str,
+    raw_billing_connect_status: str,
     booking_links: list[BookingLinkResponse],
     content_items: list[ContentResponse],
     paid_invoice_count: int,
 ) -> CreatorWorkspaceReadiness:
-    normalized_stripe_status = raw_stripe_status.strip().lower()
+    normalized_billing_connect_status = raw_billing_connect_status.strip().lower()
     booking_links_count = len(booking_links)
     trackable_booking_links_count = sum(
         1
@@ -59,14 +67,14 @@ def build_creator_workspace_readiness(
         and booking_link.billing_currency is not None
     )
     tracked_content_count = len(content_items)
-    connected = normalized_stripe_status == "connected"
-    billable_now = connected and billing_ready_count > 0
+    billing_connected = normalized_billing_connect_status == "connected"
+    billable_now = billing_connected and billing_ready_count > 0
     ready_to_track = billable_now and tracked_content_count > 0
     waiting_for_first_paid_result = ready_to_track and paid_invoice_count == 0
 
     return CreatorWorkspaceReadiness(
-        stripe_status=normalized_stripe_status,
-        connected=connected,
+        billing_connect_status=normalized_billing_connect_status,
+        billing_connected=billing_connected,
         billable_now=billable_now,
         ready_to_track=ready_to_track,
         waiting_for_first_paid_result=waiting_for_first_paid_result,
@@ -81,7 +89,7 @@ def build_creator_workspace_readiness(
 
 def build_creator_workspace_state(
     *,
-    raw_stripe_status: str,
+    raw_billing_connect_status: str,
     booking_links: list[BookingLinkResponse],
     content_items: list[ContentResponse],
     paid_invoice_count: int,
@@ -89,7 +97,7 @@ def build_creator_workspace_state(
     unmatched_payment_count: int,
 ) -> CreatorWorkspaceState:
     readiness = build_creator_workspace_readiness(
-        raw_stripe_status=raw_stripe_status,
+        raw_billing_connect_status=raw_billing_connect_status,
         booking_links=booking_links,
         content_items=content_items,
         paid_invoice_count=paid_invoice_count,

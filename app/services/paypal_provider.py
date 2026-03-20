@@ -1,6 +1,6 @@
 import base64
 import json
-from datetime import date
+from datetime import date, datetime, time, timezone
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 from urllib.error import HTTPError, URLError
@@ -56,6 +56,25 @@ class PayPalSellerStatus:
 
 
 @dataclass(frozen=True)
+class PayPalInvoicePaidSnapshot:
+    invoice_id: str
+    status: str
+    payment_type: str | None
+    payment_method: str | None
+    transaction_status: str | None
+    paid_at: datetime | None
+
+    @property
+    def is_canonical_paid(self) -> bool:
+        return (
+            self.status == "PAID"
+            and self.payment_type == "PAYPAL"
+            and self.payment_method == "PAYPAL"
+            and self.transaction_status == "SUCCESS"
+        )
+
+
+@dataclass(frozen=True)
 class PayPalApiRequestError(Exception):
     operation: str
     http_status: int | None = None
@@ -83,6 +102,25 @@ class PayPalProvider(Protocol):
         *,
         provider_account_id: str,
     ) -> BillingAccountReadiness: ...
+
+    def verify_webhook_event(
+        self,
+        *,
+        webhook_id: str,
+        auth_algo: str,
+        cert_url: str,
+        transmission_id: str,
+        transmission_sig: str,
+        transmission_time: str,
+        webhook_event: Mapping[str, Any],
+    ) -> bool: ...
+
+    def get_invoice_paid_snapshot(
+        self,
+        *,
+        provider_account_id: str,
+        provider_invoice_id: str,
+    ) -> PayPalInvoicePaidSnapshot: ...
 
     def create_billing_invoice(
         self,
@@ -308,6 +346,95 @@ class PayPalSandboxSellerOnboardingProvider:
             can_create_invoices=(
                 seller_status.payments_receivable and seller_status.primary_email_confirmed
             )
+        )
+
+    def verify_webhook_event(
+        self,
+        *,
+        webhook_id: str,
+        auth_algo: str,
+        cert_url: str,
+        transmission_id: str,
+        transmission_sig: str,
+        transmission_time: str,
+        webhook_event: Mapping[str, Any],
+    ) -> bool:
+        resolved_webhook_id = webhook_id.strip()
+        if not resolved_webhook_id:
+            raise PayPalProviderError(
+                "paypal webhook verification is not configured",
+                operation="paypal_configuration",
+            )
+
+        access_token = self._oauth_access_token()
+        verification_response = self._request(
+            operation="paypal_webhook_verify",
+            method="POST",
+            url=f"{self._api_base_url}/v1/notifications/verify-webhook-signature",
+            access_token=access_token,
+            json_body={
+                "auth_algo": auth_algo,
+                "cert_url": cert_url,
+                "transmission_id": transmission_id,
+                "transmission_sig": transmission_sig,
+                "transmission_time": transmission_time,
+                "webhook_id": resolved_webhook_id,
+                "webhook_event": dict(webhook_event),
+            },
+        )
+        verification_status = _required_string(
+            verification_response,
+            field_name="verification_status",
+            operation="paypal_webhook_verify",
+            message="paypal webhook verification failed",
+        )
+        return verification_status == "SUCCESS"
+
+    def get_invoice_paid_snapshot(
+        self,
+        *,
+        provider_account_id: str,
+        provider_invoice_id: str,
+    ) -> PayPalInvoicePaidSnapshot:
+        access_token = self._oauth_access_token()
+        auth_assertion = _paypal_auth_assertion(
+            client_id=self._client_id,
+            merchant_id=provider_account_id,
+        )
+        invoice_response = self._request(
+            operation="paypal_invoice_get",
+            method="GET",
+            url=f"{self._api_base_url}/v2/invoicing/invoices/{quote(provider_invoice_id, safe='')}",
+            access_token=access_token,
+            headers={
+                "PayPal-Auth-Assertion": auth_assertion,
+            },
+        )
+        invoice_id = _required_string(
+            invoice_response,
+            field_name="id",
+            operation="paypal_invoice_get",
+            message="paypal invoice retrieval failed",
+        )
+        if invoice_id != provider_invoice_id:
+            raise PayPalProviderError(
+                "paypal invoice retrieval failed",
+                operation="paypal_invoice_get",
+            )
+        invoice_status = _required_string(
+            invoice_response,
+            field_name="status",
+            operation="paypal_invoice_get",
+            message="paypal invoice retrieval failed",
+        )
+        first_transaction = _first_paypal_payment_transaction(invoice_response)
+        return PayPalInvoicePaidSnapshot(
+            invoice_id=invoice_id,
+            status=invoice_status,
+            payment_type=_optional_string(first_transaction, field_name="type"),
+            payment_method=_optional_string(first_transaction, field_name="method"),
+            transaction_status=_optional_string(first_transaction, field_name="transaction_status"),
+            paid_at=_optional_paypal_payment_timestamp(first_transaction),
         )
 
     def create_billing_invoice(
@@ -745,6 +872,53 @@ def _required_bool(
     return value
 
 
+def _optional_string(payload: Mapping[str, Any] | None, *, field_name: str) -> str | None:
+    if payload is None:
+        return None
+    value = payload.get(field_name)
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _first_paypal_payment_transaction(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    payments = payload.get("payments")
+    if not isinstance(payments, dict):
+        return None
+    transactions = payments.get("transactions")
+    if not isinstance(transactions, list):
+        return None
+    for transaction in transactions:
+        if isinstance(transaction, dict):
+            return transaction
+    return None
+
+
+def _optional_paypal_payment_timestamp(payload: Mapping[str, Any] | None) -> datetime | None:
+    payment_date_time = _optional_string(payload, field_name="payment_date_time")
+    parsed_payment_date_time = _parse_paypal_timestamp(payment_date_time)
+    if parsed_payment_date_time is not None:
+        return parsed_payment_date_time
+
+    payment_date = _optional_string(payload, field_name="payment_date")
+    if payment_date is None:
+        return None
+    try:
+        parsed_payment_date = date.fromisoformat(payment_date)
+    except ValueError:
+        return None
+    return datetime.combine(parsed_payment_date, time.min, tzinfo=timezone.utc)
+
+
+def _parse_paypal_timestamp(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def _operation_message(operation: str) -> str:
     if operation == "paypal_partner_referral_create":
         return "paypal onboarding start failed"
@@ -754,6 +928,8 @@ def _operation_message(operation: str) -> str:
         return "paypal merchant status lookup failed"
     if operation == "paypal_oauth_token":
         return "paypal oauth token request failed"
+    if operation == "paypal_webhook_verify":
+        return "paypal webhook verification failed"
     if operation == "paypal_invoice_recipient_lookup":
         return "paypal invoice recipient lookup failed"
     if operation == "paypal_invoice_create":

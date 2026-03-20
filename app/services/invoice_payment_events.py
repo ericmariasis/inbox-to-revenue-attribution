@@ -17,6 +17,7 @@ from app.models.invoice_payment_event import InvoicePaymentEvent
 
 UNATTRIBUTED_REASON_MISSING_TID = "MISSING_TID"
 UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID = "UNKNOWN_BOOKING_UUID"
+UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID = "UNKNOWN_PROVIDER_INVOICE_ID"
 UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID = "UNKNOWN_STRIPE_INVOICE_ID"
 ATTRIBUTED_PAYMENT_EVENT_STATUSES = ("applied", "reconciled")
 PAYMENT_PROVENANCE_STATUS_MATCHED = "matched"
@@ -204,6 +205,7 @@ class InvoicePaymentEventService:
         paid_at: datetime,
         received_at: datetime | None = None,
         hints: InvoicePaidEventHints | None = None,
+        unmatched_reason_override: str | None = None,
     ) -> InvoicePaidHandleResult:
         resolved_received_at = received_at or self._now_fn()
         resolved_hints = hints or InvoicePaidEventHints()
@@ -270,6 +272,7 @@ class InvoicePaymentEventService:
                     paid_at=paid_at,
                     received_at=resolved_received_at,
                     hints=resolved_hints,
+                    unmatched_reason_override=unmatched_reason_override,
                 )
 
             if invoice.status == "paid":
@@ -569,6 +572,7 @@ class InvoicePaymentEventService:
         paid_at: datetime,
         received_at: datetime,
         hints: InvoicePaidEventHints,
+        unmatched_reason_override: str | None,
     ) -> InvoicePaidHandleResult:
         creator = _find_creator_by_provider_account(
             session=session,
@@ -584,6 +588,7 @@ class InvoicePaymentEventService:
         unattributed_reason = _resolve_unattributed_reason(
             booking=booking,
             hints=hints,
+            unmatched_reason_override=unmatched_reason_override,
         )
         payment_event = InvoicePaymentEvent(
             payment_provider=payment_provider,
@@ -846,7 +851,10 @@ def _resolve_unattributed_reason(
     *,
     booking: Booking | None,
     hints: InvoicePaidEventHints,
+    unmatched_reason_override: str | None,
 ) -> str:
+    if unmatched_reason_override is not None:
+        return unmatched_reason_override
     if hints.booking_uuid is not None and booking is None:
         return UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID
     if hints.tid is None:

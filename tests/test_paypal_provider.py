@@ -1,10 +1,12 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import pytest
 
 from app.services.billing_provider import BillingAccountReadiness
 from app.services.paypal_provider import (
     PayPalApiRequestError,
+    PayPalInvoicePaidSnapshot,
     PayPalProviderError,
     PayPalSandboxSellerOnboardingProvider,
 )
@@ -114,6 +116,123 @@ def test_get_billing_account_readiness_maps_paypal_seller_status_to_can_create_i
             headers={
                 "Authorization": "Bearer oauth_story_pp7",
                 "PayPal-Partner-Attribution-Id": "pp_partner_story_pp7",
+            },
+            json_body=None,
+            form_body=None,
+        ),
+    ]
+
+
+def test_verify_webhook_event_posts_paypal_verification_payload_and_returns_true():
+    transport = _StubPayPalTransport(
+        responses=[
+            {"access_token": "oauth_story_pp8"},
+            {"verification_status": "SUCCESS"},
+        ]
+    )
+    provider = _provider(transport=transport)
+
+    verified = provider.verify_webhook_event(
+        webhook_id="WH_story_pp8",
+        auth_algo="SHA256withRSA",
+        cert_url="https://api.sandbox.paypal.com/v1/notifications/certs/CERT-story-pp8",
+        transmission_id="transmission_story_pp8",
+        transmission_sig="sig_story_pp8",
+        transmission_time="2026-03-20T04:52:23Z",
+        webhook_event={
+            "id": "WH-PP8-STORY",
+            "event_type": "INVOICING.INVOICE.PAID",
+        },
+    )
+
+    assert verified is True
+    assert transport.calls == [
+        _TransportCall(
+            method="POST",
+            url="https://api-m.sandbox.paypal.com/v1/oauth2/token",
+            headers={
+                "Authorization": "Basic Y2xpZW50X3N0b3J5X3BwNzpzZWNyZXRfc3RvcnlfcHA3",
+            },
+            json_body=None,
+            form_body={"grant_type": "client_credentials"},
+        ),
+        _TransportCall(
+            method="POST",
+            url="https://api-m.sandbox.paypal.com/v1/notifications/verify-webhook-signature",
+            headers={
+                "Authorization": "Bearer oauth_story_pp8",
+                "PayPal-Partner-Attribution-Id": "pp_partner_story_pp7",
+            },
+            json_body={
+                "auth_algo": "SHA256withRSA",
+                "cert_url": "https://api.sandbox.paypal.com/v1/notifications/certs/CERT-story-pp8",
+                "transmission_id": "transmission_story_pp8",
+                "transmission_sig": "sig_story_pp8",
+                "transmission_time": "2026-03-20T04:52:23Z",
+                "webhook_id": "WH_story_pp8",
+                "webhook_event": {
+                    "id": "WH-PP8-STORY",
+                    "event_type": "INVOICING.INVOICE.PAID",
+                },
+            },
+            form_body=None,
+        ),
+    ]
+
+
+def test_get_invoice_paid_snapshot_reads_hosted_buyer_paid_shape():
+    transport = _StubPayPalTransport(
+        responses=[
+            {"access_token": "oauth_story_pp8"},
+            {
+                "id": "INV2-story-pp8",
+                "status": "PAID",
+                "payments": {
+                    "transactions": [
+                        {
+                            "type": "PAYPAL",
+                            "method": "PAYPAL",
+                            "transaction_status": "SUCCESS",
+                            "payment_date_time": "2026-03-20T04:52:07Z",
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+    provider = _provider(transport=transport)
+
+    snapshot = provider.get_invoice_paid_snapshot(
+        provider_account_id="merchant_story_pp8",
+        provider_invoice_id="INV2-story-pp8",
+    )
+
+    assert snapshot == PayPalInvoicePaidSnapshot(
+        invoice_id="INV2-story-pp8",
+        status="PAID",
+        payment_type="PAYPAL",
+        payment_method="PAYPAL",
+        transaction_status="SUCCESS",
+        paid_at=datetime(2026, 3, 20, 4, 52, 7, tzinfo=timezone.utc),
+    )
+    assert snapshot.is_canonical_paid is True
+    assert transport.calls == [
+        _TransportCall(
+            method="POST",
+            url="https://api-m.sandbox.paypal.com/v1/oauth2/token",
+            headers={
+                "Authorization": "Basic Y2xpZW50X3N0b3J5X3BwNzpzZWNyZXRfc3RvcnlfcHA3",
+            },
+            json_body=None,
+            form_body={"grant_type": "client_credentials"},
+        ),
+        _TransportCall(
+            method="GET",
+            url="https://api-m.sandbox.paypal.com/v2/invoicing/invoices/INV2-story-pp8",
+            headers={
+                "Authorization": "Bearer oauth_story_pp8",
+                "PayPal-Partner-Attribution-Id": "pp_partner_story_pp7",
+                "PayPal-Auth-Assertion": "eyJhbGciOiJub25lIn0.eyJpc3MiOiJjbGllbnRfc3RvcnlfcHA3IiwicGF5ZXJfaWQiOiJtZXJjaGFudF9zdG9yeV9wcDgifQ.",
             },
             json_body=None,
             form_body=None,

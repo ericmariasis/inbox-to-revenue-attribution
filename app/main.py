@@ -22,6 +22,7 @@ from app.services.content_fetch import build_default_content_fetch_provider
 from app.services.email_provider import build_default_email_provider
 from app.services.fullscope_webhooks import build_default_fullscope_webhook_router
 from app.services.paypal_provider import build_default_paypal_provider
+from app.services.paypal_webhooks import build_default_paypal_webhook_router
 from app.services.stripe_provider import build_default_stripe_provider
 from app.services.stripe_webhooks import DEFAULT_STRIPE_WEBHOOK_ROUTER
 
@@ -54,6 +55,10 @@ async def lifespan(app: FastAPI):
             app.state.paypal_provider,
         ]
     )
+    if not hasattr(app.state, "paypal_webhook_router"):
+        app.state.paypal_webhook_router = build_default_paypal_webhook_router(
+            provider=app.state.paypal_provider
+        )
     if not hasattr(app.state, "stripe_webhook_router"):
         app.state.stripe_webhook_router = DEFAULT_STRIPE_WEBHOOK_ROUTER
     if not hasattr(app.state, "calendly_webhook_router"):

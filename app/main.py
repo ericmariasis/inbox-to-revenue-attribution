@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api.auth import me_router, router as auth_router
 from app.api.booking_links import router as booking_links_router
 from app.api.content import router as content_router
+from app.api.paypal import router as paypal_router
 from app.api.reports import router as reports_router
 from app.api.redirects import router as redirects_router
 from app.api.stripe import router as stripe_router
@@ -19,6 +20,7 @@ from app.services.calendly_webhooks import build_default_calendly_webhook_router
 from app.services.content_fetch import build_default_content_fetch_provider
 from app.services.email_provider import build_default_email_provider
 from app.services.fullscope_webhooks import build_default_fullscope_webhook_router
+from app.services.paypal_provider import build_default_paypal_provider
 from app.services.stripe_provider import build_default_stripe_provider
 from app.services.stripe_webhooks import DEFAULT_STRIPE_WEBHOOK_ROUTER
 
@@ -43,6 +45,8 @@ async def lifespan(app: FastAPI):
         app.state.content_fetch_provider = build_default_content_fetch_provider()
     if not hasattr(app.state, "stripe_provider"):
         app.state.stripe_provider = build_default_stripe_provider(settings=app.state.settings)
+    if not hasattr(app.state, "paypal_provider"):
+        app.state.paypal_provider = build_default_paypal_provider(settings=app.state.settings)
     if not hasattr(app.state, "stripe_webhook_router"):
         app.state.stripe_webhook_router = DEFAULT_STRIPE_WEBHOOK_ROUTER
     if not hasattr(app.state, "calendly_webhook_router"):
@@ -64,6 +68,7 @@ app.include_router(content_router)
 app.include_router(reports_router)
 app.include_router(redirects_router)
 app.include_router(stripe_router)
+app.include_router(paypal_router)
 app.include_router(webhooks_router)
 
 

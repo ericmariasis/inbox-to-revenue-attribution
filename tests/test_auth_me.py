@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, text
 from app.core.config import get_settings
 from app.core.request_context import creator_id_ctx
 from app.main import app
-from app.models.billing_provider import BILLING_PROVIDER_STRIPE
+from app.models.billing_provider import BILLING_PROVIDER_PAYPAL, BILLING_PROVIDER_STRIPE
 
 
 def _engine():
@@ -28,6 +28,7 @@ def _insert_creator_user(
     billing_connect_status: str | None = None,
     billing_account_id: str | None = None,
     billing_connected_at: datetime | None = None,
+    billing_provider_correlation_id: str | None = None,
 ):
     creator_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
@@ -42,9 +43,11 @@ def _insert_creator_user(
             text(
                 "INSERT INTO creators ("
                 "id, name, billing_provider, billing_connect_status, billing_account_id, billing_connected_at, "
+                "billing_provider_correlation_id, "
                 "stripe_connect_status, stripe_account_id, stripe_connected_at"
                 ") VALUES ("
                 ":id, :name, :billing_provider, :billing_connect_status, :billing_account_id, :billing_connected_at, "
+                ":billing_provider_correlation_id, "
                 ":stripe_connect_status, :stripe_account_id, :stripe_connected_at"
                 ")"
             ),
@@ -55,6 +58,7 @@ def _insert_creator_user(
                 "billing_connect_status": resolved_billing_connect_status,
                 "billing_account_id": resolved_billing_account_id,
                 "billing_connected_at": resolved_billing_connected_at,
+                "billing_provider_correlation_id": billing_provider_correlation_id,
                 "stripe_connect_status": stripe_connect_status,
                 "stripe_account_id": stripe_account_id,
                 "stripe_connected_at": stripe_connected_at,
@@ -162,3 +166,46 @@ def test_me_returns_creator_profile_for_valid_token():
 
     assert captured["message"] == "me_retrieved"
     assert captured["creator_id"] == inserted["creator_id"]
+
+
+def test_me_returns_paypal_billing_identity_while_preserving_legacy_stripe_fields():
+    paypal_connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    stripe_connected_at = paypal_connected_at - timedelta(hours=1)
+    inserted = _insert_creator_user(
+        email=f"me_paypal_{uuid.uuid4().hex}@example.com",
+        name="PayPal Creator Profile",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_legacy_123",
+        stripe_connected_at=stripe_connected_at,
+        billing_provider=BILLING_PROVIDER_PAYPAL,
+        billing_connect_status="connected",
+        billing_account_id="merchant_pp6_123",
+        billing_connected_at=paypal_connected_at,
+        billing_provider_correlation_id="tracking_pp6_123",
+    )
+    token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "id": inserted["creator_id"],
+        "email": inserted["email"],
+        "name": "PayPal Creator Profile",
+        "billing_provider": "paypal",
+        "billing_connect_status": "connected",
+        "billing_account_id": "merchant_pp6_123",
+        "billing_connected_at": payload["billing_connected_at"],
+        "stripe_connect_status": "connected",
+        "stripe_account_id": "acct_legacy_123",
+        "stripe_connected_at": payload["stripe_connected_at"],
+    }
+    assert datetime.fromisoformat(payload["billing_connected_at"]).astimezone(timezone.utc) == paypal_connected_at
+    assert datetime.fromisoformat(payload["stripe_connected_at"]).astimezone(timezone.utc) == stripe_connected_at

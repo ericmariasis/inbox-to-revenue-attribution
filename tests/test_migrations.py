@@ -52,6 +52,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "billing_connect_status" in creator_columns
             assert "billing_connected_at" in creator_columns
             assert "billing_account_id" in creator_columns
+            assert "billing_provider_correlation_id" in creator_columns
             assert "payment_provider" in invoice_columns
             assert "provider_account_id" in invoice_columns
             assert "provider_invoice_id" in invoice_columns
@@ -115,6 +116,70 @@ def test_migrations_upgrade_and_downgrade():
             assert "billing_connect_status" in creator_columns
             assert "billing_connected_at" in creator_columns
             assert "billing_account_id" in creator_columns
+            assert "billing_provider_correlation_id" not in creator_columns
+            assert "payment_provider" in invoice_columns
+            assert "provider_account_id" in invoice_columns
+            assert "provider_invoice_id" in invoice_columns
+            assert "payment_provider" in payment_event_columns
+            assert "provider_event_id" in payment_event_columns
+            assert "provider_event_type" in payment_event_columns
+            assert "provider_account_id" in payment_event_columns
+            assert "provider_invoice_id" in payment_event_columns
+            assert "authoritative_extraction_artifact_id" in content_columns
+            assert "attribution_status" in booking_columns
+            assert "unattributed_reason" in booking_columns
+            assert "reducer_key" in calendly_columns
+            assert "reducer_attempt_count" in calendly_columns
+            assert "frozen_billing_amount_cents" in booking_columns
+            assert "frozen_billing_currency" in booking_columns
+            assert "provider" in booking_columns
+            assert "provider_booking_id" in booking_columns
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+            assert "provider" in booking_link_columns
+            assert "destination_url" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            creator_columns = {column["name"] for column in inspector.get_columns("creators")}
+            booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
+            content_columns = {column["name"] for column in inspector.get_columns("content")}
+            invoice_columns = {column["name"] for column in inspector.get_columns("invoices")}
+            payment_event_columns = {
+                column["name"] for column in inspector.get_columns("invoice_payment_events")
+            }
+            calendly_columns = {
+                column["name"] for column in inspector.get_columns("calendly_webhook_events")
+            }
+            assert "support_requests" in table_names
+            assert "shared_rate_limit_events" in table_names
+            assert "pending_magic_link_issuances" in table_names
+            assert "creator_experiment_run_cards" in table_names
+            assert "creator_experiment_runs" in table_names
+            assert "creator_claim_paid_evidence_refs" in table_names
+            assert "creator_claim_snapshots" in table_names
+            assert "calendly_webhook_events" in table_names
+            assert "fullscope_webhook_events" in table_names
+            assert "content_topic_candidates" in table_names
+            assert "content_confirmed_topics" in table_names
+            assert "content_extraction_artifacts" in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
+            assert "billing_provider" in creator_columns
+            assert "billing_connect_status" in creator_columns
+            assert "billing_connected_at" in creator_columns
+            assert "billing_account_id" in creator_columns
+            assert "billing_provider_correlation_id" not in creator_columns
             assert "payment_provider" in invoice_columns
             assert "provider_account_id" in invoice_columns
             assert "provider_invoice_id" in invoice_columns
@@ -177,6 +242,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "billing_connect_status" in creator_columns
             assert "billing_connected_at" in creator_columns
             assert "billing_account_id" in creator_columns
+            assert "billing_provider_correlation_id" not in creator_columns
             assert "payment_provider" not in invoice_columns
             assert "provider_account_id" not in invoice_columns
             assert "provider_invoice_id" not in invoice_columns
@@ -235,6 +301,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "billing_connect_status" not in creator_columns
             assert "billing_connected_at" not in creator_columns
             assert "billing_account_id" not in creator_columns
+            assert "billing_provider_correlation_id" not in creator_columns
             assert "authoritative_extraction_artifact_id" in content_columns
             assert "attribution_status" in booking_columns
             assert "unattributed_reason" in booking_columns
@@ -786,6 +853,7 @@ def test_creators_table_has_expected_billing_provider_identity_columns():
             "billing_connect_status",
             "billing_connected_at",
             "billing_account_id",
+            "billing_provider_correlation_id",
             "stripe_connect_status",
             "stripe_connected_at",
             "stripe_account_id",

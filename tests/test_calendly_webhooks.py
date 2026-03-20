@@ -25,6 +25,11 @@ from app.services.booking_attribution import (
     BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
     BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
 )
+from app.services.billing_provider import (
+    BillingAccountReadiness,
+    BillingProviderInvoiceCreateResult,
+    BillingProviderInvoiceStopResult,
+)
 from app.services.calendly_webhooks import (
     CalendlyWebhookJournalRecordResult,
     DefaultCalendlyWebhookRouter,
@@ -123,6 +128,8 @@ class _ExplodingBookingCreatedHandler:
 
 
 class _StubStripeProvider:
+    billing_provider_name = "stripe"
+
     def __init__(
         self,
         *,
@@ -186,6 +193,88 @@ class _StubStripeProvider:
             raise self._void_error
 
 
+class _StubPayPalProvider:
+    billing_provider_name = "paypal"
+
+    def __init__(
+        self,
+        *,
+        readiness: BillingAccountReadiness,
+        created_invoice_id: str = "INV2_story45_created",
+        created_invoice_status: str = "open",
+        stop_invoice_status: str = "void",
+        readiness_error: StripeProviderError | None = None,
+        create_error: StripeProviderError | None = None,
+        stop_error: StripeProviderError | None = None,
+    ):
+        self._readiness = readiness
+        self._created_invoice_id = created_invoice_id
+        self._created_invoice_status = created_invoice_status
+        self._stop_invoice_status = stop_invoice_status
+        self._readiness_error = readiness_error
+        self._create_error = create_error
+        self._stop_error = stop_error
+        self.readiness_calls: list[str] = []
+        self.create_calls: list[dict[str, object]] = []
+        self.stop_calls: list[dict[str, str]] = []
+
+    def get_billing_account_readiness(
+        self,
+        *,
+        provider_account_id: str,
+    ) -> BillingAccountReadiness:
+        self.readiness_calls.append(provider_account_id)
+        if self._readiness_error is not None:
+            raise self._readiness_error
+        return self._readiness
+
+    def create_billing_invoice(
+        self,
+        *,
+        provider_account_id: str,
+        amount_cents: int,
+        currency: str,
+        metadata: dict[str, str],
+        idempotency_key: str,
+    ) -> BillingProviderInvoiceCreateResult:
+        self.create_calls.append(
+            {
+                "provider_account_id": provider_account_id,
+                "amount_cents": amount_cents,
+                "currency": currency,
+                "metadata": metadata,
+                "idempotency_key": idempotency_key,
+            }
+        )
+        if self._create_error is not None:
+            raise self._create_error
+        return BillingProviderInvoiceCreateResult(
+            provider_account_id=provider_account_id,
+            provider_invoice_id=self._created_invoice_id,
+            invoice_status=self._created_invoice_status,
+        )
+
+    def stop_billing_invoice(
+        self,
+        *,
+        provider_account_id: str,
+        provider_invoice_id: str,
+    ) -> BillingProviderInvoiceStopResult:
+        self.stop_calls.append(
+            {
+                "provider_account_id": provider_account_id,
+                "provider_invoice_id": provider_invoice_id,
+            }
+        )
+        if self._stop_error is not None:
+            raise self._stop_error
+        return BillingProviderInvoiceStopResult(
+            provider_account_id=provider_account_id,
+            provider_invoice_id=provider_invoice_id,
+            invoice_status=self._stop_invoice_status,
+        )
+
+
 def _booking_count() -> int:
     engine = create_engine(os.environ["TEST_DATABASE_URL"])
     with Session(engine) as session:
@@ -212,6 +301,8 @@ def _create_creator_booking_link_and_content(
     *,
     tid: str,
     stripe_account_id: str | None = None,
+    billing_provider: str = "stripe",
+    billing_account_id: str | None = None,
     billing_amount_cents: int | None = None,
     billing_currency: str | None = None,
 ) -> dict[str, Any]:
@@ -220,6 +311,11 @@ def _create_creator_booking_link_and_content(
     with Session(engine) as session:
         creator = Creator(
             name=f"Story 33 Creator {uuid.uuid4().hex}",
+            billing_provider=billing_provider,
+            billing_connect_status=(
+                "connected" if (billing_account_id or stripe_account_id) else "pending"
+            ),
+            billing_account_id=billing_account_id,
             stripe_account_id=stripe_account_id,
             stripe_connect_status="connected" if stripe_account_id else "pending",
         )
@@ -827,6 +923,113 @@ def test_calendly_webhook_booking_canceled_voids_open_invoice_once_and_repeat_is
         {
             "stripe_account_id": "acct_story45_cancel",
             "stripe_invoice_id": "in_story45_cancel",
+        }
+    ]
+
+
+def test_calendly_webhook_paypal_creator_routes_invoice_create_and_cancel_through_paypal_provider():
+    stored = _create_creator_booking_link_and_content(
+        tid="story45_paypal_tid",
+        stripe_account_id=None,
+        billing_provider="paypal",
+        billing_account_id="merchant_story45_paypal",
+        billing_amount_cents=18000,
+        billing_currency="USD",
+    )
+    created_payload = _invitee_created_payload(
+        event_id="EVT_story45_paypal",
+        calendly_booking_uuid="BOOK_story45_paypal",
+        tid=stored["tid"],
+        email="story45-paypal@example.com",
+        created_at="2026-03-20T12:45:00Z",
+    )
+    canceled_payload = _invitee_canceled_payload(
+        event_id="EVT_story45_paypal",
+        calendly_booking_uuid="BOOK_story45_paypal",
+        tid=stored["tid"],
+        canceled_at="2026-03-20T13:00:00Z",
+    )
+    created_signature_header = _calendly_signature_header(
+        payload=created_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    canceled_signature_header = _calendly_signature_header(
+        payload=canceled_payload,
+        signing_key=_StubSettings.calendly_webhook_signing_key,
+    )
+    stripe_provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_story45_unused_stripe",
+    )
+    paypal_provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=True),
+        created_invoice_id="INV2_story45_paypal",
+    )
+    router = build_default_calendly_webhook_router(
+        providers={
+            "stripe": stripe_provider,
+            "paypal": paypal_provider,
+        }
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("calendly_webhook_router", router):
+                created_response = client.post(
+                    "/webhooks/calendly",
+                    content=created_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": created_signature_header,
+                    },
+                )
+                canceled_response = client.post(
+                    "/webhooks/calendly",
+                    content=canceled_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Calendly-Webhook-Signature": canceled_signature_header,
+                    },
+                )
+
+    bookings = _bookings_for_uuid(calendly_booking_uuid="BOOK_story45_paypal")
+    invoices = _invoices_for_booking_uuid(calendly_booking_uuid="BOOK_story45_paypal")
+
+    assert created_response.status_code == 200
+    assert canceled_response.status_code == 200
+    assert len(bookings) == 1
+    assert bookings[0].status == "canceled"
+    assert len(invoices) == 1
+    assert invoices[0].payment_provider == "paypal"
+    assert invoices[0].provider_account_id == "merchant_story45_paypal"
+    assert invoices[0].provider_invoice_id == "INV2_story45_paypal"
+    assert invoices[0].stripe_account_id is None
+    assert invoices[0].stripe_invoice_id is None
+    assert invoices[0].status == "void"
+    assert invoices[0].voided_at is not None
+    assert stripe_provider.readiness_calls == []
+    assert stripe_provider.create_calls == []
+    assert stripe_provider.void_calls == []
+    assert paypal_provider.readiness_calls == ["merchant_story45_paypal"]
+    assert paypal_provider.create_calls == [
+        {
+            "provider_account_id": "merchant_story45_paypal",
+            "amount_cents": 18000,
+            "currency": "USD",
+            "metadata": {
+                "creator_id": str(stored["creator_id"]),
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story45_paypal",
+                "booking_uuid": "BOOK_story45_paypal",
+                "tid": stored["tid"],
+            },
+            "idempotency_key": "billing:create:calendly:BOOK_story45_paypal",
+        }
+    ]
+    assert paypal_provider.stop_calls == [
+        {
+            "provider_account_id": "merchant_story45_paypal",
+            "provider_invoice_id": "INV2_story45_paypal",
         }
     ]
 

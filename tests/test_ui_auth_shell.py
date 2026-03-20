@@ -3912,9 +3912,22 @@ def test_setup_home_connect_cta_redirects_to_stripe_and_callback_returns_to_app(
         }
     ]
 
+    with _engine().connect() as conn:
+        creator_row = conn.execute(
+            text(
+                "SELECT billing_provider, billing_connect_status, billing_account_id, billing_connected_at "
+                "FROM creators WHERE id = :creator_id"
+            ),
+            {"creator_id": inserted["creator_id"]},
+        ).mappings().one()
+
     assert app_response.status_code == 200
     assert "Stripe is connected" in app_response.text
     assert "acct_story38_browser" in app_response.text
+    assert creator_row["billing_provider"] == "stripe"
+    assert creator_row["billing_connect_status"] == "connected"
+    assert creator_row["billing_account_id"] == "acct_story38_browser"
+    assert creator_row["billing_connected_at"] is not None
 
 
 def test_browser_stripe_connect_callback_interrupted_redirects_to_setup_recovery():

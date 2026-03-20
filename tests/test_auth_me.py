@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, text
 from app.core.config import get_settings
 from app.core.request_context import creator_id_ctx
 from app.main import app
+from app.models.billing_provider import BILLING_PROVIDER_STRIPE
 
 
 def _engine():
@@ -23,19 +24,37 @@ def _insert_creator_user(
     stripe_connect_status: str = "pending",
     stripe_account_id: str | None = None,
     stripe_connected_at: datetime | None = None,
+    billing_provider: str = BILLING_PROVIDER_STRIPE,
+    billing_connect_status: str | None = None,
+    billing_account_id: str | None = None,
+    billing_connected_at: datetime | None = None,
 ):
     creator_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
+    resolved_billing_connect_status = billing_connect_status or stripe_connect_status
+    resolved_billing_account_id = billing_account_id if billing_account_id is not None else stripe_account_id
+    resolved_billing_connected_at = (
+        billing_connected_at if billing_connected_at is not None else stripe_connected_at
+    )
 
     with _engine().begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO creators (id, name, stripe_connect_status, stripe_account_id, stripe_connected_at) "
-                "VALUES (:id, :name, :stripe_connect_status, :stripe_account_id, :stripe_connected_at)"
+                "INSERT INTO creators ("
+                "id, name, billing_provider, billing_connect_status, billing_account_id, billing_connected_at, "
+                "stripe_connect_status, stripe_account_id, stripe_connected_at"
+                ") VALUES ("
+                ":id, :name, :billing_provider, :billing_connect_status, :billing_account_id, :billing_connected_at, "
+                ":stripe_connect_status, :stripe_account_id, :stripe_connected_at"
+                ")"
             ),
             {
                 "id": creator_id,
                 "name": name,
+                "billing_provider": billing_provider,
+                "billing_connect_status": resolved_billing_connect_status,
+                "billing_account_id": resolved_billing_account_id,
+                "billing_connected_at": resolved_billing_connected_at,
                 "stripe_connect_status": stripe_connect_status,
                 "stripe_account_id": stripe_account_id,
                 "stripe_connected_at": stripe_connected_at,
@@ -130,10 +149,15 @@ def test_me_returns_creator_profile_for_valid_token():
         "id": inserted["creator_id"],
         "email": inserted["email"],
         "name": "Creator Profile",
+        "billing_provider": "stripe",
+        "billing_connect_status": "connected",
+        "billing_account_id": "acct_123",
+        "billing_connected_at": payload["billing_connected_at"],
         "stripe_connect_status": "connected",
         "stripe_account_id": "acct_123",
         "stripe_connected_at": payload["stripe_connected_at"],
     }
+    assert datetime.fromisoformat(payload["billing_connected_at"]).astimezone(timezone.utc) == connected_at
     assert datetime.fromisoformat(payload["stripe_connected_at"]).astimezone(timezone.utc) == connected_at
 
     assert captured["message"] == "me_retrieved"

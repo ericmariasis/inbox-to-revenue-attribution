@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_auth_user
 from app.db.session import get_db
 from app.models.auth_user import AuthUser
+from app.models.billing_provider import BILLING_CONNECT_STATUS_CONNECTED, BILLING_PROVIDER_STRIPE
 from app.models.creator import Creator
 from app.schemas.auth import GenericOkResponse
 from app.schemas.stripe import StripeConnectStartResponse
@@ -179,9 +180,14 @@ def stripe_connect_callback(
             detail=INVALID_STRIPE_CONNECT_CALLBACK_DETAIL,
         )
 
+    connected_at = datetime.now(timezone.utc)
+    creator.billing_provider = BILLING_PROVIDER_STRIPE
+    creator.billing_connect_status = BILLING_CONNECT_STATUS_CONNECTED
+    creator.billing_account_id = stripe_account_id
+    creator.billing_connected_at = connected_at
     creator.stripe_account_id = stripe_account_id
     creator.stripe_connect_status = "connected"
-    creator.stripe_connected_at = datetime.now(timezone.utc)
+    creator.stripe_connected_at = connected_at
     db.add(creator)
     db.commit()
     logger.info("stripe_connect_callback_completed creator_id=%s", creator.id)

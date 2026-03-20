@@ -20,6 +20,10 @@ class MeResponse(BaseModel):
     id: str
     email: EmailStr
     name: str
+    billing_provider: str
+    billing_connect_status: str
+    billing_account_id: str | None = None
+    billing_connected_at: datetime | None = None
     stripe_connect_status: str
     stripe_account_id: str | None = None
     stripe_connected_at: datetime | None = None

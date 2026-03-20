@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from app.models.billing_provider import BILLING_PROVIDER_PAYPAL, BILLING_PROVIDER_STRIPE
 from app.models.creator import Creator
 from app.services.stripe_account_readiness import (
     creator_has_billable_stripe_account,
@@ -47,6 +48,39 @@ def test_get_creator_stripe_account_readiness_uses_provider_abstraction():
 
     assert readiness == StripeAccountReadiness(charges_enabled=False)
     assert provider.readiness_calls == ["acct_story28_lookup"]
+
+
+def test_get_creator_stripe_account_readiness_uses_active_billing_provider_identity_fields():
+    creator = Creator(
+        name="PP1 Stripe Billing Identity Creator",
+        billing_provider=BILLING_PROVIDER_STRIPE,
+        billing_connect_status="connected",
+        billing_account_id="acct_pp1_lookup",
+    )
+    provider = _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=True))
+
+    readiness = get_creator_stripe_account_readiness(creator=creator, provider=provider)
+
+    assert readiness == StripeAccountReadiness(charges_enabled=True)
+    assert provider.readiness_calls == ["acct_pp1_lookup"]
+
+
+def test_get_creator_stripe_account_readiness_returns_none_when_active_provider_is_not_stripe():
+    creator = Creator(
+        name="PP1 PayPal Active Provider Creator",
+        billing_provider=BILLING_PROVIDER_PAYPAL,
+        billing_connect_status="connected",
+        billing_account_id="merchant_pp1_paypal",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_legacy_stripe_should_not_apply",
+    )
+    provider = _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=True))
+
+    readiness = get_creator_stripe_account_readiness(creator=creator, provider=provider)
+
+    assert readiness is None
+    assert creator_has_billable_stripe_account(creator=creator, provider=provider) is False
+    assert provider.readiness_calls == []
 
 
 def test_creator_has_billable_stripe_account_returns_false_when_charges_disabled():

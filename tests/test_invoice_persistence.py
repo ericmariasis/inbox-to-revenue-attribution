@@ -108,8 +108,14 @@ def test_invoice_row_can_persist_against_canonical_booking():
         assert fetched.creator_id == creator.id
         assert fetched.booking_id == booking.id
         assert fetched.tid == content.tid
+        assert fetched.payment_provider == "stripe"
+        assert fetched.provider_account_id == "acct_story43_primary"
+        assert fetched.provider_invoice_id == "in_story43_primary"
         assert fetched.stripe_account_id == "acct_story43_primary"
         assert fetched.stripe_invoice_id == "in_story43_primary"
+        assert fetched.resolved_payment_provider == "stripe"
+        assert fetched.resolved_provider_account_id == "acct_story43_primary"
+        assert fetched.resolved_provider_invoice_id == "in_story43_primary"
         assert fetched.amount_cents == 15000
         assert fetched.currency == "USD"
         assert fetched.status == "open"
@@ -169,6 +175,68 @@ def test_duplicate_stripe_invoice_id_is_blocked_by_db_constraint():
         session.rollback()
 
         rows = session.scalars(select(Invoice).where(Invoice.stripe_invoice_id == "in_story43_duplicate")).all()
+        assert len(rows) == 1
+
+
+def test_duplicate_provider_invoice_identity_is_blocked_by_db_constraint():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+
+    with Session(engine) as session:
+        creator, _, content, booking = _create_creator_booking_link_content_and_booking(
+            session,
+            booking_uuid="pp2_provider_identity_a",
+            tid="pp2_provider_identity_tid_a",
+            booked_at=datetime(2026, 3, 8, 16, 40, tzinfo=timezone.utc),
+        )
+        session.add(
+            Invoice(
+                creator_id=creator.id,
+                booking_id=booking.id,
+                tid=content.tid,
+                payment_provider="paypal",
+                provider_account_id="merchant_pp2_duplicate",
+                provider_invoice_id="INV-PP2-DUPLICATE",
+                amount_cents=15000,
+                currency="USD",
+                status="open",
+                issued_at=datetime(2026, 3, 8, 16, 45, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+
+        second_creator, _, second_content, second_booking = _create_creator_booking_link_content_and_booking(
+            session,
+            booking_uuid="pp2_provider_identity_b",
+            tid="pp2_provider_identity_tid_b",
+            booked_at=datetime(2026, 3, 8, 16, 50, tzinfo=timezone.utc),
+        )
+        session.add(
+            Invoice(
+                creator_id=second_creator.id,
+                booking_id=second_booking.id,
+                tid=second_content.tid,
+                payment_provider="paypal",
+                provider_account_id="merchant_pp2_duplicate",
+                provider_invoice_id="INV-PP2-DUPLICATE",
+                amount_cents=17500,
+                currency="USD",
+                status="open",
+                issued_at=datetime(2026, 3, 8, 16, 55, tzinfo=timezone.utc),
+            )
+        )
+
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+        session.rollback()
+
+        rows = session.scalars(
+            select(Invoice).where(
+                Invoice.payment_provider == "paypal",
+                Invoice.provider_account_id == "merchant_pp2_duplicate",
+                Invoice.provider_invoice_id == "INV-PP2-DUPLICATE",
+            )
+        ).all()
         assert len(rows) == 1
 
 
@@ -274,6 +342,9 @@ def test_invoice_payment_event_can_persist_against_canonical_invoice_chain():
         assert fetched.processed_at == processed_at
         assert fetched.invoice is not None
         assert fetched.invoice.id == invoice.id
+        assert fetched.invoice.payment_provider == "stripe"
+        assert fetched.invoice.provider_account_id == "acct_story47_primary"
+        assert fetched.invoice.provider_invoice_id == "in_story47_primary"
         assert fetched.creator is not None
         assert fetched.creator.id == creator.id
         assert fetched.booking is not None
@@ -281,6 +352,47 @@ def test_invoice_payment_event_can_persist_against_canonical_invoice_chain():
         assert fetched.content is not None
         assert fetched.content.tid == content.tid
         assert fetched.invoice.payment_events[0].id == fetched.id
+
+
+def test_provider_neutral_invoice_can_persist_without_legacy_stripe_identity():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+
+    with Session(engine) as session:
+        creator, _, content, booking = _create_creator_booking_link_content_and_booking(
+            session,
+            booking_uuid="pp2_provider_only_booking",
+            tid="pp2_provider_only_tid",
+            booked_at=datetime(2026, 3, 8, 18, 30, tzinfo=timezone.utc),
+        )
+        session.add(
+            Invoice(
+                creator_id=creator.id,
+                booking_id=booking.id,
+                tid=content.tid,
+                payment_provider="paypal",
+                provider_account_id="merchant_pp2_provider_only",
+                provider_invoice_id="INV-PP2-PROVIDER-ONLY",
+                amount_cents=21000,
+                currency="USD",
+                status="open",
+                issued_at=datetime(2026, 3, 8, 18, 35, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+
+        fetched = session.scalar(
+            select(Invoice).where(Invoice.provider_invoice_id == "INV-PP2-PROVIDER-ONLY")
+        )
+
+        assert fetched is not None
+        assert fetched.payment_provider == "paypal"
+        assert fetched.provider_account_id == "merchant_pp2_provider_only"
+        assert fetched.provider_invoice_id == "INV-PP2-PROVIDER-ONLY"
+        assert fetched.stripe_account_id is None
+        assert fetched.stripe_invoice_id is None
+        assert fetched.resolved_payment_provider == "paypal"
+        assert fetched.resolved_provider_account_id == "merchant_pp2_provider_only"
+        assert fetched.resolved_provider_invoice_id == "INV-PP2-PROVIDER-ONLY"
 
 
 def test_invoice_payment_event_can_persist_unmatched_state_with_null_local_linkage():

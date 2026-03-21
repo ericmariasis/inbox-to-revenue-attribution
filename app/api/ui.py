@@ -31,6 +31,7 @@ from app.api.deps import (
     browser_auth_user_is_allowlisted_operator,
     get_optional_browser_auth_user,
 )
+from app.api.paypal import build_paypal_connect_start_response
 from app.api.stripe import (
     STRIPE_CONNECT_FAILED_STATUS,
     STRIPE_CONNECT_INTERRUPTED_STATUS,
@@ -562,6 +563,22 @@ def creator_stripe_connect_start(
         return _redirect("/sign-in", clear_session=should_clear_cookie)
 
     start_response = build_stripe_connect_start_response(
+        request=request,
+        current_user=current_user,
+    )
+    return _redirect(str(start_response.onboarding_url))
+
+
+@router.post("/app/paypal/connect/start")
+def creator_paypal_connect_start(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    start_response = build_paypal_connect_start_response(
         request=request,
         current_user=current_user,
     )
@@ -1741,9 +1758,17 @@ def _render_app_shell(
     readiness = workspace_state.readiness
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
-    billing_status = _billing_setup_home_state(readiness=readiness)
+    show_provider_choice = _creator_needs_initial_billing_provider_choice(
+        creator=current_user.creator,
+        readiness=readiness,
+    )
+    billing_status = _billing_setup_home_state(
+        readiness=readiness,
+        show_provider_choice=show_provider_choice,
+    )
     setup_progress = _build_setup_home_progress(
         workspace_state=workspace_state,
+        show_provider_choice=show_provider_choice,
     )
 
     billing_detail_lines = []
@@ -1762,9 +1787,11 @@ def _render_app_shell(
             f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
         )
     billing_action = ""
-    if billing_status["button_label"]:
+    if show_provider_choice:
+        billing_action = _render_billing_provider_choice_actions()
+    elif billing_status["button_label"]:
         billing_action = f"""
-        <form action="/app/stripe/connect/start" method="post">
+        <form action="{html.escape(billing_status['button_href'])}" method="post">
           <button type="submit">{html.escape(billing_status["button_label"])}</button>
         </form>
         """
@@ -1835,7 +1862,14 @@ def _render_account_page(
 ) -> str:
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
-    billing_state = _account_billing_management_state(readiness=readiness)
+    show_provider_choice = _creator_needs_initial_billing_provider_choice(
+        creator=current_user.creator,
+        readiness=readiness,
+    )
+    billing_state = _account_billing_management_state(
+        readiness=readiness,
+        show_provider_choice=show_provider_choice,
+    )
     booking_links_count = readiness.booking_links_count
     trackable_booking_links_count = readiness.trackable_booking_links_count
     limited_tracking_booking_links_count = readiness.limited_tracking_booking_links_count
@@ -1857,9 +1891,11 @@ def _render_account_page(
             f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
         )
     billing_action = ""
-    if billing_state["action_label"]:
+    if show_provider_choice:
+        billing_action = _render_billing_provider_choice_actions()
+    elif billing_state["action_label"]:
         billing_action = f"""
-        <form action="/app/stripe/connect/start" method="post">
+        <form action="{html.escape(billing_state['action_href'])}" method="post">
           <button type="submit">{html.escape(billing_state["action_label"])}</button>
         </form>
         """
@@ -2346,6 +2382,8 @@ def _render_setup_checklist_items(steps: list[dict[str, object]]) -> str:
 
 
 def _render_setup_next_action_cta(next_action: dict[str, str]) -> str:
+    if next_action["action_method"] == "provider-choice":
+        return _render_billing_provider_choice_actions()
     if next_action["action_method"] == "post":
         return f"""
         <form action="{html.escape(next_action['action_href'])}" method="post">
@@ -2562,6 +2600,7 @@ def _render_readiness_summary(*, readiness: CreatorWorkspaceReadiness) -> str:
 def _build_setup_home_progress(
     *,
     workspace_state: CreatorWorkspaceState,
+    show_provider_choice: bool,
 ) -> dict[str, object]:
     readiness = workspace_state.readiness
     normalized_billing_status = readiness.billing_connect_status
@@ -2612,19 +2651,24 @@ def _build_setup_home_progress(
             else None
         )
     elif normalized_billing_status == "disconnected":
-        billing_step_copy_html = "A billing provider was connected before, but it is disconnected now. Reconnect it before new bookings can move into invoicing."
+        provider_action = _billing_provider_connect_action(
+            provider_name=readiness.billing_provider,
+            reconnect=True,
+        )
+        billing_step_copy_html = (
+            f"{html.escape(_billing_provider_label(readiness.billing_provider))} was connected before, "
+            "but it is disconnected now. Reconnect it before new bookings can move into invoicing."
+        )
         next_action = {
             "title": "Reconnect billing setup",
-            "copy_html": "Billing setup is the first setup blocker. Reconnect Stripe from this page before you rely on new bookings.",
-            "action_label": "Reconnect Stripe",
-            "action_href": "/app/stripe/connect/start",
+            "copy_html": (
+                f"Billing setup is the first setup blocker. {html.escape(provider_action['label'])} "
+                "from this page before you rely on new bookings."
+            ),
+            "action_label": provider_action["label"],
+            "action_href": provider_action["href"],
             "action_method": "post",
         }
-        if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
-            billing_step_copy_html = (
-                "PayPal was connected before, but it is disconnected now. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
-            )
-            next_action = None
         billing_step = _setup_step(
             title="Connect billing provider",
             copy_html=billing_step_copy_html,
@@ -2634,19 +2678,40 @@ def _build_setup_home_progress(
             is_complete=False,
         )
     else:
-        billing_step_copy_html = "Finish billing setup so this workspace has a payment account ready for invoicing."
-        next_action = {
-            "title": "Finish billing setup",
-            "copy_html": "Start Stripe first so the rest of the setup flow leads to a billable workspace.",
-            "action_label": "Start Stripe setup",
-            "action_href": "/app/stripe/connect/start",
-            "action_method": "post",
-        }
-        if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
+        if show_provider_choice:
             billing_step_copy_html = (
-                "Billing setup is still pending. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
+                "Choose Stripe or PayPal to start billing setup. No billing provider is preselected "
+                "for this workspace."
             )
-            next_action = None
+            next_action = {
+                "title": "Choose billing provider",
+                "copy_html": (
+                    "Choose Stripe or PayPal to start billing setup. This release still keeps one "
+                    "active billing provider per creator."
+                ),
+                "action_label": "",
+                "action_href": "",
+                "action_method": "provider-choice",
+            }
+        else:
+            provider_action = _billing_provider_connect_action(
+                provider_name=readiness.billing_provider,
+                reconnect=False,
+            )
+            billing_step_copy_html = (
+                f"Finish {html.escape(_billing_provider_label(readiness.billing_provider))} "
+                "setup so this workspace has a payment account ready for invoicing."
+            )
+            next_action = {
+                "title": "Finish billing setup",
+                "copy_html": (
+                    f"{html.escape(provider_action['label'])} so the rest of the setup flow leads "
+                    "to a billable workspace."
+                ),
+                "action_label": provider_action["label"],
+                "action_href": provider_action["href"],
+                "action_method": "post",
+            }
         billing_step = _setup_step(
             title="Connect billing provider",
             copy_html=billing_step_copy_html,
@@ -5382,7 +5447,11 @@ def _format_money_from_cents(amount_cents: int) -> str:
     return f"{amount_cents / 100:,.2f}"
 
 
-def _billing_setup_home_state(*, readiness: CreatorWorkspaceReadiness) -> dict[str, str]:
+def _billing_setup_home_state(
+    *,
+    readiness: CreatorWorkspaceReadiness,
+    show_provider_choice: bool,
+) -> dict[str, str]:
     normalized_status = readiness.billing_connect_status
     if normalized_status == "connected":
         description = (
@@ -5410,6 +5479,7 @@ def _billing_setup_home_state(*, readiness: CreatorWorkspaceReadiness) -> dict[s
             "heading": "Billing provider is connected",
             "description": description,
             "button_label": "",
+            "button_href": "",
             "badge_class": "connected",
             "item_class": "done",
             "checklist_label": "Done",
@@ -5417,36 +5487,50 @@ def _billing_setup_home_state(*, readiness: CreatorWorkspaceReadiness) -> dict[s
         }
 
     if normalized_status == "disconnected":
-        description = "This workspace was connected before, but it is disconnected now. Reconnect it before new bookings can move into invoicing."
-        button_label = "Reconnect Stripe"
-        if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
-            description = (
-                "This workspace was connected to PayPal before, but it is disconnected now. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
-            )
-            button_label = ""
+        provider_action = _billing_provider_connect_action(
+            provider_name=readiness.billing_provider,
+            reconnect=True,
+        )
+        description = (
+            f"This workspace was connected to {html.escape(_billing_provider_label(readiness.billing_provider))} "
+            "before, but it is disconnected now. Reconnect it before new bookings can move into invoicing."
+        )
         return {
             "label": "Disconnected",
             "heading": "Billing connection is disconnected",
             "description": description,
-            "button_label": button_label,
+            "button_label": provider_action["label"],
+            "button_href": provider_action["href"],
             "badge_class": "disconnected",
             "item_class": "todo",
             "checklist_label": "Blocked",
             "checklist_copy": "Reconnect billing setup before new bookings can move into invoicing for this workspace.",
         }
 
-    description = "A billing provider is required before this workspace can turn new bookings into invoices. Start or resume the connection from this page."
-    button_label = "Start Stripe setup"
-    if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
+    if show_provider_choice:
         description = (
-            "A billing provider is required before this workspace can turn new bookings into invoices. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
+            "A billing provider is required before this workspace can turn new bookings into invoices. "
+            "Choose Stripe or PayPal to continue. No billing provider is preselected for this workspace."
         )
         button_label = ""
+        button_href = ""
+    else:
+        provider_action = _billing_provider_connect_action(
+            provider_name=readiness.billing_provider,
+            reconnect=False,
+        )
+        description = (
+            "A billing provider is required before this workspace can turn new bookings into invoices. "
+            "Start or resume the connection from this page."
+        )
+        button_label = provider_action["label"]
+        button_href = provider_action["href"]
     return {
         "label": "Pending",
         "heading": "Billing setup is still pending",
         "description": description,
         "button_label": button_label,
+        "button_href": button_href,
         "badge_class": "pending",
         "item_class": "todo",
         "checklist_label": "Needs action",
@@ -5457,6 +5541,7 @@ def _billing_setup_home_state(*, readiness: CreatorWorkspaceReadiness) -> dict[s
 def _account_billing_management_state(
     *,
     readiness: CreatorWorkspaceReadiness,
+    show_provider_choice: bool,
 ) -> dict[str, str]:
     normalized_status = readiness.billing_connect_status
     if normalized_status == "connected":
@@ -5480,41 +5565,51 @@ def _account_billing_management_state(
             "label": "Connected",
             "body": body,
             "action_label": action_label,
+            "action_href": "/app/stripe/connect/start",
             "badge_class": "connected",
         }
 
     if normalized_status == "disconnected":
-        body = (
-            "This workspace is not currently connected to a billing provider for invoicing. "
-            "You can reconnect Stripe here when you are ready."
+        provider_action = _billing_provider_connect_action(
+            provider_name=readiness.billing_provider,
+            reconnect=True,
         )
-        action_label = "Reconnect Stripe"
-        if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
-            body = (
-                "This workspace is not currently connected to PayPal for invoicing. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
-            )
-            action_label = ""
+        body = (
+            f"This workspace is not currently connected to {html.escape(_billing_provider_label(readiness.billing_provider))} "
+            "for invoicing. You can reconnect it here when you are ready."
+        )
         return {
             "label": "Disconnected",
             "body": body,
-            "action_label": action_label,
+            "action_label": provider_action["label"],
+            "action_href": provider_action["href"],
             "badge_class": "disconnected",
         }
 
-    body = (
-        "This workspace is not currently connected to a billing provider for invoicing. "
-        "You can start Stripe setup here when you are ready."
-    )
-    action_label = "Start Stripe setup"
-    if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
+    if show_provider_choice:
         body = (
-            "This workspace is not currently connected to a billing provider for invoicing. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
+            "This workspace is not currently connected to a billing provider for invoicing. "
+            "Choose Stripe or PayPal here when you are ready. No billing provider is preselected "
+            "for this workspace."
         )
         action_label = ""
+        action_href = ""
+    else:
+        provider_action = _billing_provider_connect_action(
+            provider_name=readiness.billing_provider,
+            reconnect=False,
+        )
+        body = (
+            "This workspace is not currently connected to a billing provider for invoicing. "
+            "You can continue the current setup here when you are ready."
+        )
+        action_label = provider_action["label"]
+        action_href = provider_action["href"]
     return {
         "label": "Pending",
         "body": body,
         "action_label": action_label,
+        "action_href": action_href,
         "badge_class": "pending",
     }
 
@@ -5547,6 +5642,74 @@ def _format_timestamp_in_utc(value) -> str:
 
 def _format_connected_at(value) -> str:
     return _format_timestamp_in_utc(value)
+
+
+def _creator_needs_initial_billing_provider_choice(
+    *,
+    creator,
+    readiness: CreatorWorkspaceReadiness,
+) -> bool:
+    return (
+        readiness.billing_connect_status == "pending"
+        and creator.resolved_billing_account_id is None
+        and creator.resolved_billing_connected_at is None
+    )
+
+
+def _billing_provider_connect_action(
+    *,
+    provider_name: str | None,
+    reconnect: bool,
+) -> dict[str, str]:
+    normalized_provider = (provider_name or BILLING_PROVIDER_STRIPE).strip().lower()
+    if normalized_provider == BILLING_PROVIDER_PAYPAL:
+        return {
+            "label": "Reconnect PayPal" if reconnect else "Start PayPal setup",
+            "href": "/app/paypal/connect/start",
+        }
+    return {
+        "label": "Reconnect Stripe" if reconnect else "Start Stripe setup",
+        "href": "/app/stripe/connect/start",
+    }
+
+
+def _render_billing_provider_choice_actions() -> str:
+    stripe_action = _billing_provider_connect_action(
+        provider_name=BILLING_PROVIDER_STRIPE,
+        reconnect=False,
+    )
+    paypal_action = _billing_provider_connect_action(
+        provider_name=BILLING_PROVIDER_PAYPAL,
+        reconnect=False,
+    )
+    return f"""
+    <section class="stack">
+      <p><strong>Choose billing provider</strong></p>
+      <p>No billing provider is preselected for this workspace. Choose one provider to continue setup.</p>
+      <div class="grid">
+        <article class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Provider option</p>
+            <h2>Stripe</h2>
+          </div>
+          <p>Connect Stripe for the existing card-based billing path.</p>
+          <form action="{html.escape(stripe_action['href'])}" method="post">
+            <button type="submit">{html.escape(stripe_action['label'])}</button>
+          </form>
+        </article>
+        <article class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Provider option</p>
+            <h2>PayPal</h2>
+          </div>
+          <p>Connect PayPal for invoice-based billing through the same creator setup flow.</p>
+          <form action="{html.escape(paypal_action['href'])}" method="post">
+            <button type="submit">{html.escape(paypal_action['label'])}</button>
+          </form>
+        </article>
+      </div>
+    </section>
+    """
 
 
 def _billing_provider_label(raw_provider: str | None) -> str:

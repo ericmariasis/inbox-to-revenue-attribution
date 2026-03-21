@@ -27,6 +27,7 @@ from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
 )
 from app.services.next_content_experiments import UNSUPPORTED_EXPERIMENTS_SUMMARY
+from app.services.paypal_provider import PayPalConnectOnboardingResult
 from app.services.rate_limit import (
     DEFAULT_SHARED_RATE_LIMITER,
     SUPPORT_REQUEST_SUBMIT_POLICY,
@@ -921,6 +922,7 @@ class _StubPayPalProvider:
     def __init__(self, *, readiness: BillingAccountReadiness):
         self._readiness = readiness
         self.readiness_calls: list[str] = []
+        self.start_calls: list[dict[str, str]] = []
 
     def get_billing_account_readiness(
         self,
@@ -929,6 +931,29 @@ class _StubPayPalProvider:
     ) -> BillingAccountReadiness:
         self.readiness_calls.append(provider_account_id)
         return self._readiness
+
+    def create_connect_onboarding(
+        self,
+        *,
+        tracking_id: str,
+        return_url: str,
+    ) -> PayPalConnectOnboardingResult:
+        self.start_calls.append(
+            {
+                "tracking_id": tracking_id,
+                "return_url": return_url,
+            }
+        )
+        return PayPalConnectOnboardingResult(
+            onboarding_url=(
+                "https://www.sandbox.paypal.com/bizsignup/partner/entry"
+                f"?tracking_id={tracking_id}"
+            ),
+            tracking_id=tracking_id,
+        )
+
+    def get_verified_seller_status(self, *, tracking_id: str):
+        raise AssertionError(f"unexpected seller lookup tracking_id={tracking_id}")
 
 
 class _FailingEmailProvider:
@@ -1205,7 +1230,7 @@ def test_browser_magic_link_verify_failure_redirects_without_echoing_token():
     assert "different device or browser than the one where sign-in started" in invalid_link_page.text
 
 
-def test_setup_home_pending_stripe_state_shows_connect_cta_and_checklist():
+def test_setup_home_pending_billing_state_shows_provider_choice_and_checklist():
     inserted = _insert_creator_user(
         email=f"ui_pending_{uuid.uuid4().hex}@example.com",
         name="Pending Creator",
@@ -1226,14 +1251,18 @@ def test_setup_home_pending_stripe_state_shows_connect_cta_and_checklist():
     assert "Setup Home" in response.text
     assert "0 of 4 setup steps done" in response.text
     assert "Billing setup is still pending" in response.text
+    assert "Choose billing provider" in response.text
+    assert "No billing provider is preselected for this workspace." in response.text
     assert "Start Stripe setup" in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
+    assert "Start PayPal setup" in response.text
+    assert 'action="/app/paypal/connect/start"' in response.text
     assert "Save a booking link" in response.text
     assert 'href="/app/booking-links"' in response.text
     assert "Add billing defaults" in response.text
     assert "Create a tracked link" in response.text
     assert 'href="/app/content"' in response.text
-    assert "Finish billing setup" in response.text
+    assert "Choose Stripe or PayPal to start billing setup." in response.text
     assert 'href="/app/reports"' in response.text
     assert 'class="wrap-anywhere"' in response.text
     assert "Blocked billing and unresolved payments will appear on" in response.text
@@ -1268,6 +1297,33 @@ def test_setup_home_missing_billing_defaults_state_shows_blocked_next_action():
     assert "At least one saved booking link still needs both amount and currency before this workspace is billable now." in response.text
     assert "Become billable now" in response.text
     assert 'href="/app/booking-links"' in response.text
+
+
+def test_account_page_pending_billing_state_shows_provider_choice_without_default():
+    inserted = _insert_creator_user(
+        email=f"ui_account_pending_{uuid.uuid4().hex}@example.com",
+        name="Pending Account Creator",
+        stripe_connect_status="pending",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Billing connection" in response.text
+    assert "Choose Stripe or PayPal here when you are ready." in response.text
+    assert "No billing provider is preselected for this workspace." in response.text
+    assert "Start Stripe setup" in response.text
+    assert 'action="/app/stripe/connect/start"' in response.text
+    assert "Start PayPal setup" in response.text
+    assert 'action="/app/paypal/connect/start"' in response.text
 
 
 def test_setup_and_account_pages_reuse_connected_but_not_billable_now_vocabulary():
@@ -3447,6 +3503,33 @@ def test_setup_home_disconnected_stripe_state_shows_reconnect_cta():
     assert 'action="/app/stripe/connect/start"' in response.text
 
 
+def test_setup_home_disconnected_paypal_state_shows_reconnect_cta():
+    inserted = _insert_creator_user(
+        email=f"ui_paypal_disconnected_{uuid.uuid4().hex}@example.com",
+        name="Disconnected PayPal Creator",
+        stripe_connect_status="pending",
+        billing_provider="paypal",
+        billing_connect_status="disconnected",
+        billing_account_id="merchant_ui_disconnected",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Billing connection is disconnected" in response.text
+    assert "This workspace was connected to PayPal before, but it is disconnected now." in response.text
+    assert "Reconnect PayPal" in response.text
+    assert 'action="/app/paypal/connect/start"' in response.text
+
+
 def test_setup_home_connected_stripe_state_shows_connected_details():
     connected_at = datetime.now(timezone.utc).replace(microsecond=0)
     inserted = _insert_creator_user(
@@ -3591,7 +3674,7 @@ def test_account_page_disconnected_state_renders_reconnect_copy_without_destruct
 
     assert response.status_code == 200
     assert "Disconnected" in response.text
-    assert "This workspace is not currently connected to a billing provider for invoicing." in response.text
+    assert "This workspace is not currently connected to Stripe for invoicing." in response.text
     assert "Reconnect Stripe" in response.text
     assert "No booking links are saved yet for this workspace." in response.text
     assert "Workspace reset and account deletion stay support-assisted during beta." in response.text
@@ -4149,6 +4232,41 @@ def test_setup_home_connect_cta_redirects_to_stripe_and_callback_returns_to_app(
     assert creator_row["billing_connect_status"] == "connected"
     assert creator_row["billing_account_id"] == "acct_story38_browser"
     assert creator_row["billing_connected_at"] is not None
+
+
+def test_setup_home_paypal_connect_cta_redirects_to_paypal_onboarding():
+    inserted = _insert_creator_user(
+        email=f"ui_paypal_cta_{uuid.uuid4().hex}@example.com",
+        name="PayPal CTA Creator",
+        stripe_connect_status="pending",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=True)
+    )
+
+    with _override_app_state("paypal_provider", provider):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+
+            start_response = client.post(
+                "/app/paypal/connect/start",
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+
+    assert start_response.status_code == 303
+    assert start_response.headers["location"].startswith(
+        "https://www.sandbox.paypal.com/bizsignup/partner/entry"
+    )
+    assert len(provider.start_calls) == 1
+    assert provider.start_calls[0]["tracking_id"].startswith("ccp-paypal-")
+    assert "state=" in provider.start_calls[0]["return_url"]
 
 
 def test_browser_stripe_connect_callback_interrupted_redirects_to_setup_recovery():

@@ -5,12 +5,14 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
+from app.models.billing_provider import BILLING_PROVIDER_PAYPAL, BILLING_PROVIDER_STRIPE
 from app.models.booking_provider import BOOKING_PROVIDER_FULLSCOPE
 from app.models.calendly_webhook_event import CalendlyWebhookEventRecord
 from app.models.content import Content
 from app.models.content_extraction_artifact import ContentExtractionArtifact
 from app.models.content_topic_candidate import ContentTopicCandidate
 from app.models.fullscope_webhook_event import FullScopeWebhookEventRecord
+from app.models.invoice_payment_event import InvoicePaymentEvent
 from app.services.booking_attribution import (
     BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
     BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
@@ -46,6 +48,10 @@ AUTHORITATIVE_CONTENT_LAG_REASON_STALE_AUTHORITY = "stale_authoritative_evidence
 AUTHORITATIVE_CONTENT_LAG_REASON_ORDER = (
     AUTHORITATIVE_CONTENT_LAG_REASON_MISSING_AUTHORITY,
     AUTHORITATIVE_CONTENT_LAG_REASON_STALE_AUTHORITY,
+)
+PAYMENT_PROVIDER_HEALTH_ORDER = (
+    BILLING_PROVIDER_STRIPE,
+    BILLING_PROVIDER_PAYPAL,
 )
 
 
@@ -87,10 +93,19 @@ class PaymentProvenanceReasonCount:
 
 
 @dataclass(frozen=True)
+class PaymentProviderHealthSnapshot:
+    payment_provider: str
+    settled_state_counts: list[PaymentProvenanceStateCount]
+    current_backlog_event_count: int
+    current_backlog_reasons: list[PaymentProvenanceReasonCount]
+
+
+@dataclass(frozen=True)
 class PaymentProvenanceHealthSnapshot:
     settled_state_counts: list[PaymentProvenanceStateCount]
     current_backlog_event_count: int
     current_backlog_reasons: list[PaymentProvenanceReasonCount]
+    provider_health: list[PaymentProviderHealthSnapshot]
 
 
 @dataclass(frozen=True)
@@ -154,6 +169,8 @@ def get_creator_evidence_ingress_health_snapshot(
         ),
         payment_provenance=_build_payment_provenance_health_snapshot(
             settled_snapshot=settled_snapshot,
+            creator_id=creator_id,
+            db=db,
         ),
         blocked_billing=_build_blocked_billing_health_snapshot(
             settled_snapshot=settled_snapshot,
@@ -309,6 +326,8 @@ def _build_provider_ingress_health_snapshot(
 def _build_payment_provenance_health_snapshot(
     *,
     settled_snapshot,
+    creator_id: UUID,
+    db: Session,
 ) -> PaymentProvenanceHealthSnapshot:
     counts_by_state = {
         state: 0
@@ -335,7 +354,90 @@ def _build_payment_provenance_health_snapshot(
         settled_state_counts=state_counts,
         current_backlog_event_count=settled_snapshot.unmatched_payment_backlog.event_count,
         current_backlog_reasons=backlog_reasons,
+        provider_health=_build_payment_provider_health_snapshots(
+            creator_id=creator_id,
+            settled_snapshot=settled_snapshot,
+            db=db,
+        ),
     )
+
+
+def _build_payment_provider_health_snapshots(
+    *,
+    creator_id: UUID,
+    settled_snapshot,
+    db: Session,
+) -> list[PaymentProviderHealthSnapshot]:
+    state_counts_by_provider: dict[str, dict[str, int]] = {
+        payment_provider: {
+            state: 0
+            for state in PAYMENT_PROVENANCE_STATE_ORDER
+        }
+        for payment_provider in PAYMENT_PROVIDER_HEALTH_ORDER
+    }
+    for row in settled_snapshot.settled_rows:
+        provider_counts = state_counts_by_provider.setdefault(
+            row.payment_provider,
+            {state: 0 for state in PAYMENT_PROVENANCE_STATE_ORDER},
+        )
+        provider_counts[row.payment_provenance.state] += 1
+
+    backlog_rows = db.execute(
+        select(
+            InvoicePaymentEvent.payment_provider,
+            InvoicePaymentEvent.unattributed_reason,
+            func.count(InvoicePaymentEvent.id),
+        )
+        .where(
+            InvoicePaymentEvent.creator_id == creator_id,
+            InvoicePaymentEvent.status == "unmatched",
+        )
+        .group_by(
+            InvoicePaymentEvent.payment_provider,
+            InvoicePaymentEvent.unattributed_reason,
+        )
+        .order_by(
+            InvoicePaymentEvent.payment_provider.asc(),
+            InvoicePaymentEvent.unattributed_reason.asc(),
+        )
+    ).all()
+    backlog_reasons_by_provider: dict[str, list[PaymentProvenanceReasonCount]] = {}
+    for payment_provider, reason, event_count in backlog_rows:
+        backlog_reasons_by_provider.setdefault(payment_provider, []).append(
+            PaymentProvenanceReasonCount(
+                reason=reason,
+                event_count=event_count,
+            )
+        )
+
+    ordered_payment_providers = [
+        *PAYMENT_PROVIDER_HEALTH_ORDER,
+        *sorted(
+            {
+                *state_counts_by_provider.keys(),
+                *backlog_reasons_by_provider.keys(),
+            }
+            - set(PAYMENT_PROVIDER_HEALTH_ORDER)
+        ),
+    ]
+    return [
+        PaymentProviderHealthSnapshot(
+            payment_provider=payment_provider,
+            settled_state_counts=[
+                PaymentProvenanceStateCount(
+                    state=state,
+                    row_count=state_counts_by_provider.get(payment_provider, {}).get(state, 0),
+                )
+                for state in PAYMENT_PROVENANCE_STATE_ORDER
+            ],
+            current_backlog_event_count=sum(
+                item.event_count
+                for item in backlog_reasons_by_provider.get(payment_provider, [])
+            ),
+            current_backlog_reasons=backlog_reasons_by_provider.get(payment_provider, []),
+        )
+        for payment_provider in ordered_payment_providers
+    ]
 
 
 def _build_blocked_billing_health_snapshot(

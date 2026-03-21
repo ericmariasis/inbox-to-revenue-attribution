@@ -56,7 +56,7 @@ from app.schemas.content import (
     ContentTopicReviewResponse,
 )
 from app.services.auth_magic_link import start_magic_link
-from app.services.billing_provider import build_billing_provider_registry
+from app.services.billing_provider import BillingProviderError, build_billing_provider_registry
 from app.services.blocked_billing import (
     BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
     BLOCKED_BILLING_REASON_PROVIDER_ERROR,
@@ -87,6 +87,7 @@ from app.services.evidence_ingress_health import (
     AUTHORITATIVE_CONTENT_LAG_REASON_MISSING_AUTHORITY,
     AUTHORITATIVE_CONTENT_LAG_REASON_STALE_AUTHORITY,
     CreatorEvidenceIngressHealthSnapshot,
+    PaymentProviderHealthSnapshot,
     ProviderIngressHealthSnapshot,
     get_creator_evidence_ingress_health_snapshot,
 )
@@ -148,6 +149,7 @@ from app.services.support_requests import (
     transition_support_request_status,
 )
 from app.services.stripe_provider import build_default_stripe_provider
+from app.services.stripe_account_readiness import get_creator_billing_account_readiness
 
 router = APIRouter(include_in_schema=False)
 
@@ -353,13 +355,19 @@ def creator_app_shell(
         creator_id=current_user.creator_id,
         db=db,
     )
+    billing_provider_ready = _creator_workspace_billing_provider_ready(
+        request=request,
+        current_user=current_user,
+    )
     workspace_state = build_creator_workspace_state(
         raw_billing_connect_status=current_user.creator.resolved_billing_connect_status,
+        raw_billing_provider=current_user.creator.resolved_billing_provider,
         booking_links=booking_links,
         content_items=content_items,
         paid_invoice_count=summary.paid_invoice_count,
         blocked_billing_count=summary.blocked_summary.open_case_count,
         unmatched_payment_count=summary.unattributed_current_backlog.event_count,
+        billing_provider_ready=billing_provider_ready,
     )
 
     return _html_response(
@@ -395,11 +403,17 @@ def creator_account_page(
         creator_id=current_user.creator_id,
         db=db,
     )
+    billing_provider_ready = _creator_workspace_billing_provider_ready(
+        request=request,
+        current_user=current_user,
+    )
     readiness = build_creator_workspace_readiness(
         raw_billing_connect_status=current_user.creator.resolved_billing_connect_status,
+        raw_billing_provider=current_user.creator.resolved_billing_provider,
         booking_links=booking_links,
         content_items=content_items,
         paid_invoice_count=summary.paid_invoice_count,
+        billing_provider_ready=billing_provider_ready,
     )
     support_requests = list_latest_support_requests_for_creator(
         db,
@@ -1028,11 +1042,17 @@ def creator_reports_page(
         except ValueError:
             field_errors["date_range"] = "Start date must be on or before end date."
 
+    billing_provider_ready = _creator_workspace_billing_provider_ready(
+        request=request,
+        current_user=current_user,
+    )
     readiness = build_creator_workspace_readiness(
         raw_billing_connect_status=current_user.creator.resolved_billing_connect_status,
+        raw_billing_provider=current_user.creator.resolved_billing_provider,
         booking_links=booking_links,
         content_items=content_items,
         paid_invoice_count=overall_summary.paid_invoice_count,
+        billing_provider_ready=billing_provider_ready,
     )
 
     return _html_response(
@@ -1377,6 +1397,34 @@ def _ui_billing_providers(request: Request):
     )
 
 
+def _creator_workspace_billing_provider_ready(
+    *,
+    request: Request,
+    current_user: AuthUser,
+) -> bool | None:
+    creator = current_user.creator
+    if creator.resolved_billing_provider != BILLING_PROVIDER_PAYPAL:
+        return None
+    if (creator.resolved_billing_connect_status or "").strip().lower() != "connected":
+        return None
+
+    provider = _ui_billing_providers(request).get(BILLING_PROVIDER_PAYPAL)
+    if provider is None:
+        return False
+
+    try:
+        readiness = get_creator_billing_account_readiness(
+            creator=creator,
+            provider=provider,
+        )
+    except BillingProviderError:
+        return False
+
+    if readiness is None:
+        return False
+    return readiness.can_create_invoices
+
+
 def _empty_booking_link_form_values() -> dict[str, str]:
     form_values = {field_name: "" for field_name in BOOKING_LINK_FORM_FIELDS}
     form_values["provider"] = BOOKING_PROVIDER_CALENDLY
@@ -1713,7 +1761,6 @@ def _render_app_shell(
             f"<p><strong>Connected on</strong>: "
             f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
         )
-
     billing_action = ""
     if billing_status["button_label"]:
         billing_action = f"""
@@ -1809,6 +1856,13 @@ def _render_account_page(
             f"<p><strong>Connected on</strong>: "
             f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
         )
+    billing_action = ""
+    if billing_state["action_label"]:
+        billing_action = f"""
+        <form action="/app/stripe/connect/start" method="post">
+          <button type="submit">{html.escape(billing_state["action_label"])}</button>
+        </form>
+        """
 
     booking_links_summary = "No booking links are saved yet for this workspace."
     if booking_links_count > 0:
@@ -1884,9 +1938,7 @@ def _render_account_page(
         {_render_readiness_summary(readiness=readiness)}
         <p><strong>What this changes</strong></p>
         <p>Changing the billing connection affects future billing readiness. It does not erase local history already recorded for this workspace, and it does not delete anything from the payment provider automatically.</p>
-        <form action="/app/stripe/connect/start" method="post">
-          <button type="submit">{html.escape(billing_state['action_label'])}</button>
-        </form>
+        {billing_action}
       </article>
       <article class="card stack">
         <div>
@@ -2347,6 +2399,12 @@ def _readiness_stage_summary(readiness: CreatorWorkspaceReadiness) -> dict[str, 
             ),
         }
 
+    if _billing_provider_is_connected_but_not_ready(readiness):
+        return {
+            "title": "Connected, but not billable now",
+            "copy": _billing_provider_not_ready_copy(readiness),
+        }
+
     if _has_inactive_creator_booking_links(readiness):
         return {
             "title": "Connected, but not billable now",
@@ -2396,6 +2454,12 @@ def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[st
             "Billable now",
             "Done",
             "At least one booking link has amount and currency saved.",
+        )
+    elif _billing_provider_is_connected_but_not_ready(readiness):
+        billable_line = (
+            "Billable now",
+            "Not yet",
+            _billing_provider_not_ready_copy(readiness),
         )
     elif readiness.billing_connected and _has_limited_tracking_only_booking_links(readiness):
         billable_line = (
@@ -2519,6 +2583,8 @@ def _build_setup_home_progress(
                 + (
                     "This workspace is already billable now while you finish the rest of setup."
                     if billable_now
+                    else _billing_provider_not_ready_copy(readiness)
+                    if _billing_provider_is_connected_but_not_ready(readiness)
                     else "Creator setup still needs a currently supported booking link before this workspace can become billable now."
                     if booking_links_count > 0
                     and trackable_booking_links_count == 0
@@ -2531,16 +2597,22 @@ def _build_setup_home_progress(
             item_class="done",
             is_complete=True,
         )
-        next_action = None
-    elif normalized_billing_status == "disconnected":
-        billing_step = _setup_step(
-            title="Connect billing provider",
-            copy_html="A billing provider was connected before, but it is disconnected now. Reconnect it before new bookings can move into invoicing.",
-            label="Blocked",
-            badge_class="disconnected",
-            item_class="todo",
-            is_complete=False,
+        next_action = (
+            {
+                "title": "Review billing readiness",
+                "copy_html": (
+                    f"{html.escape(_billing_provider_label(readiness.billing_provider))} "
+                    "is connected, but it is not ready to create invoices yet. Review the current billing connection details before relying on new bookings."
+                ),
+                "action_label": "Open account",
+                "action_href": "/app/account",
+                "action_method": "get",
+            }
+            if _billing_provider_is_connected_but_not_ready(readiness)
+            else None
         )
+    elif normalized_billing_status == "disconnected":
+        billing_step_copy_html = "A billing provider was connected before, but it is disconnected now. Reconnect it before new bookings can move into invoicing."
         next_action = {
             "title": "Reconnect billing setup",
             "copy_html": "Billing setup is the first setup blocker. Reconnect Stripe from this page before you rely on new bookings.",
@@ -2548,15 +2620,21 @@ def _build_setup_home_progress(
             "action_href": "/app/stripe/connect/start",
             "action_method": "post",
         }
-    else:
+        if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
+            billing_step_copy_html = (
+                "PayPal was connected before, but it is disconnected now. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
+            )
+            next_action = None
         billing_step = _setup_step(
             title="Connect billing provider",
-            copy_html="Finish billing setup so this workspace has a payment account ready for invoicing.",
-            label="Needs action",
-            badge_class="pending",
+            copy_html=billing_step_copy_html,
+            label="Blocked",
+            badge_class="disconnected",
             item_class="todo",
             is_complete=False,
         )
+    else:
+        billing_step_copy_html = "Finish billing setup so this workspace has a payment account ready for invoicing."
         next_action = {
             "title": "Finish billing setup",
             "copy_html": "Start Stripe first so the rest of the setup flow leads to a billable workspace.",
@@ -2564,6 +2642,19 @@ def _build_setup_home_progress(
             "action_href": "/app/stripe/connect/start",
             "action_method": "post",
         }
+        if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
+            billing_step_copy_html = (
+                "Billing setup is still pending. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
+            )
+            next_action = None
+        billing_step = _setup_step(
+            title="Connect billing provider",
+            copy_html=billing_step_copy_html,
+            label="Needs action",
+            badge_class="pending",
+            item_class="todo",
+            is_complete=False,
+        )
 
     if booking_links_count > 0:
         booking_link_copy_html = (
@@ -2614,6 +2705,10 @@ def _build_setup_home_progress(
                 + (
                     "already has amount and currency so this workspace is billable now."
                     if billable_now
+                    else (
+                        f"already has amount and currency, but {html.escape(_billing_provider_label(readiness.billing_provider))} is not ready to create invoices yet."
+                    )
+                    if _billing_provider_is_connected_but_not_ready(readiness)
                     else "already has amount and currency. Connect billing setup so this workspace becomes billable now."
                 )
             ),
@@ -2763,7 +2858,9 @@ def _build_setup_home_progress(
             }
 
     progress_copy = "Connect billing setup first, then make one booking link billable now and create tracked content."
-    if readiness.billing_connected:
+    if _billing_provider_is_connected_but_not_ready(readiness):
+        progress_copy = _billing_provider_not_ready_copy(readiness)
+    elif readiness.billing_connected:
         progress_copy = "Billing setup is connected. The next milestone is billable now."
     if billable_now:
         progress_copy = "This workspace is billable now. Create tracked content next to become ready to track."
@@ -4429,6 +4526,16 @@ def _render_health_page(
       )}
       <p><a href="/app/attention" class="inline-link">Open Attention for blocked or unmatched details</a></p>
     </section>
+    {"".join(
+        _render_health_payment_provider_section(
+            snapshot=item,
+        )
+        for item in snapshot.payment_provenance.provider_health
+        if _should_render_health_payment_provider_section(
+            snapshot=item,
+            current_billing_provider=current_user.creator.resolved_billing_provider,
+        )
+    )}
     <section class="card stack">
       <div class="section-heading">
         <div>
@@ -4654,6 +4761,16 @@ def _render_reports_empty_state(
           <h2>Ready to track is the next milestone</h2>
           <p>This workspace is billable now, but Reports stays empty until you create tracked content and that tracked link leads to a paid invoice.</p>
           <a href="/app/content" class="inline-link">Create tracked content</a>
+        </section>
+        """
+
+    if _billing_provider_is_connected_but_not_ready(readiness):
+        return f"""
+        <section class="empty-state">
+          <p class="eyebrow">Billing provider not ready yet</p>
+          <h2>Billable now still waits on provider readiness</h2>
+          <p>{html.escape(_billing_provider_not_ready_copy(readiness))} Reports stays empty until the provider is ready and a tracked invoice is marked paid.</p>
+          <a href="/app/account" class="inline-link">Review billing connection</a>
         </section>
         """
 
@@ -5276,6 +5393,9 @@ def _billing_setup_home_state(*, readiness: CreatorWorkspaceReadiness) -> dict[s
             "Billing setup is connected. The next milestone is billable now, which needs amount "
             "and currency on at least one booking link."
         )
+        if _billing_provider_is_connected_but_not_ready(readiness):
+            description = _billing_provider_not_ready_copy(readiness)
+            checklist_copy = _billing_provider_not_ready_copy(readiness)
         if readiness.billable_now:
             description = (
                 "A billing provider is connected and this workspace is billable now. Keep going until "
@@ -5297,22 +5417,36 @@ def _billing_setup_home_state(*, readiness: CreatorWorkspaceReadiness) -> dict[s
         }
 
     if normalized_status == "disconnected":
+        description = "This workspace was connected before, but it is disconnected now. Reconnect it before new bookings can move into invoicing."
+        button_label = "Reconnect Stripe"
+        if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
+            description = (
+                "This workspace was connected to PayPal before, but it is disconnected now. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
+            )
+            button_label = ""
         return {
             "label": "Disconnected",
             "heading": "Billing connection is disconnected",
-            "description": "This workspace was connected before, but it is disconnected now. Reconnect it before new bookings can move into invoicing.",
-            "button_label": "Reconnect Stripe",
+            "description": description,
+            "button_label": button_label,
             "badge_class": "disconnected",
             "item_class": "todo",
             "checklist_label": "Blocked",
             "checklist_copy": "Reconnect billing setup before new bookings can move into invoicing for this workspace.",
         }
 
+    description = "A billing provider is required before this workspace can turn new bookings into invoices. Start or resume the connection from this page."
+    button_label = "Start Stripe setup"
+    if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
+        description = (
+            "A billing provider is required before this workspace can turn new bookings into invoices. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
+        )
+        button_label = ""
     return {
         "label": "Pending",
         "heading": "Billing setup is still pending",
-        "description": "A billing provider is required before this workspace can turn new bookings into invoices. Start or resume the connection from this page.",
-        "button_label": "Start Stripe setup",
+        "description": description,
+        "button_label": button_label,
         "badge_class": "pending",
         "item_class": "todo",
         "checklist_label": "Needs action",
@@ -5331,6 +5465,11 @@ def _account_billing_management_state(
             "amount and currency on at least one booking link before new bookings can move "
             "into invoicing."
         )
+        action_label = "Reconnect Stripe"
+        if _billing_provider_is_connected_but_not_ready(readiness):
+            body = _billing_provider_not_ready_copy(readiness)
+        if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
+            action_label = ""
         if readiness.billable_now:
             body = (
                 "This workspace has a connected billing provider and is billable now for future "
@@ -5340,28 +5479,42 @@ def _account_billing_management_state(
         return {
             "label": "Connected",
             "body": body,
-            "action_label": "Reconnect Stripe",
+            "action_label": action_label,
             "badge_class": "connected",
         }
 
     if normalized_status == "disconnected":
+        body = (
+            "This workspace is not currently connected to a billing provider for invoicing. "
+            "You can reconnect Stripe here when you are ready."
+        )
+        action_label = "Reconnect Stripe"
+        if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
+            body = (
+                "This workspace is not currently connected to PayPal for invoicing. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
+            )
+            action_label = ""
         return {
             "label": "Disconnected",
-            "body": (
-                "This workspace is not currently connected to a billing provider for invoicing. "
-                "You can reconnect Stripe here when you are ready."
-            ),
-            "action_label": "Reconnect Stripe",
+            "body": body,
+            "action_label": action_label,
             "badge_class": "disconnected",
         }
 
+    body = (
+        "This workspace is not currently connected to a billing provider for invoicing. "
+        "You can start Stripe setup here when you are ready."
+    )
+    action_label = "Start Stripe setup"
+    if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
+        body = (
+            "This workspace is not currently connected to a billing provider for invoicing. Current beta self-serve connection still stays on the Stripe path, so PayPal connection changes remain operator-assisted."
+        )
+        action_label = ""
     return {
         "label": "Pending",
-        "body": (
-            "This workspace is not currently connected to a billing provider for invoicing. "
-            "You can start Stripe setup here when you are ready."
-        ),
-        "action_label": "Start Stripe setup",
+        "body": body,
+        "action_label": action_label,
         "badge_class": "pending",
     }
 
@@ -5405,6 +5558,19 @@ def _billing_provider_label(raw_provider: str | None) -> str:
     if normalized_provider:
         return normalized_provider.replace("_", " ").title()
     return "Not connected"
+
+
+def _billing_provider_is_connected_but_not_ready(
+    readiness: CreatorWorkspaceReadiness,
+) -> bool:
+    return readiness.billing_connected and readiness.billing_provider_ready is False
+
+
+def _billing_provider_not_ready_copy(
+    readiness: CreatorWorkspaceReadiness,
+) -> str:
+    provider_label = _billing_provider_label(readiness.billing_provider)
+    return f"{provider_label} is connected, but the {provider_label} account is not ready to create invoices yet."
 
 
 def _count_copy(count: int, singular: str, plural: str | None = None) -> str:
@@ -5749,6 +5915,51 @@ def _render_health_ingress_section(
           empty_body=empty_body,
       )}
       <p>Use structured webhook logs for event-level identifiers and replay context when these counts rise.</p>
+    </section>
+    """
+
+
+def _should_render_health_payment_provider_section(
+    *,
+    snapshot: PaymentProviderHealthSnapshot,
+    current_billing_provider: str | None,
+) -> bool:
+    normalized_current_billing_provider = (current_billing_provider or "").strip().lower()
+    if snapshot.payment_provider == normalized_current_billing_provider:
+        return True
+    if snapshot.current_backlog_event_count > 0:
+        return True
+    return any(item.row_count > 0 for item in snapshot.settled_state_counts)
+
+
+def _render_health_payment_provider_section(
+    *,
+    snapshot: PaymentProviderHealthSnapshot,
+) -> str:
+    provider_label = _billing_provider_label(snapshot.payment_provider)
+    return f"""
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">{html.escape(provider_label)} payment truth</p>
+          <h2>{html.escape(provider_label)} settled rows and unmatched backlog</h2>
+        </div>
+        <p>{html.escape(_count_copy(snapshot.current_backlog_event_count, 'backlog event'))}</p>
+      </div>
+      {_render_health_reason_list(
+          items=[
+              f"{_count_copy(item.row_count, 'settled row')} currently marked {_health_payment_state_label(item.state).lower()}."
+              for item in snapshot.settled_state_counts
+              if item.row_count > 0
+          ]
+          + [
+              f"{_count_copy(item.event_count, 'backlog event')} due to {_reports_reason_label(item.reason).lower()}. {_reports_reason_explanation(item.reason)}"
+              for item in snapshot.current_backlog_reasons
+              if item.event_count > 0
+          ],
+          empty_heading=f"No {provider_label} payment rows or backlog are waiting right now",
+          empty_body=f"Current creator-scoped {provider_label} payment truth does not have matched rows or unmatched backlog waiting right now.",
+      )}
     </section>
     """
 

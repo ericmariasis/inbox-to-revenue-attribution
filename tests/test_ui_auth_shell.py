@@ -16,6 +16,7 @@ from app.services.booking_attribution import (
     BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
     BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
 )
+from app.services.billing_provider import BillingAccountReadiness
 from app.services.email_provider import (
     MagicLinkEmailDeliveryError,
     SupportRequestEmailDeliveryError,
@@ -506,28 +507,40 @@ def _insert_invoice(
     creator_id: str,
     booking_id: str,
     tid: str,
-    stripe_account_id: str,
-    stripe_invoice_id: str,
+    stripe_account_id: str | None = None,
+    stripe_invoice_id: str | None = None,
     amount_cents: int,
     paid_at: datetime,
     status: str = "paid",
     currency: str = "USD",
+    payment_provider: str = "stripe",
+    provider_account_id: str | None = None,
+    provider_invoice_id: str | None = None,
 ) -> str:
     invoice_id = str(uuid.uuid4())
+    resolved_provider_account_id = (
+        provider_account_id if provider_account_id is not None else stripe_account_id
+    )
+    resolved_provider_invoice_id = (
+        provider_invoice_id if provider_invoice_id is not None else stripe_invoice_id
+    )
 
     with _engine().begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO invoices "
-                "(id, creator_id, booking_id, tid, stripe_account_id, stripe_invoice_id, amount_cents, currency, status, issued_at, paid_at, voided_at) "
+                "(id, creator_id, booking_id, tid, payment_provider, provider_account_id, provider_invoice_id, stripe_account_id, stripe_invoice_id, amount_cents, currency, status, issued_at, paid_at, voided_at) "
                 "VALUES "
-                "(:id, :creator_id, :booking_id, :tid, :stripe_account_id, :stripe_invoice_id, :amount_cents, :currency, :status, :issued_at, :paid_at, :voided_at)"
+                "(:id, :creator_id, :booking_id, :tid, :payment_provider, :provider_account_id, :provider_invoice_id, :stripe_account_id, :stripe_invoice_id, :amount_cents, :currency, :status, :issued_at, :paid_at, :voided_at)"
             ),
             {
                 "id": invoice_id,
                 "creator_id": creator_id,
                 "booking_id": booking_id,
                 "tid": tid,
+                "payment_provider": payment_provider,
+                "provider_account_id": resolved_provider_account_id,
+                "provider_invoice_id": resolved_provider_invoice_id,
                 "stripe_account_id": stripe_account_id,
                 "stripe_invoice_id": stripe_invoice_id,
                 "amount_cents": amount_cents,
@@ -545,26 +558,48 @@ def _insert_invoice(
 def _insert_unmatched_payment_event(
     *,
     creator_id: str,
-    stripe_account_id: str,
-    stripe_event_id: str,
-    stripe_invoice_id: str,
+    stripe_account_id: str | None = None,
+    stripe_event_id: str | None = None,
+    stripe_invoice_id: str | None = None,
     reason: str,
     paid_at: datetime,
+    payment_provider: str = "stripe",
+    provider_account_id: str | None = None,
+    provider_event_id: str | None = None,
+    provider_event_type: str | None = None,
+    provider_invoice_id: str | None = None,
 ) -> str:
     payment_event_id = str(uuid.uuid4())
+    resolved_provider_account_id = (
+        provider_account_id if provider_account_id is not None else stripe_account_id
+    )
+    resolved_provider_event_id = (
+        provider_event_id if provider_event_id is not None else stripe_event_id
+    )
+    resolved_provider_event_type = (
+        provider_event_type if provider_event_type is not None else "invoice.paid"
+    )
+    resolved_provider_invoice_id = (
+        provider_invoice_id if provider_invoice_id is not None else stripe_invoice_id
+    )
 
     with _engine().begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO invoice_payment_events "
-                "(id, stripe_event_id, stripe_event_type, stripe_account_id, stripe_invoice_id, invoice_id, creator_id, booking_id, tid, status, unattributed_reason, paid_at, received_at, processed_at) "
+                "(id, payment_provider, provider_event_id, provider_event_type, provider_account_id, provider_invoice_id, stripe_event_id, stripe_event_type, stripe_account_id, stripe_invoice_id, invoice_id, creator_id, booking_id, tid, status, unattributed_reason, paid_at, received_at, processed_at) "
                 "VALUES "
-                "(:id, :stripe_event_id, :stripe_event_type, :stripe_account_id, :stripe_invoice_id, :invoice_id, :creator_id, :booking_id, :tid, :status, :unattributed_reason, :paid_at, :received_at, :processed_at)"
+                "(:id, :payment_provider, :provider_event_id, :provider_event_type, :provider_account_id, :provider_invoice_id, :stripe_event_id, :stripe_event_type, :stripe_account_id, :stripe_invoice_id, :invoice_id, :creator_id, :booking_id, :tid, :status, :unattributed_reason, :paid_at, :received_at, :processed_at)"
             ),
             {
                 "id": payment_event_id,
+                "payment_provider": payment_provider,
+                "provider_event_id": resolved_provider_event_id,
+                "provider_event_type": resolved_provider_event_type,
+                "provider_account_id": resolved_provider_account_id,
+                "provider_invoice_id": resolved_provider_invoice_id,
                 "stripe_event_id": stripe_event_id,
-                "stripe_event_type": "invoice.paid",
+                "stripe_event_type": "invoice.paid" if stripe_event_id is not None else None,
                 "stripe_account_id": stripe_account_id,
                 "stripe_invoice_id": stripe_invoice_id,
                 "invoice_id": None,
@@ -717,26 +752,48 @@ def _insert_matched_payment_event(
     booking_id: str,
     tid: str,
     invoice_id: str,
-    stripe_account_id: str,
-    stripe_event_id: str,
-    stripe_invoice_id: str,
+    stripe_account_id: str | None = None,
+    stripe_event_id: str | None = None,
+    stripe_invoice_id: str | None = None,
     paid_at: datetime,
     status: str = "applied",
+    payment_provider: str = "stripe",
+    provider_account_id: str | None = None,
+    provider_event_id: str | None = None,
+    provider_event_type: str | None = None,
+    provider_invoice_id: str | None = None,
 ) -> str:
     payment_event_id = str(uuid.uuid4())
+    resolved_provider_account_id = (
+        provider_account_id if provider_account_id is not None else stripe_account_id
+    )
+    resolved_provider_event_id = (
+        provider_event_id if provider_event_id is not None else stripe_event_id
+    )
+    resolved_provider_event_type = (
+        provider_event_type if provider_event_type is not None else "invoice.paid"
+    )
+    resolved_provider_invoice_id = (
+        provider_invoice_id if provider_invoice_id is not None else stripe_invoice_id
+    )
 
     with _engine().begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO invoice_payment_events "
-                "(id, stripe_event_id, stripe_event_type, stripe_account_id, stripe_invoice_id, invoice_id, creator_id, booking_id, tid, status, unattributed_reason, paid_at, received_at, processed_at) "
+                "(id, payment_provider, provider_event_id, provider_event_type, provider_account_id, provider_invoice_id, stripe_event_id, stripe_event_type, stripe_account_id, stripe_invoice_id, invoice_id, creator_id, booking_id, tid, status, unattributed_reason, paid_at, received_at, processed_at) "
                 "VALUES "
-                "(:id, :stripe_event_id, :stripe_event_type, :stripe_account_id, :stripe_invoice_id, :invoice_id, :creator_id, :booking_id, :tid, :status, :unattributed_reason, :paid_at, :received_at, :processed_at)"
+                "(:id, :payment_provider, :provider_event_id, :provider_event_type, :provider_account_id, :provider_invoice_id, :stripe_event_id, :stripe_event_type, :stripe_account_id, :stripe_invoice_id, :invoice_id, :creator_id, :booking_id, :tid, :status, :unattributed_reason, :paid_at, :received_at, :processed_at)"
             ),
             {
                 "id": payment_event_id,
+                "payment_provider": payment_provider,
+                "provider_event_id": resolved_provider_event_id,
+                "provider_event_type": resolved_provider_event_type,
+                "provider_account_id": resolved_provider_account_id,
+                "provider_invoice_id": resolved_provider_invoice_id,
                 "stripe_event_id": stripe_event_id,
-                "stripe_event_type": "invoice.paid",
+                "stripe_event_type": "invoice.paid" if stripe_event_id is not None else None,
                 "stripe_account_id": stripe_account_id,
                 "stripe_invoice_id": stripe_invoice_id,
                 "invoice_id": invoice_id,
@@ -856,6 +913,22 @@ class _StubStripeProvider:
         )
         if self._void_error is not None:
             raise self._void_error
+
+
+class _StubPayPalProvider:
+    billing_provider_name = "paypal"
+
+    def __init__(self, *, readiness: BillingAccountReadiness):
+        self._readiness = readiness
+        self.readiness_calls: list[str] = []
+
+    def get_billing_account_readiness(
+        self,
+        *,
+        provider_account_id: str,
+    ) -> BillingAccountReadiness:
+        self.readiness_calls.append(provider_account_id)
+        return self._readiness
 
 
 class _FailingEmailProvider:
@@ -1268,6 +1341,54 @@ def test_setup_and_account_pages_keep_fullscope_sources_out_of_billable_now():
     assert "Saved booking sources are not active for creator-tracked workflows right now. Add a currently supported booking link." in account_response.text
     assert "Creator setup still needs a currently supported booking link before this workspace can become billable now." in setup_response.text
     assert "Those booking sources stay saved, but they are not active in creator-tracked workflows right now." in account_response.text
+
+
+def test_setup_and_account_pages_show_paypal_not_ready_truth_without_stripe_cta():
+    inserted = _insert_creator_user(
+        email=f"ui_paypal_not_ready_{uuid.uuid4().hex}@example.com",
+        name="PayPal Not Ready Creator",
+        stripe_connect_status="pending",
+        stripe_account_id=None,
+        billing_provider="paypal",
+        billing_connect_status="connected",
+        billing_account_id="merchant_ui_paypal_not_ready",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="PayPal Not Ready Call",
+        calendly_url="https://calendly.com/example/paypal-not-ready",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=False)
+    )
+
+    with _override_app_state("paypal_provider", provider):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            setup_response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+            account_response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert setup_response.status_code == 200
+    assert account_response.status_code == 200
+    assert (
+        "PayPal is connected, but the PayPal account is not ready to create invoices yet."
+        in setup_response.text
+    )
+    assert (
+        "PayPal is connected, but the PayPal account is not ready to create invoices yet."
+        in account_response.text
+    )
+    assert "Reconnect Stripe" not in account_response.text
+    assert 'action="/app/stripe/connect/start"' not in account_response.text
+    assert provider.readiness_calls == ["merchant_ui_paypal_not_ready", "merchant_ui_paypal_not_ready"]
 
 
 def test_booking_links_page_empty_state_renders_form_and_next_step_copy():
@@ -2469,6 +2590,91 @@ def test_health_page_renders_creator_scoped_snapshot():
     assert "1 content item with missing authoritative evidence." in response.text
     assert 'href="/app/attention"' in response.text
     assert 'href="/app/content"' in response.text
+
+
+def test_health_page_surfaces_paypal_payment_truth_section():
+    creator = _insert_creator_user(
+        email=f"ui_health_paypal_{uuid.uuid4().hex}@example.com",
+        name="Health PayPal Creator",
+        stripe_connect_status="pending",
+        stripe_account_id=None,
+        billing_provider="paypal",
+        billing_connect_status="connected",
+        billing_account_id="merchant_ui_health_paypal",
+    )
+    access_token = _access_token(
+        user_id=creator["user_id"],
+        creator_id=creator["creator_id"],
+        email=creator["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Health PayPal Strategy",
+        calendly_url="https://calendly.com/example/health-paypal-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    tracked_tid = f"uihealthpaypal{uuid.uuid4().hex[:8]}"
+    booking_uuid = f"BOOK_UI_HEALTH_PAYPAL_{uuid.uuid4().hex[:8]}"
+    matched_provider_invoice_id = f"INV2-UI-HEALTH-PAYPAL-{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/health-paypal",
+        tid=tracked_tid,
+    )
+    booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=tracked_tid,
+        calendly_booking_uuid=booking_uuid,
+        booked_at=datetime(2026, 3, 12, 12, 0, tzinfo=timezone.utc),
+    )
+    invoice_id = _insert_invoice(
+        creator_id=creator["creator_id"],
+        booking_id=booking_id,
+        tid=tracked_tid,
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 12, 12, 30, tzinfo=timezone.utc),
+        payment_provider="paypal",
+        provider_account_id="merchant_ui_health_paypal",
+        provider_invoice_id=matched_provider_invoice_id,
+    )
+    _insert_matched_payment_event(
+        creator_id=creator["creator_id"],
+        booking_id=booking_id,
+        tid=tracked_tid,
+        invoice_id=invoice_id,
+        paid_at=datetime(2026, 3, 12, 12, 30, tzinfo=timezone.utc),
+        payment_provider="paypal",
+        provider_account_id="merchant_ui_health_paypal",
+        provider_event_id=f"WH-UI-HEALTH-PAYPAL-{uuid.uuid4().hex[:8]}",
+        provider_event_type="INVOICING.INVOICE.PAID",
+        provider_invoice_id=matched_provider_invoice_id,
+    )
+    _insert_unmatched_payment_event(
+        creator_id=creator["creator_id"],
+        reason=UNATTRIBUTED_REASON_MISSING_TID,
+        paid_at=datetime(2026, 3, 12, 12, 35, tzinfo=timezone.utc),
+        payment_provider="paypal",
+        provider_account_id="merchant_ui_health_paypal",
+        provider_event_id=f"WH-UI-HEALTH-PAYPAL-UNMATCHED-{uuid.uuid4().hex[:8]}",
+        provider_event_type="INVOICING.INVOICE.PAID",
+        provider_invoice_id=f"INV2-UI-HEALTH-PAYPAL-UNMATCHED-{uuid.uuid4().hex[:8]}",
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/health", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "PayPal payment truth" in response.text
+    assert "PayPal settled rows and unmatched backlog" in response.text
+    assert "1 settled row currently marked matched." in response.text
+    assert "1 backlog event due to missing tracking id." in response.text
+    assert "Stripe payment truth" not in response.text
 
 
 def test_attention_retry_route_recovers_blocked_case_with_frozen_inputs():

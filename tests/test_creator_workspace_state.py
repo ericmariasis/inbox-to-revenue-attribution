@@ -115,6 +115,23 @@ def test_build_creator_workspace_readiness_keeps_fullscope_links_out_of_billable
     assert readiness.ready_to_track is False
 
 
+def test_build_creator_workspace_readiness_keeps_paypal_creator_out_of_billable_now_until_provider_ready():
+    readiness = build_creator_workspace_readiness(
+        raw_billing_connect_status="connected",
+        raw_billing_provider="paypal",
+        booking_links=[_booking_link(billing_amount_cents=15000, billing_currency="USD")],
+        content_items=[],
+        paid_invoice_count=0,
+        billing_provider_ready=False,
+    )
+
+    assert readiness.billing_provider == "paypal"
+    assert readiness.billing_provider_ready is False
+    assert readiness.billing_connected is True
+    assert readiness.billable_now is False
+    assert readiness.ready_to_track is False
+
+
 def test_build_creator_workspace_state_sums_attention_backlog_counts():
     workspace_state = build_creator_workspace_state(
         raw_billing_connect_status="pending",

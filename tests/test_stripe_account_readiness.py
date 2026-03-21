@@ -30,6 +30,22 @@ class _StubStripeProvider:
         return self.readiness
 
 
+class _StubPayPalProvider:
+    billing_provider_name = BILLING_PROVIDER_PAYPAL
+
+    def __init__(self, *, readiness: BillingAccountReadiness):
+        self.readiness = readiness
+        self.readiness_calls: list[str] = []
+
+    def get_billing_account_readiness(
+        self,
+        *,
+        provider_account_id: str,
+    ) -> BillingAccountReadiness:
+        self.readiness_calls.append(provider_account_id)
+        return self.readiness
+
+
 def test_get_creator_billing_account_readiness_returns_none_without_stored_account_id():
     creator = Creator(name="PP4 Pending Creator", stripe_connect_status="pending")
     provider = _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=True))
@@ -56,6 +72,25 @@ def test_get_creator_billing_account_readiness_uses_active_billing_identity_fiel
     assert provider.readiness_calls == ["acct_pp4_lookup"]
     assert creator_can_create_invoices(creator=creator, provider=provider) is True
     assert provider.readiness_calls == ["acct_pp4_lookup", "acct_pp4_lookup"]
+
+
+def test_get_creator_billing_account_readiness_supports_paypal_provider_identity_fields():
+    creator = Creator(
+        name="PP9 PayPal Billing Identity Creator",
+        billing_provider=BILLING_PROVIDER_PAYPAL,
+        billing_connect_status="connected",
+        billing_account_id="merchant_pp9_lookup",
+    )
+    provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=False)
+    )
+
+    readiness = get_creator_billing_account_readiness(creator=creator, provider=provider)
+
+    assert readiness == BillingAccountReadiness(can_create_invoices=False)
+    assert provider.readiness_calls == ["merchant_pp9_lookup"]
+    assert creator_can_create_invoices(creator=creator, provider=provider) is False
+    assert provider.readiness_calls == ["merchant_pp9_lookup", "merchant_pp9_lookup"]
 
 
 def test_get_creator_stripe_account_readiness_returns_none_without_stored_account_id():

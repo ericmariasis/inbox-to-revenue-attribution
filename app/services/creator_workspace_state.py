@@ -21,6 +21,8 @@ class CreatorWorkspaceReadiness:
     billing_ready_count: int
     tracked_content_count: int
     paid_invoice_count: int
+    billing_provider: str | None = None
+    billing_provider_ready: bool | None = None
 
     @property
     def stripe_status(self) -> str:
@@ -42,11 +44,18 @@ class CreatorWorkspaceState:
 def build_creator_workspace_readiness(
     *,
     raw_billing_connect_status: str,
+    raw_billing_provider: str | None = None,
     booking_links: list[BookingLinkResponse],
     content_items: list[ContentResponse],
     paid_invoice_count: int,
+    billing_provider_ready: bool | None = None,
 ) -> CreatorWorkspaceReadiness:
     normalized_billing_connect_status = raw_billing_connect_status.strip().lower()
+    normalized_billing_provider = (
+        raw_billing_provider.strip().lower()
+        if isinstance(raw_billing_provider, str) and raw_billing_provider.strip()
+        else None
+    )
     booking_links_count = len(booking_links)
     trackable_booking_links_count = sum(
         1
@@ -69,6 +78,8 @@ def build_creator_workspace_readiness(
     tracked_content_count = len(content_items)
     billing_connected = normalized_billing_connect_status == "connected"
     billable_now = billing_connected and billing_ready_count > 0
+    if billing_provider_ready is False:
+        billable_now = False
     ready_to_track = billable_now and tracked_content_count > 0
     waiting_for_first_paid_result = ready_to_track and paid_invoice_count == 0
 
@@ -84,23 +95,29 @@ def build_creator_workspace_readiness(
         billing_ready_count=billing_ready_count,
         tracked_content_count=tracked_content_count,
         paid_invoice_count=paid_invoice_count,
+        billing_provider=normalized_billing_provider,
+        billing_provider_ready=billing_provider_ready,
     )
 
 
 def build_creator_workspace_state(
     *,
     raw_billing_connect_status: str,
+    raw_billing_provider: str | None = None,
     booking_links: list[BookingLinkResponse],
     content_items: list[ContentResponse],
     paid_invoice_count: int,
     blocked_billing_count: int,
     unmatched_payment_count: int,
+    billing_provider_ready: bool | None = None,
 ) -> CreatorWorkspaceState:
     readiness = build_creator_workspace_readiness(
         raw_billing_connect_status=raw_billing_connect_status,
+        raw_billing_provider=raw_billing_provider,
         booking_links=booking_links,
         content_items=content_items,
         paid_invoice_count=paid_invoice_count,
+        billing_provider_ready=billing_provider_ready,
     )
     return CreatorWorkspaceState(
         readiness=readiness,

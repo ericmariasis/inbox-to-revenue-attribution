@@ -290,6 +290,10 @@ class BillingOrchestrator:
                     ),
                     idempotency_key=f"billing:create:{booking_provider}:{provider_booking_id}",
                 )
+                _validate_created_invoice_status(
+                    provider_name=provider_name,
+                    invoice_status=created_invoice.invoice_status,
+                )
             except BillingProviderError as exc:
                 record_blocked_billing_case(
                     session,
@@ -453,6 +457,10 @@ class BillingOrchestrator:
                     provider=provider,
                     provider_account_id=provider_account_id,
                     provider_invoice_id=provider_invoice_id,
+                )
+                _validate_stopped_invoice_status(
+                    provider_name=invoice.resolved_payment_provider,
+                    invoice_status=stopped_invoice.invoice_status,
                 )
             except BillingProviderError as exc:
                 logger.warning(
@@ -619,3 +627,25 @@ def _resolve_booking_billing_terms(*, booking: Booking) -> tuple[int | None, str
     booking.frozen_billing_amount_cents = billing_amount_cents
     booking.frozen_billing_currency = billing_currency.upper()
     return booking.frozen_billing_amount_cents, booking.frozen_billing_currency
+
+
+def _validate_created_invoice_status(*, provider_name: str, invoice_status: str) -> None:
+    if invoice_status in {"open", "paid"}:
+        return
+    raise BillingProviderError(
+        "billing provider returned unexpected invoice create status",
+        provider_name=provider_name,
+        operation="billing_invoice_create_status_validation",
+        error_code=f"invoice_status_{invoice_status}",
+    )
+
+
+def _validate_stopped_invoice_status(*, provider_name: str, invoice_status: str) -> None:
+    if invoice_status == "void":
+        return
+    raise BillingProviderError(
+        "billing provider returned unexpected invoice stop status",
+        provider_name=provider_name,
+        operation="billing_invoice_stop_status_validation",
+        error_code=f"invoice_status_{invoice_status}",
+    )

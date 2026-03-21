@@ -423,3 +423,130 @@ def test_paypal_webhook_verified_control_shape_keeps_invoice_open_without_paymen
     assert persisted_invoice.status == "open"
     assert persisted_invoice.paid_at is None
     assert payment_events == []
+
+
+def test_paypal_webhook_treats_creator_provider_mismatch_as_diagnostic_unmatched():
+    invoice = _persist_open_paypal_invoice(
+        provider_account_id="merchant_story_pp10_mismatch",
+        provider_invoice_id="INV2_story_pp10_mismatch",
+        booking_uuid="BOOK_story_pp10_mismatch",
+        tid="story_pp10_tid_mismatch",
+    )
+    provider = _StubPayPalProvider()
+    router = build_default_paypal_webhook_router(
+        session_factory=lambda: Session(_engine()),
+        provider=provider,
+    )
+    payload = _paypal_invoice_paid_payload(
+        paypal_event_id="WH_story_pp10_mismatch",
+        provider_invoice_id="INV2_story_pp10_mismatch",
+    )
+
+    with Session(_engine()) as session:
+        creator = session.get(Creator, invoice.creator_id)
+        assert creator is not None
+        creator.billing_provider = "stripe"
+        creator.billing_connect_status = "connected"
+        creator.billing_account_id = "acct_story_pp10_mismatch"
+        creator.stripe_connect_status = "connected"
+        creator.stripe_account_id = "acct_story_pp10_mismatch"
+        session.commit()
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("paypal_provider", provider):
+                with _override_app_state("paypal_webhook_router", router):
+                    response = client.post(
+                        "/webhooks/paypal",
+                        content=payload,
+                        headers=_paypal_headers(),
+                    )
+
+    with Session(_engine()) as session:
+        persisted_invoice = session.get(Invoice, invoice.id)
+        payment_events = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.payment_provider == "paypal",
+                InvoicePaymentEvent.provider_event_id == "WH_story_pp10_mismatch",
+            )
+        ).all()
+
+    assert response.status_code == 200
+    assert provider.snapshot_calls == []
+    assert persisted_invoice is not None
+    assert persisted_invoice.status == "open"
+    assert persisted_invoice.paid_at is None
+    assert len(payment_events) == 1
+    assert payment_events[0].status == "unmatched"
+    assert payment_events[0].invoice_id is None
+    assert payment_events[0].creator_id is None
+    assert payment_events[0].booking_id is None
+    assert payment_events[0].tid is None
+    assert payment_events[0].unattributed_reason == UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID
+
+
+def test_paypal_webhook_replayed_paid_truth_with_new_event_id_does_not_double_count():
+    invoice = _persist_open_paypal_invoice(
+        provider_account_id="merchant_story_pp10_replay",
+        provider_invoice_id="INV2_story_pp10_replay",
+        booking_uuid="BOOK_story_pp10_replay",
+        tid="story_pp10_tid_replay",
+    )
+    first_paid_at = datetime(2026, 3, 20, 5, 2, 7, tzinfo=timezone.utc)
+    second_paid_at = datetime(2026, 3, 20, 5, 8, 7, tzinfo=timezone.utc)
+    provider = _StubPayPalProvider(
+        paid_snapshot=PayPalInvoicePaidSnapshot(
+            invoice_id="INV2_story_pp10_replay",
+            status="PAID",
+            payment_type="PAYPAL",
+            payment_method="PAYPAL",
+            transaction_status="SUCCESS",
+            paid_at=first_paid_at,
+        )
+    )
+    router = build_default_paypal_webhook_router(
+        session_factory=lambda: Session(_engine()),
+        provider=provider,
+        now_fn=lambda: second_paid_at,
+    )
+    first_payload = _paypal_invoice_paid_payload(
+        paypal_event_id="WH_story_pp10_replay_first",
+        provider_invoice_id="INV2_story_pp10_replay",
+    )
+    second_payload = _paypal_invoice_paid_payload(
+        paypal_event_id="WH_story_pp10_replay_second",
+        provider_invoice_id="INV2_story_pp10_replay",
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("paypal_provider", provider):
+                with _override_app_state("paypal_webhook_router", router):
+                    first_response = client.post(
+                        "/webhooks/paypal",
+                        content=first_payload,
+                        headers=_paypal_headers(),
+                    )
+                    second_response = client.post(
+                        "/webhooks/paypal",
+                        content=second_payload,
+                        headers=_paypal_headers(),
+                    )
+
+    with Session(_engine()) as session:
+        persisted_invoice = session.get(Invoice, invoice.id)
+        payment_events = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.payment_provider == "paypal",
+                InvoicePaymentEvent.provider_invoice_id == "INV2_story_pp10_replay",
+            )
+        ).all()
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert persisted_invoice is not None
+    assert persisted_invoice.status == "paid"
+    assert persisted_invoice.paid_at == first_paid_at
+    assert len(payment_events) == 1
+    assert payment_events[0].provider_event_id == "WH_story_pp10_replay_first"
+    assert payment_events[0].paid_at == first_paid_at

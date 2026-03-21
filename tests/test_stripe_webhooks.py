@@ -616,3 +616,106 @@ def test_stripe_webhook_accepts_verified_unsupported_event_type_as_safe_noop():
     assert persisted_invoice.status == "open"
     assert persisted_invoice.paid_at is None
     assert payment_event_count == 0
+
+
+def test_stripe_webhook_provider_mismatch_does_not_mutate_paypal_invoice():
+    with Session(_engine()) as session:
+        creator = Creator(
+            name="PP-10 Stripe Mismatch Creator",
+            billing_provider="paypal",
+            billing_connect_status="connected",
+            billing_account_id="merchant_story_pp10_invoice_mismatch",
+        )
+        session.add(creator)
+        session.flush()
+
+        booking_link = BookingLink(
+            creator_id=creator.id,
+            name="PP-10 Stripe Mismatch Link",
+            calendly_url="https://calendly.com/example/story-pp10-stripe-mismatch",
+        )
+        session.add(booking_link)
+        session.flush()
+
+        content = Content(
+            creator_id=creator.id,
+            booking_link_id=booking_link.id,
+            source_url="https://example.com/story-pp10-stripe-mismatch",
+            tid="story_pp10_tid_invoice_mismatch",
+        )
+        session.add(content)
+        session.flush()
+
+        booking = Booking(
+            creator_id=creator.id,
+            tid=content.tid,
+            booking_link_id=booking_link.id,
+            calendly_booking_uuid="BOOK_story_pp10_invoice_mismatch",
+            email="story-pp10-invoice-mismatch@example.com",
+            status="created",
+            booked_at=datetime(2026, 3, 20, 6, 0, tzinfo=timezone.utc),
+        )
+        session.add(booking)
+        session.flush()
+
+        invoice = Invoice(
+            creator_id=creator.id,
+            booking_id=booking.id,
+            tid=content.tid,
+            payment_provider="paypal",
+            provider_account_id="merchant_story_pp10_invoice_mismatch",
+            provider_invoice_id="INV2_story_pp10_invoice_mismatch",
+            amount_cents=19500,
+            currency="USD",
+            status="open",
+            issued_at=datetime(2026, 3, 20, 6, 5, tzinfo=timezone.utc),
+        )
+        session.add(invoice)
+        session.commit()
+        session.refresh(invoice)
+        invoice_id = invoice.id
+
+    paid_at = datetime(2026, 3, 20, 6, 30, tzinfo=timezone.utc)
+    payload = _invoice_paid_payload(
+        stripe_event_id="evt_story_pp10_invoice_mismatch",
+        stripe_account_id="acct_story_pp10_invoice_mismatch",
+        stripe_invoice_id="INV2_story_pp10_invoice_mismatch",
+        paid_at=paid_at,
+        metadata={"tid": "story_pp10_tid_invoice_mismatch"},
+    )
+    signature_header = _stripe_signature_header(
+        payload=payload,
+        secret=_StubSettings.stripe_webhook_secret,
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            response = client.post(
+                "/webhooks/stripe",
+                content=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Stripe-Signature": signature_header,
+                },
+            )
+
+    with Session(_engine()) as session:
+        persisted_invoice = session.get(Invoice, invoice_id)
+        payment_events = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.stripe_event_id == "evt_story_pp10_invoice_mismatch"
+            )
+        ).all()
+
+    assert response.status_code == 200
+    assert persisted_invoice is not None
+    assert persisted_invoice.payment_provider == "paypal"
+    assert persisted_invoice.status == "open"
+    assert persisted_invoice.paid_at is None
+    assert len(payment_events) == 1
+    assert payment_events[0].status == "unmatched"
+    assert payment_events[0].invoice_id is None
+    assert payment_events[0].creator_id is None
+    assert payment_events[0].booking_id is None
+    assert payment_events[0].tid is None
+    assert payment_events[0].unattributed_reason == UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID

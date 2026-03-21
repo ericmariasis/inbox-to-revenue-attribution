@@ -31,6 +31,7 @@ def isolate_test_data():
             "creator_claim_paid_evidence_refs",
             "creator_claim_snapshots",
             "support_requests",
+            "billing_provider_switch_attempts",
             "calendly_webhook_events",
             "fullscope_webhook_events",
             "content_topic_candidates",

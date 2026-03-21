@@ -85,6 +85,107 @@ def _access_token(*, user_id: str, creator_id: str, email: str, expires_delta: t
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
+def _switch_attempt_rows():
+    with _engine().connect() as conn:
+        return conn.execute(
+            text(
+                "SELECT id::text AS id, creator_id::text AS creator_id, "
+                "source_billing_provider, target_billing_provider, "
+                "target_billing_connect_status, target_billing_account_id, "
+                "target_billing_provider_correlation_id "
+                "FROM billing_provider_switch_attempts ORDER BY created_at"
+            )
+        ).mappings().all()
+
+
+def _insert_open_invoice_for_creator(*, creator_id: str) -> None:
+    booking_link_id = str(uuid.uuid4())
+    content_id = str(uuid.uuid4())
+    booking_id = str(uuid.uuid4())
+    issued_at = datetime.now(timezone.utc).replace(microsecond=0)
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO booking_links "
+                "(id, creator_id, name, provider, destination_url, calendly_url, billing_amount_cents, billing_currency) "
+                "VALUES "
+                "(:id, :creator_id, :name, :provider, :destination_url, :calendly_url, :billing_amount_cents, :billing_currency)"
+            ),
+            {
+                "id": booking_link_id,
+                "creator_id": creator_id,
+                "name": "Switch Start Link",
+                "provider": "calendly",
+                "destination_url": "https://calendly.com/example/switch-start",
+                "calendly_url": "https://calendly.com/example/switch-start",
+                "billing_amount_cents": 15000,
+                "billing_currency": "USD",
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO content (id, creator_id, booking_link_id, source_url, tid, created_at, updated_at) "
+                "VALUES (:id, :creator_id, :booking_link_id, :source_url, :tid, :created_at, :updated_at)"
+            ),
+            {
+                "id": content_id,
+                "creator_id": creator_id,
+                "booking_link_id": booking_link_id,
+                "source_url": "https://example.com/posts/switch-start",
+                "tid": "paypal_switch_start_tid",
+                "created_at": issued_at,
+                "updated_at": issued_at,
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO bookings "
+                "(id, creator_id, booking_link_id, tid, calendly_booking_uuid, email, status, attribution_status, unattributed_reason, booked_at, canceled_at) "
+                "VALUES "
+                "(:id, :creator_id, :booking_link_id, :tid, :calendly_booking_uuid, :email, :status, :attribution_status, :unattributed_reason, :booked_at, :canceled_at)"
+            ),
+            {
+                "id": booking_id,
+                "creator_id": creator_id,
+                "booking_link_id": booking_link_id,
+                "tid": "paypal_switch_start_tid",
+                "calendly_booking_uuid": "BOOK_paypal_switch_start",
+                "email": "switch-start@example.com",
+                "status": "created",
+                "attribution_status": "attributed",
+                "unattributed_reason": None,
+                "booked_at": issued_at,
+                "canceled_at": None,
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO invoices "
+                "(id, creator_id, booking_id, tid, payment_provider, provider_account_id, provider_invoice_id, stripe_account_id, stripe_invoice_id, amount_cents, currency, status, issued_at, paid_at, voided_at) "
+                "VALUES "
+                "(:id, :creator_id, :booking_id, :tid, :payment_provider, :provider_account_id, :provider_invoice_id, :stripe_account_id, :stripe_invoice_id, :amount_cents, :currency, :status, :issued_at, :paid_at, :voided_at)"
+            ),
+            {
+                "id": str(uuid.uuid4()),
+                "creator_id": creator_id,
+                "booking_id": booking_id,
+                "tid": "paypal_switch_start_tid",
+                "payment_provider": "stripe",
+                "provider_account_id": "acct_open_switch_start",
+                "provider_invoice_id": "in_open_switch_start",
+                "stripe_account_id": "acct_open_switch_start",
+                "stripe_invoice_id": "in_open_switch_start",
+                "amount_cents": 15000,
+                "currency": "USD",
+                "status": "open",
+                "issued_at": issued_at,
+                "paid_at": None,
+                "voided_at": None,
+            },
+        )
+
+
 @contextmanager
 def _override_app_state(name, value):
     had_attr = hasattr(app.state, name)
@@ -177,6 +278,7 @@ def test_paypal_connect_start_returns_provider_url_and_app_issued_state():
     assert creator_row["billing_connect_status"] == "pending"
     assert creator_row["billing_account_id"] is None
     assert creator_row["billing_provider_correlation_id"] is None
+    assert _switch_attempt_rows() == []
 
 
 def test_paypal_connect_start_requires_auth():
@@ -187,14 +289,75 @@ def test_paypal_connect_start_requires_auth():
     assert response.json() == {"detail": "not authenticated"}
 
 
-def test_paypal_connect_start_rejects_creators_with_existing_connected_provider():
+def test_paypal_connect_start_creates_pending_switch_attempt_for_clean_connected_stripe_creator():
     connected_at = datetime.now(timezone.utc)
     inserted = _insert_creator_user(
-        email=f"paypal_connected_{uuid.uuid4().hex}@example.com",
+        email=f"paypal_switch_{uuid.uuid4().hex}@example.com",
         stripe_connect_status="connected",
         stripe_account_id="acct_existing_connected",
         stripe_connected_at=connected_at,
     )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider()
+
+    with _override_app_state("paypal_provider", provider):
+        with TestClient(app) as client:
+            first_response = client.post(
+                "/paypal/connect/start",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            second_response = client.post(
+                "/paypal/connect/start",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    first_state = decode_paypal_connect_state(first_response.json()["state"])
+    second_state = decode_paypal_connect_state(second_response.json()["state"])
+    switch_attempt_rows = _switch_attempt_rows()
+    assert len(switch_attempt_rows) == 1
+    assert first_state["switch_attempt_id"] == second_state["switch_attempt_id"]
+    assert first_state["tracking_id"] == second_state["tracking_id"]
+    with _engine().connect() as conn:
+        creator_row = conn.execute(
+            text(
+                "SELECT billing_provider, billing_connect_status, billing_account_id "
+                "FROM creators WHERE id = :creator_id"
+            ),
+            {"creator_id": inserted["creator_id"]},
+        ).mappings().one()
+    assert creator_row["billing_provider"] == "stripe"
+    assert creator_row["billing_connect_status"] == "connected"
+    assert creator_row["billing_account_id"] == "acct_existing_connected"
+    assert switch_attempt_rows[0]["creator_id"] == inserted["creator_id"]
+    assert switch_attempt_rows[0]["source_billing_provider"] == "stripe"
+    assert switch_attempt_rows[0]["target_billing_provider"] == "paypal"
+    assert switch_attempt_rows[0]["target_billing_connect_status"] == "pending"
+    assert switch_attempt_rows[0]["target_billing_account_id"] is None
+    assert (
+        switch_attempt_rows[0]["target_billing_provider_correlation_id"]
+        == first_state["tracking_id"]
+    )
+    assert len(provider.start_calls) == 2
+    assert provider.start_calls[0]["tracking_id"] == first_state["tracking_id"]
+    assert provider.start_calls[1]["tracking_id"] == first_state["tracking_id"]
+
+
+def test_paypal_connect_start_blocks_connected_switch_when_current_provider_is_not_clean():
+    connected_at = datetime.now(timezone.utc)
+    inserted = _insert_creator_user(
+        email=f"paypal_switch_blocked_{uuid.uuid4().hex}@example.com",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_switch_blocked",
+        stripe_connected_at=connected_at,
+    )
+    _insert_open_invoice_for_creator(creator_id=inserted["creator_id"])
     access_token = _access_token(
         user_id=inserted["user_id"],
         creator_id=inserted["creator_id"],
@@ -211,5 +374,6 @@ def test_paypal_connect_start_rejects_creators_with_existing_connected_provider(
             )
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "billing provider already connected"}
+    assert response.json() == {"detail": "switch_not_clean"}
     assert provider.start_calls == []
+    assert _switch_attempt_rows() == []

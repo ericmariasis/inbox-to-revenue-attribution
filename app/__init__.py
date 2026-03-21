@@ -1,6 +1,7 @@
 from app.models.calendly_webhook_event import CalendlyWebhookEventRecord
 from app.models.booking import Booking
 from app.models.blocked_billing_case import BlockedBillingCase
+from app.models.billing_provider_switch_attempt import BillingProviderSwitchAttempt
 from app.models.creator_experiment_run import CreatorExperimentRunRecord
 from app.models.creator_experiment_run_card import CreatorExperimentRunCardRecord
 from app.models.creator_claim_paid_evidence_reference import CreatorClaimPaidEvidenceReference

@@ -98,6 +98,12 @@ class Creator(Base):
         back_populates="creator",
         cascade="all, delete-orphan",
     )
+    billing_provider_switch_attempt = relationship(
+        "BillingProviderSwitchAttempt",
+        back_populates="creator",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
     @property
     def resolved_billing_provider(self) -> str:

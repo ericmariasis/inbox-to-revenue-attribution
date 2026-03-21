@@ -20,6 +20,13 @@ from app.models.billing_provider import (
 from app.models.creator import Creator
 from app.schemas.auth import GenericOkResponse
 from app.schemas.paypal import PayPalConnectStartResponse
+from app.services.billing_provider_switch import (
+    BILLING_PROVIDER_SWITCH_REASON_SWITCH_TARGET_ALREADY_CONNECTED,
+    BillingProviderSwitchError,
+    ensure_billing_provider_switch_attempt,
+    get_billing_provider_switch_attempt_by_id,
+    record_billing_provider_switch_target_connection,
+)
 from app.services.browser_session import request_prefers_html
 from app.services.paypal_connect import (
     build_paypal_connect_state,
@@ -85,13 +92,16 @@ def _creator_from_connect_state(*, db: Session, state: str, settings: Settings) 
 
 
 def _creator_can_start_paypal_onboarding(*, creator: Creator) -> bool:
-    return creator.resolved_billing_connect_status != BILLING_CONNECT_STATUS_CONNECTED
+    if creator.resolved_billing_connect_status != BILLING_CONNECT_STATUS_CONNECTED:
+        return True
+    return creator.resolved_billing_provider != BILLING_PROVIDER_PAYPAL
 
 
 def build_paypal_connect_start_response(
     *,
     request: Request,
     current_user: AuthUser,
+    db: Session,
 ) -> PayPalConnectStartResponse:
     creator = current_user.creator
     if not _creator_can_start_paypal_onboarding(creator=creator):
@@ -101,10 +111,30 @@ def build_paypal_connect_start_response(
         )
 
     settings = _settings(request)
+    switch_attempt_id: str | None = None
     tracking_id = build_paypal_tracking_id()
+    if (
+        creator.resolved_billing_connect_status == BILLING_CONNECT_STATUS_CONNECTED
+        and creator.resolved_billing_provider != BILLING_PROVIDER_PAYPAL
+    ):
+        switch_attempt = ensure_billing_provider_switch_attempt(
+            db=db,
+            creator=creator,
+            target_provider=BILLING_PROVIDER_PAYPAL,
+        )
+        if (
+            switch_attempt.target_billing_connect_status == BILLING_CONNECT_STATUS_CONNECTED
+            and switch_attempt.target_billing_account_id is not None
+        ):
+            raise BillingProviderSwitchError(
+                reason_code=BILLING_PROVIDER_SWITCH_REASON_SWITCH_TARGET_ALREADY_CONNECTED
+            )
+        switch_attempt_id = str(switch_attempt.id)
+        tracking_id = switch_attempt.target_billing_provider_correlation_id or build_paypal_tracking_id()
     state = build_paypal_connect_state(
         creator_id=str(current_user.creator_id),
         tracking_id=tracking_id,
+        switch_attempt_id=switch_attempt_id,
         settings=settings,
     )
     return_url = _append_query_params(settings.paypal_connect_redirect_uri, state=state)
@@ -198,11 +228,21 @@ def _verified_callback_matches_state(
 def paypal_connect_start(
     request: Request,
     current_user: AuthUser = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
 ) -> PayPalConnectStartResponse:
-    return build_paypal_connect_start_response(
-        request=request,
-        current_user=current_user,
-    )
+    try:
+        response = build_paypal_connect_start_response(
+            request=request,
+            current_user=current_user,
+            db=db,
+        )
+    except BillingProviderSwitchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.reason_code,
+        ) from exc
+    db.commit()
+    return response
 
 
 @router.get("/connect/callback", response_model=GenericOkResponse)
@@ -217,6 +257,7 @@ def paypal_connect_callback(
 ) -> GenericOkResponse | HTMLResponse:
     prefers_html = request_prefers_html(request)
     settings = _settings(request)
+    switch_attempt_id: uuid.UUID | None = None
 
     if not state or _callback_indicates_denied_permissions(
         permissions_granted=permissionsGranted,
@@ -237,8 +278,22 @@ def paypal_connect_callback(
         raise
 
     expected_tracking_id = payload["tracking_id"]
+    raw_switch_attempt_id = payload.get("switch_attempt_id")
+    if raw_switch_attempt_id is not None:
+        try:
+            switch_attempt_id = uuid.UUID(raw_switch_attempt_id)
+        except (TypeError, ValueError):
+            if prefers_html:
+                return _browser_connect_failure_response()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
+            )
 
-    if creator.resolved_billing_connect_status == BILLING_CONNECT_STATUS_CONNECTED:
+    if (
+        switch_attempt_id is None
+        and creator.resolved_billing_connect_status == BILLING_CONNECT_STATUS_CONNECTED
+    ):
         if creator.resolved_billing_provider != BILLING_PROVIDER_PAYPAL:
             if prefers_html:
                 return _browser_connect_failure_response()
@@ -290,7 +345,10 @@ def paypal_connect_callback(
             detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
         )
 
-    if creator.resolved_billing_connect_status == BILLING_CONNECT_STATUS_CONNECTED:
+    if (
+        switch_attempt_id is None
+        and creator.resolved_billing_connect_status == BILLING_CONNECT_STATUS_CONNECTED
+    ):
         if creator.billing_account_id != verified_status.merchant_id:
             if prefers_html:
                 return _browser_connect_failure_response()
@@ -310,6 +368,49 @@ def paypal_connect_callback(
             )
 
     connected_at = datetime.now(timezone.utc)
+    if switch_attempt_id is not None:
+        switch_attempt = get_billing_provider_switch_attempt_by_id(
+            db=db,
+            creator_id=creator.id,
+            switch_attempt_id=switch_attempt_id,
+        )
+        if switch_attempt is None:
+            if prefers_html:
+                return _browser_connect_failure_response()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
+            )
+        try:
+            record_billing_provider_switch_target_connection(
+                db=db,
+                creator=creator,
+                switch_attempt_id=switch_attempt_id,
+                target_provider=BILLING_PROVIDER_PAYPAL,
+                target_account_id=verified_status.merchant_id,
+                connected_at=connected_at,
+                target_provider_correlation_id=verified_status.tracking_id,
+            )
+        except BillingProviderSwitchError:
+            if prefers_html:
+                return _browser_connect_failure_response()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
+            )
+        db.commit()
+        logger.info("paypal_connect_callback_stored_pending_switch creator_id=%s", creator.id)
+        if prefers_html:
+            return _connect_result_page(
+                title="PayPal switch setup completed",
+                body=(
+                    "The PayPal seller was verified server-side and saved as the pending replacement "
+                    f"provider. Merchant ID: {verified_status.merchant_id}."
+                ),
+                status_code=status.HTTP_200_OK,
+            )
+        return GenericOkResponse()
+
     creator.billing_provider = BILLING_PROVIDER_PAYPAL
     creator.billing_connect_status = BILLING_CONNECT_STATUS_CONNECTED
     creator.billing_account_id = verified_status.merchant_id

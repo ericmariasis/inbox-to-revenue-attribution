@@ -13,6 +13,7 @@ from app.db.session import SessionLocal
 from app.models.billing_provider import BILLING_PROVIDER_STRIPE
 from app.models.booking import Booking
 from app.services.billing_provider import (
+    BILLING_ACCOUNT_READINESS_ISSUE_COMPLETE_STRIPE_SETUP,
     BillingAccountReadiness,
     BillingProviderError,
     BillingProviderInvoiceCreateResult,
@@ -230,7 +231,15 @@ class StripeOAuthProvider:
         provider_account_id: str,
     ) -> BillingAccountReadiness:
         readiness = self.get_account_readiness(stripe_account_id=provider_account_id)
-        return BillingAccountReadiness(can_create_invoices=readiness.charges_enabled)
+        issue_codes = (
+            ()
+            if readiness.charges_enabled
+            else (BILLING_ACCOUNT_READINESS_ISSUE_COMPLETE_STRIPE_SETUP,)
+        )
+        return BillingAccountReadiness(
+            can_create_invoices=readiness.charges_enabled,
+            creator_actionable_issue_codes=issue_codes,
+        )
 
     def create_invoice(
         self,

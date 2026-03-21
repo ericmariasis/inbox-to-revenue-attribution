@@ -2,7 +2,10 @@ from dataclasses import dataclass
 
 import pytest
 
-from app.services.billing_provider import BillingAccountReadiness
+from app.services.billing_provider import (
+    BILLING_ACCOUNT_READINESS_ISSUE_COMPLETE_STRIPE_SETUP,
+    BillingAccountReadiness,
+)
 from app.services.stripe_provider import (
     StripeApiRequestError,
     StripeOAuthProvider,
@@ -157,6 +160,24 @@ def test_get_billing_account_readiness_maps_charges_enabled_to_can_create_invoic
 
     assert readiness == BillingAccountReadiness(can_create_invoices=True)
     assert provider.billing_provider_name == "stripe"
+
+
+def test_get_billing_account_readiness_maps_charges_disabled_to_creator_action():
+    transport = _StubStripeTransport(
+        responses=[{"id": "acct_story57_not_ready", "charges_enabled": False}]
+    )
+    provider = _provider(transport=transport)
+
+    readiness = provider.get_billing_account_readiness(
+        provider_account_id="acct_story57_not_ready"
+    )
+
+    assert readiness == BillingAccountReadiness(
+        can_create_invoices=False,
+        creator_actionable_issue_codes=(
+            BILLING_ACCOUNT_READINESS_ISSUE_COMPLETE_STRIPE_SETUP,
+        ),
+    )
 
 
 def test_create_invoice_creates_customer_invoice_item_invoice_and_finalizes():

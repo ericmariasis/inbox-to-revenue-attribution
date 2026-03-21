@@ -3,7 +3,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.services.billing_provider import BillingAccountReadiness
+from app.services.billing_provider import (
+    BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
+    BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
+    BillingAccountReadiness,
+)
 from app.services.paypal_provider import (
     PayPalApiRequestError,
     PayPalInvoicePaidSnapshot,
@@ -121,6 +125,33 @@ def test_get_billing_account_readiness_maps_paypal_seller_status_to_can_create_i
             form_body=None,
         ),
     ]
+
+
+def test_get_billing_account_readiness_maps_paypal_seller_gaps_to_creator_actions():
+    transport = _StubPayPalTransport(
+        responses=[
+            {"access_token": "oauth_story_pp7"},
+            {
+                "merchant_id": "merchant_story_pp7",
+                "tracking_id": "tracking_story_pp7",
+                "payments_receivable": False,
+                "primary_email_confirmed": False,
+            },
+        ]
+    )
+    provider = _provider(transport=transport)
+
+    readiness = provider.get_billing_account_readiness(
+        provider_account_id="merchant_story_pp7"
+    )
+
+    assert readiness == BillingAccountReadiness(
+        can_create_invoices=False,
+        creator_actionable_issue_codes=(
+            BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
+            BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
+        ),
+    )
 
 
 def test_verify_webhook_event_posts_paypal_verification_payload_and_returns_true():

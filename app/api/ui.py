@@ -58,7 +58,17 @@ from app.schemas.content import (
     ContentTopicReviewResponse,
 )
 from app.services.auth_magic_link import start_magic_link
-from app.services.billing_provider import BillingProviderError, build_billing_provider_registry
+from app.services.billing_provider import (
+    BILLING_ACCOUNT_READINESS_ISSUE_COMPLETE_STRIPE_SETUP,
+    BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
+    BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
+    BillingAccountReadiness,
+    BillingProviderError,
+    BillingProviderResolutionError,
+    build_billing_provider_registry,
+    get_billing_account_readiness,
+    resolve_billing_provider,
+)
 from app.services.billing_provider_switch import (
     BILLING_PROVIDER_SWITCH_REASON_SWITCH_ATTEMPT_MISSING,
     BILLING_PROVIDER_SWITCH_REASON_SWITCH_NOT_CLEAN,
@@ -72,7 +82,6 @@ from app.services.billing_provider_switch import (
     commit_billing_provider_switch_attempt,
     get_billing_provider_switch_attempt,
     get_billing_provider_switch_clean_state,
-    get_billing_provider_switch_target_ready,
     replacement_billing_provider_name,
     restart_billing_provider_switch_attempt,
 )
@@ -168,7 +177,6 @@ from app.services.support_requests import (
     transition_support_request_status,
 )
 from app.services.stripe_provider import build_default_stripe_provider
-from app.services.stripe_account_readiness import get_creator_billing_account_readiness
 
 router = APIRouter(include_in_schema=False)
 
@@ -320,6 +328,35 @@ OPERATOR_SUPPORT_REQUEST_STATUS_MESSAGES = {
 }
 ACCOUNT_DANGER_ZONE_FRAGMENT = "#danger-zone"
 
+_BILLING_PROVIDER_SETUP_STATE_NOT_APPLICABLE = "not_applicable"
+_BILLING_PROVIDER_SETUP_STATE_PENDING_CONNECTION = "pending_connection"
+_BILLING_PROVIDER_SETUP_STATE_READY = "ready"
+_BILLING_PROVIDER_SETUP_STATE_NOT_READY = "not_ready"
+_BILLING_PROVIDER_SETUP_STATE_BLOCKED = "blocked"
+
+
+@dataclass(frozen=True)
+class _BillingProviderSetupGuidance:
+    state: str
+    readiness: BillingAccountReadiness | None = None
+
+    @property
+    def ready(self) -> bool | None:
+        if self.state == _BILLING_PROVIDER_SETUP_STATE_READY:
+            return True
+        if self.state in {
+            _BILLING_PROVIDER_SETUP_STATE_NOT_READY,
+            _BILLING_PROVIDER_SETUP_STATE_BLOCKED,
+        }:
+            return False
+        return None
+
+    @property
+    def actionable_issue_codes(self) -> tuple[str, ...]:
+        if self.readiness is None:
+            return ()
+        return self.readiness.creator_actionable_issue_codes
+
 
 @router.get("/")
 def root(
@@ -404,7 +441,7 @@ def creator_app_shell(
         creator_id=current_user.creator_id,
         db=db,
     )
-    billing_provider_ready = _creator_workspace_billing_provider_ready(
+    billing_provider_guidance = _creator_workspace_billing_provider_guidance(
         request=request,
         current_user=current_user,
     )
@@ -416,7 +453,15 @@ def creator_app_shell(
         paid_invoice_count=summary.paid_invoice_count,
         blocked_billing_count=summary.blocked_summary.open_case_count,
         unmatched_payment_count=summary.unattributed_current_backlog.event_count,
-        billing_provider_ready=billing_provider_ready,
+        billing_provider_ready=billing_provider_guidance.ready,
+        billing_provider_guidance_state=(
+            None
+            if billing_provider_guidance.state == _BILLING_PROVIDER_SETUP_STATE_NOT_APPLICABLE
+            else billing_provider_guidance.state
+        ),
+        billing_provider_actionable_issue_codes=(
+            billing_provider_guidance.actionable_issue_codes
+        ),
     )
 
     return _html_response(
@@ -452,7 +497,7 @@ def creator_account_page(
         creator_id=current_user.creator_id,
         db=db,
     )
-    billing_provider_ready = _creator_workspace_billing_provider_ready(
+    billing_provider_guidance = _creator_workspace_billing_provider_guidance(
         request=request,
         current_user=current_user,
     )
@@ -462,7 +507,15 @@ def creator_account_page(
         booking_links=booking_links,
         content_items=content_items,
         paid_invoice_count=summary.paid_invoice_count,
-        billing_provider_ready=billing_provider_ready,
+        billing_provider_ready=billing_provider_guidance.ready,
+        billing_provider_guidance_state=(
+            None
+            if billing_provider_guidance.state == _BILLING_PROVIDER_SETUP_STATE_NOT_APPLICABLE
+            else billing_provider_guidance.state
+        ),
+        billing_provider_actionable_issue_codes=(
+            billing_provider_guidance.actionable_issue_codes
+        ),
     )
     support_requests = list_latest_support_requests_for_creator(
         db,
@@ -480,13 +533,15 @@ def creator_account_page(
         db=db,
         creator_id=current_user.creator_id,
     )
-    switch_target_ready = (
-        _billing_provider_switch_target_ready(
+    switch_target_guidance = (
+        _billing_provider_switch_target_guidance(
             request=request,
             switch_attempt=switch_attempt,
         )
         if switch_attempt is not None
-        else None
+        else _BillingProviderSetupGuidance(
+            state=_BILLING_PROVIDER_SETUP_STATE_NOT_APPLICABLE
+        )
     )
     return _html_response(
         _render_account_page(
@@ -498,7 +553,7 @@ def creator_account_page(
             confirm_value=confirm_value,
             switch_attempt=switch_attempt,
             switch_clean_state=switch_clean_state,
-            switch_target_ready=switch_target_ready,
+            switch_target_guidance=switch_target_guidance,
         )
     )
 
@@ -1231,7 +1286,7 @@ def creator_reports_page(
         except ValueError:
             field_errors["date_range"] = "Start date must be on or before end date."
 
-    billing_provider_ready = _creator_workspace_billing_provider_ready(
+    billing_provider_guidance = _creator_workspace_billing_provider_guidance(
         request=request,
         current_user=current_user,
     )
@@ -1241,7 +1296,15 @@ def creator_reports_page(
         booking_links=booking_links,
         content_items=content_items,
         paid_invoice_count=overall_summary.paid_invoice_count,
-        billing_provider_ready=billing_provider_ready,
+        billing_provider_ready=billing_provider_guidance.ready,
+        billing_provider_guidance_state=(
+            None
+            if billing_provider_guidance.state == _BILLING_PROVIDER_SETUP_STATE_NOT_APPLICABLE
+            else billing_provider_guidance.state
+        ),
+        billing_provider_actionable_issue_codes=(
+            billing_provider_guidance.actionable_issue_codes
+        ),
     )
 
     return _html_response(
@@ -1586,32 +1649,61 @@ def _ui_billing_providers(request: Request):
     )
 
 
-def _creator_workspace_billing_provider_ready(
+def _billing_provider_setup_guidance(
+    *,
+    request: Request,
+    provider_name: str | None,
+    provider_account_id: str | None,
+) -> _BillingProviderSetupGuidance:
+    if not provider_name or not provider_account_id:
+        return _BillingProviderSetupGuidance(
+            state=_BILLING_PROVIDER_SETUP_STATE_NOT_APPLICABLE
+        )
+
+    try:
+        provider = resolve_billing_provider(
+            providers=_ui_billing_providers(request),
+            provider_name=provider_name,
+        )
+        readiness = get_billing_account_readiness(
+            provider=provider,
+            provider_account_id=provider_account_id,
+        )
+    except (BillingProviderError, BillingProviderResolutionError, TypeError):
+        return _BillingProviderSetupGuidance(
+            state=_BILLING_PROVIDER_SETUP_STATE_BLOCKED
+        )
+
+    return _BillingProviderSetupGuidance(
+        state=(
+            _BILLING_PROVIDER_SETUP_STATE_READY
+            if readiness.can_create_invoices
+            else _BILLING_PROVIDER_SETUP_STATE_NOT_READY
+        ),
+        readiness=readiness,
+    )
+
+
+def _creator_workspace_billing_provider_guidance(
     *,
     request: Request,
     current_user: AuthUser,
-) -> bool | None:
+) -> _BillingProviderSetupGuidance:
     creator = current_user.creator
     if creator.resolved_billing_provider != BILLING_PROVIDER_PAYPAL:
-        return None
-    if (creator.resolved_billing_connect_status or "").strip().lower() != "connected":
-        return None
-
-    provider = _ui_billing_providers(request).get(BILLING_PROVIDER_PAYPAL)
-    if provider is None:
-        return False
-
-    try:
-        readiness = get_creator_billing_account_readiness(
-            creator=creator,
-            provider=provider,
+        return _BillingProviderSetupGuidance(
+            state=_BILLING_PROVIDER_SETUP_STATE_NOT_APPLICABLE
         )
-    except BillingProviderError:
-        return False
+    if (creator.resolved_billing_connect_status or "").strip().lower() != "connected":
+        return _BillingProviderSetupGuidance(
+            state=_BILLING_PROVIDER_SETUP_STATE_NOT_APPLICABLE
+        )
 
-    if readiness is None:
-        return False
-    return readiness.can_create_invoices
+    return _billing_provider_setup_guidance(
+        request=request,
+        provider_name=creator.resolved_billing_provider,
+        provider_account_id=creator.resolved_billing_account_id,
+    )
 
 
 def _empty_booking_link_form_values() -> dict[str, str]:
@@ -2033,7 +2125,7 @@ def _render_account_page(
     confirm_value: str | None,
     switch_attempt: BillingProviderSwitchAttempt | None,
     switch_clean_state: BillingProviderSwitchCleanState,
-    switch_target_ready: bool | None,
+    switch_target_guidance: _BillingProviderSetupGuidance,
 ) -> str:
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
@@ -2047,7 +2139,7 @@ def _render_account_page(
         show_provider_choice=show_provider_choice,
         switch_attempt=switch_attempt,
         switch_clean_state=switch_clean_state,
-        switch_target_ready=switch_target_ready,
+        switch_target_guidance=switch_target_guidance,
     )
     booking_links_count = readiness.booking_links_count
     trackable_booking_links_count = readiness.trackable_booking_links_count
@@ -2623,6 +2715,12 @@ def _readiness_stage_summary(readiness: CreatorWorkspaceReadiness) -> dict[str, 
             ),
         }
 
+    if _billing_provider_is_connected_but_blocked(readiness):
+        return {
+            "title": "Connected, but billing setup is blocked",
+            "copy": _billing_provider_blocked_copy(provider_name=readiness.billing_provider),
+        }
+
     if _billing_provider_is_connected_but_not_ready(readiness):
         return {
             "title": "Connected, but not billable now",
@@ -2678,6 +2776,12 @@ def _readiness_line_items(readiness: CreatorWorkspaceReadiness) -> list[tuple[st
             "Billable now",
             "Done",
             "At least one booking link has amount and currency saved.",
+        )
+    elif _billing_provider_is_connected_but_blocked(readiness):
+        billable_line = (
+            "Billable now",
+            "Blocked",
+            _billing_provider_blocked_copy(provider_name=readiness.billing_provider),
         )
     elif _billing_provider_is_connected_but_not_ready(readiness):
         billable_line = (
@@ -2808,6 +2912,8 @@ def _build_setup_home_progress(
                 + (
                     "This workspace is already billable now while you finish the rest of setup."
                     if billable_now
+                    else _billing_provider_blocked_copy(provider_name=readiness.billing_provider)
+                    if _billing_provider_is_connected_but_blocked(readiness)
                     else _billing_provider_not_ready_copy(readiness)
                     if _billing_provider_is_connected_but_not_ready(readiness)
                     else "Creator setup still needs a currently supported booking link before this workspace can become billable now."
@@ -2824,6 +2930,17 @@ def _build_setup_home_progress(
         )
         next_action = (
             {
+                "title": "Review billing connection",
+                "copy_html": (
+                    f"{html.escape(_billing_provider_label(readiness.billing_provider))} "
+                    "is connected, but invoice readiness could not be verified right now. Review the current billing connection details before relying on new bookings."
+                ),
+                "action_label": "Open account",
+                "action_href": "/app/account",
+                "action_method": "get",
+            }
+            if _billing_provider_is_connected_but_blocked(readiness)
+            else {
                 "title": "Review billing readiness",
                 "copy_html": (
                     f"{html.escape(_billing_provider_label(readiness.billing_provider))} "
@@ -2956,6 +3073,10 @@ def _build_setup_home_progress(
                 + (
                     "already has amount and currency so this workspace is billable now."
                     if billable_now
+                    else (
+                        f"already has amount and currency, but {html.escape(_billing_provider_label(readiness.billing_provider))} readiness could not be verified right now."
+                    )
+                    if _billing_provider_is_connected_but_blocked(readiness)
                     else (
                         f"already has amount and currency, but {html.escape(_billing_provider_label(readiness.billing_provider))} is not ready to create invoices yet."
                     )
@@ -3109,7 +3230,9 @@ def _build_setup_home_progress(
             }
 
     progress_copy = "Connect billing setup first, then make one booking link billable now and create tracked content."
-    if _billing_provider_is_connected_but_not_ready(readiness):
+    if _billing_provider_is_connected_but_blocked(readiness):
+        progress_copy = _billing_provider_blocked_copy(provider_name=readiness.billing_provider)
+    elif _billing_provider_is_connected_but_not_ready(readiness):
         progress_copy = _billing_provider_not_ready_copy(readiness)
     elif readiness.billing_connected:
         progress_copy = "Billing setup is connected. The next milestone is billable now."
@@ -5015,6 +5138,16 @@ def _render_reports_empty_state(
         </section>
         """
 
+    if _billing_provider_is_connected_but_blocked(readiness):
+        return f"""
+        <section class="empty-state">
+          <p class="eyebrow">Billing provider blocked</p>
+          <h2>Billable now still waits on provider readiness</h2>
+          <p>{html.escape(_billing_provider_blocked_copy(provider_name=readiness.billing_provider))} Reports stays empty until the provider is verified and a tracked invoice is marked paid.</p>
+          <a href="/app/account" class="inline-link">Review billing connection</a>
+        </section>
+        """
+
     if _billing_provider_is_connected_but_not_ready(readiness):
         return f"""
         <section class="empty-state">
@@ -5648,7 +5781,10 @@ def _billing_setup_home_state(
             "Billing setup is connected. The next milestone is billable now, which needs amount "
             "and currency on at least one booking link."
         )
-        if _billing_provider_is_connected_but_not_ready(readiness):
+        if _billing_provider_is_connected_but_blocked(readiness):
+            description = _billing_provider_blocked_copy(provider_name=readiness.billing_provider)
+            checklist_copy = _billing_provider_blocked_copy(provider_name=readiness.billing_provider)
+        elif _billing_provider_is_connected_but_not_ready(readiness):
             description = _billing_provider_not_ready_copy(readiness)
             checklist_copy = _billing_provider_not_ready_copy(readiness)
         if readiness.billable_now:
@@ -5661,14 +5797,14 @@ def _billing_setup_home_state(
                 "finish the rest of setup."
             )
         return {
-            "label": "Connected",
+            "label": "Blocked" if _billing_provider_is_connected_but_blocked(readiness) else "Connected",
             "heading": "Billing provider is connected",
             "description": description,
             "button_label": "",
             "button_href": "",
-            "badge_class": "connected",
-            "item_class": "done",
-            "checklist_label": "Done",
+            "badge_class": "disconnected" if _billing_provider_is_connected_but_blocked(readiness) else "connected",
+            "item_class": "todo" if _billing_provider_is_connected_but_blocked(readiness) else "done",
+            "checklist_label": "Blocked" if _billing_provider_is_connected_but_blocked(readiness) else "Done",
             "checklist_copy": checklist_copy,
         }
 
@@ -5731,7 +5867,7 @@ def _account_billing_management_state(
     show_provider_choice: bool,
     switch_attempt: BillingProviderSwitchAttempt | None,
     switch_clean_state: BillingProviderSwitchCleanState,
-    switch_target_ready: bool | None,
+    switch_target_guidance: _BillingProviderSetupGuidance,
 ) -> dict[str, str]:
     normalized_status = readiness.billing_connect_status
     if normalized_status == "connected":
@@ -5747,12 +5883,12 @@ def _account_billing_management_state(
                 current_provider_label=current_provider_label,
                 switch_attempt=switch_attempt,
                 switch_clean_state=switch_clean_state,
-                switch_target_ready=switch_target_ready,
+                switch_target_guidance=switch_target_guidance,
             )
             actions_html = _render_billing_provider_switch_attempt_actions(
                 switch_attempt=switch_attempt,
                 switch_clean_state=switch_clean_state,
-                switch_target_ready=switch_target_ready,
+                switch_target_guidance=switch_target_guidance,
             )
         elif switch_clean_state.is_clean:
             body = (
@@ -5769,8 +5905,9 @@ def _account_billing_management_state(
             )
         else:
             body = (
-                f"{body} Provider switching stays blocked until this workspace has no open invoices "
-                "and no other active billing work still waiting to be cleared."
+                f"{body} Provider switching is blocked right now because this workspace still has "
+                f"{_billing_provider_switch_blockers_copy(switch_clean_state=switch_clean_state)}. "
+                f"Clear those items before starting a {target_provider_label} switch."
             )
         return {
             "label": "Connected",
@@ -5821,6 +5958,8 @@ def _account_billing_management_state(
 
 
 def _connected_account_billing_body(readiness: CreatorWorkspaceReadiness) -> str:
+    if _billing_provider_is_connected_but_blocked(readiness):
+        return _billing_provider_blocked_copy(provider_name=readiness.billing_provider)
     if _billing_provider_is_connected_but_not_ready(readiness):
         return _billing_provider_not_ready_copy(readiness)
     if readiness.billable_now:
@@ -5839,7 +5978,7 @@ def _billing_provider_switch_attempt_body(
     current_provider_label: str,
     switch_attempt: BillingProviderSwitchAttempt,
     switch_clean_state: BillingProviderSwitchCleanState,
-    switch_target_ready: bool | None,
+    switch_target_guidance: _BillingProviderSetupGuidance,
 ) -> str:
     target_provider_label = _billing_provider_label(switch_attempt.target_billing_provider)
     if (
@@ -5850,17 +5989,26 @@ def _billing_provider_switch_attempt_body(
             f"A {target_provider_label} switch is in progress. {current_provider_label} stays active "
             f"until {target_provider_label} is connected, ready, and you commit the switch."
         )
-    if switch_target_ready is False:
+    if switch_target_guidance.state == _BILLING_PROVIDER_SETUP_STATE_BLOCKED:
         return (
-            f"{target_provider_label} is connected for the pending switch, but it is not ready to "
-            f"create invoices yet. {current_provider_label} stays active until {target_provider_label} "
-            "is ready and you commit the switch."
+            f"{target_provider_label} is connected for the pending switch, but its invoice readiness "
+            "could not be verified right now. "
+            f"{current_provider_label} stays active until the readiness check succeeds and you commit "
+            "the switch."
+        )
+    if switch_target_guidance.state == _BILLING_PROVIDER_SETUP_STATE_NOT_READY:
+        return (
+            f"{target_provider_label} is connected for the pending switch, but it still needs this "
+            f"setup work before it can create invoices: "
+            f"{_billing_provider_actionable_issue_copy(switch_attempt.target_billing_provider, switch_target_guidance.actionable_issue_codes)}. "
+            f"{current_provider_label} stays active until {target_provider_label} is ready and you commit the switch."
         )
     if not switch_clean_state.is_clean:
         return (
-            f"{target_provider_label} is connected for the pending switch, but this workspace is not "
-            f"clean enough to finish the switch yet. {current_provider_label} stays active until the "
-            "remaining billing work is cleared."
+            f"{target_provider_label} is connected for the pending switch, but finishing the switch is "
+            f"blocked because this workspace still has "
+            f"{_billing_provider_switch_blockers_copy(switch_clean_state=switch_clean_state)}. "
+            f"{current_provider_label} stays active until those items are cleared."
         )
     return (
         f"{target_provider_label} is connected and ready for the pending switch. "
@@ -5872,7 +6020,7 @@ def _render_billing_provider_switch_attempt_actions(
     *,
     switch_attempt: BillingProviderSwitchAttempt,
     switch_clean_state: BillingProviderSwitchCleanState,
-    switch_target_ready: bool | None,
+    switch_target_guidance: _BillingProviderSetupGuidance,
 ) -> str:
     target_provider_label = _billing_provider_label(switch_attempt.target_billing_provider)
     actions: list[str] = []
@@ -5889,7 +6037,7 @@ def _render_billing_provider_switch_attempt_actions(
                 label=f"Resume {target_provider_label} setup",
             )
         )
-    elif switch_target_ready and switch_clean_state.is_clean:
+    elif switch_target_guidance.ready is True and switch_clean_state.is_clean:
         actions.append(
             _render_post_action_button(
                 action={"href": "/app/account/billing-switch/commit", "label": ""},
@@ -5942,14 +6090,22 @@ def _billing_provider_switch_status_value(*, reason_code: str) -> str:
     return "billing-provider-switch-failed"
 
 
-def _billing_provider_switch_target_ready(
+def _billing_provider_switch_target_guidance(
     *,
     request: Request,
     switch_attempt: BillingProviderSwitchAttempt,
-) -> bool | None:
-    return get_billing_provider_switch_target_ready(
-        attempt=switch_attempt,
-        providers=_ui_billing_providers(request),
+) -> _BillingProviderSetupGuidance:
+    if (
+        switch_attempt.target_billing_connect_status != "connected"
+        or switch_attempt.target_billing_account_id is None
+    ):
+        return _BillingProviderSetupGuidance(
+            state=_BILLING_PROVIDER_SETUP_STATE_PENDING_CONNECTION
+        )
+    return _billing_provider_setup_guidance(
+        request=request,
+        provider_name=switch_attempt.target_billing_provider,
+        provider_account_id=switch_attempt.target_billing_account_id,
     )
 
 
@@ -6062,17 +6218,100 @@ def _billing_provider_label(raw_provider: str | None) -> str:
     return "Not connected"
 
 
+def _billing_provider_is_connected_but_blocked(
+    readiness: CreatorWorkspaceReadiness,
+) -> bool:
+    return (
+        readiness.billing_connected
+        and readiness.billing_provider_guidance_state == _BILLING_PROVIDER_SETUP_STATE_BLOCKED
+    )
+
+
 def _billing_provider_is_connected_but_not_ready(
     readiness: CreatorWorkspaceReadiness,
 ) -> bool:
-    return readiness.billing_connected and readiness.billing_provider_ready is False
+    return (
+        readiness.billing_connected
+        and readiness.billing_provider_guidance_state == _BILLING_PROVIDER_SETUP_STATE_NOT_READY
+    )
+
+
+def _billing_provider_blocked_copy(*, provider_name: str | None) -> str:
+    provider_label = _billing_provider_label(provider_name)
+    return (
+        f"{provider_label} is connected, but its invoice readiness could not be verified right now. "
+        "Try again later before relying on new bookings."
+    )
 
 
 def _billing_provider_not_ready_copy(
     readiness: CreatorWorkspaceReadiness,
 ) -> str:
     provider_label = _billing_provider_label(readiness.billing_provider)
-    return f"{provider_label} is connected, but the {provider_label} account is not ready to create invoices yet."
+    return (
+        f"{provider_label} is connected, but it still needs this setup work before it can create "
+        f"invoices: "
+        f"{_billing_provider_actionable_issue_copy(readiness.billing_provider, readiness.billing_provider_actionable_issue_codes)}."
+    )
+
+
+def _billing_provider_actionable_issue_copy(
+    provider_name: str | None,
+    issue_codes: tuple[str, ...],
+) -> str:
+    provider_label = _billing_provider_label(provider_name)
+    ordered_issue_codes = tuple(dict.fromkeys(issue_codes))
+    actions = [
+        action
+        for issue_code, action in (
+            (
+                BILLING_ACCOUNT_READINESS_ISSUE_COMPLETE_STRIPE_SETUP,
+                "finish the remaining Stripe account setup in Stripe",
+            ),
+            (
+                BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
+                "confirm the primary email on the connected PayPal business account",
+            ),
+            (
+                BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
+                "finish the PayPal payments-receivable setup",
+            ),
+        )
+        if issue_code in ordered_issue_codes
+    ]
+    if not actions:
+        return f"finish the remaining {provider_label} account setup"
+    return _human_join(actions)
+
+
+def _billing_provider_switch_blockers_copy(
+    *,
+    switch_clean_state: BillingProviderSwitchCleanState,
+) -> str:
+    blockers: list[str] = []
+    if switch_clean_state.open_invoice_count > 0:
+        blockers.append(
+            _count_copy(switch_clean_state.open_invoice_count, "open invoice")
+        )
+    if switch_clean_state.blocked_billing_count > 0:
+        blockers.append(
+            _count_copy(
+                switch_clean_state.blocked_billing_count,
+                "billing issue that still needs review",
+                "billing issues that still need review",
+            )
+        )
+    return _human_join(blockers)
+
+
+def _human_join(parts: list[str]) -> str:
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return f"{', '.join(parts[:-1])}, and {parts[-1]}"
 
 
 def _count_copy(count: int, singular: str, plural: str | None = None) -> str:

@@ -14,6 +14,8 @@ from app.db.session import SessionLocal
 from app.models.billing_provider import BILLING_PROVIDER_PAYPAL
 from app.models.booking import Booking
 from app.services.billing_provider import (
+    BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
+    BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
     BillingAccountReadiness,
     BillingProviderError,
     BillingProviderInvoiceCreateResult,
@@ -342,10 +344,16 @@ class PayPalSandboxSellerOnboardingProvider:
             access_token=access_token,
             merchant_id=provider_account_id,
         )
+        issue_codes: list[str] = []
+        if not seller_status.primary_email_confirmed:
+            issue_codes.append(BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL)
+        if not seller_status.payments_receivable:
+            issue_codes.append(BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE)
         return BillingAccountReadiness(
             can_create_invoices=(
                 seller_status.payments_receivable and seller_status.primary_email_confirmed
-            )
+            ),
+            creator_actionable_issue_codes=tuple(issue_codes),
         )
 
     def verify_webhook_event(

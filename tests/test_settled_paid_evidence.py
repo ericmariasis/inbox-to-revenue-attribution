@@ -26,6 +26,7 @@ from app.services.invoice_payment_events import (
     PAYMENT_PROVENANCE_STATUS_PENDING,
     UNATTRIBUTED_REASON_MISSING_TID,
     UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID,
+    UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID,
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
 )
 from app.services.settled_paid_evidence import get_creator_settled_paid_evidence
@@ -590,3 +591,131 @@ def test_creator_settled_paid_evidence_surfaces_paypal_provider_identity():
     assert row.provider_event_id == "WH_SETTLED_PAYPAL"
     assert row.stripe_invoice_id is None
     assert row.stripe_event_id is None
+
+
+def test_creator_settled_paid_evidence_keeps_paypal_conflict_diagnostic():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator = Creator(
+            name="Settled Evidence PayPal Conflict Creator",
+            billing_provider="paypal",
+            billing_connect_status="connected",
+            billing_account_id="merchant_settled_paypal_conflict",
+        )
+        session.add(creator)
+        session.flush()
+
+        booking_link = BookingLink(
+            creator_id=creator.id,
+            name="Settled Evidence PayPal Conflict Link",
+            calendly_url="https://calendly.com/example/settled-evidence-paypal-conflict-link",
+            billing_amount_cents=19500,
+            billing_currency="USD",
+        )
+        session.add(booking_link)
+        session.flush()
+
+        content = Content(
+            creator_id=creator.id,
+            booking_link_id=booking_link.id,
+            source_url="https://example.com/posts/settled-paypal-conflict",
+            tid="settled_paypal_conflict_tid",
+        )
+        session.add(content)
+        session.flush()
+
+        booking = Booking(
+            creator_id=creator.id,
+            booking_link_id=booking_link.id,
+            tid=content.tid,
+            calendly_booking_uuid="BOOK_SETTLED_PAYPAL_CONFLICT",
+            email="settled-paypal-conflict@example.com",
+            status="created",
+            booked_at=datetime(2026, 3, 9, 10, 0, tzinfo=timezone.utc),
+        )
+        session.add(booking)
+        session.flush()
+
+        invoice = Invoice(
+            creator_id=creator.id,
+            booking_id=booking.id,
+            tid=booking.tid,
+            payment_provider="paypal",
+            provider_account_id="merchant_settled_paypal_conflict",
+            provider_invoice_id="INV_SETTLED_PAYPAL_CONFLICT",
+            amount_cents=19500,
+            currency="USD",
+            status="paid",
+            issued_at=datetime(2026, 3, 9, 10, 30, tzinfo=timezone.utc),
+            paid_at=datetime(2026, 3, 9, 11, 0, tzinfo=timezone.utc),
+        )
+        session.add(invoice)
+        session.flush()
+
+        session.add(
+            InvoicePaymentEvent(
+                payment_provider="paypal",
+                provider_event_id="WH_SETTLED_PAYPAL_CONFLICT_APPLIED",
+                provider_event_type="INVOICING.INVOICE.PAID",
+                provider_account_id="merchant_settled_paypal_conflict",
+                provider_invoice_id="INV_SETTLED_PAYPAL_CONFLICT",
+                invoice_id=invoice.id,
+                creator_id=creator.id,
+                booking_id=booking.id,
+                tid=booking.tid,
+                status="applied",
+                paid_at=invoice.paid_at,
+                received_at=invoice.paid_at,
+                processed_at=invoice.paid_at,
+            )
+        )
+        session.add(
+            InvoicePaymentEvent(
+                payment_provider="paypal",
+                provider_event_id="WH_SETTLED_PAYPAL_CONFLICT_UNMATCHED",
+                provider_event_type="INVOICING.INVOICE.PAID",
+                provider_account_id="merchant_settled_paypal_conflict",
+                provider_invoice_id="INV_SETTLED_PAYPAL_CONFLICT",
+                invoice_id=None,
+                creator_id=creator.id,
+                booking_id=None,
+                tid=None,
+                status="unmatched",
+                unattributed_reason=UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID,
+                paid_at=invoice.paid_at,
+                received_at=invoice.paid_at,
+                processed_at=None,
+            )
+        )
+        creator_id = creator.id
+        session.commit()
+
+    with Session(engine) as session:
+        snapshot = get_creator_settled_paid_evidence(
+            creator_id=creator_id,
+            db=session,
+            start_date=date(2026, 3, 9),
+            end_date=date(2026, 3, 9),
+        )
+
+    assert len(snapshot.settled_rows) == 1
+    row = snapshot.settled_rows[0]
+    assert row.payment_provider == "paypal"
+    assert row.payment_provenance.status == PAYMENT_PROVENANCE_STATUS_MATCHED
+    assert (
+        row.payment_provenance.conflict_status
+        == PAYMENT_PROVENANCE_CONFLICT_STATUS_UNMATCHED_PROVIDER_SIGNAL
+    )
+    assert row.payment_provenance.conflict_event_count == 1
+    assert row.payment_provenance.conflict_reasons == (
+        UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID,
+    )
+    assert row.payment_provenance.state == PAYMENT_PROVENANCE_STATE_CONFLICTING
+    assert snapshot.unmatched_payment_backlog.event_count == 1
+    assert [
+        (item.reason, item.event_count)
+        for item in snapshot.unmatched_payment_backlog.reasons
+    ] == [
+        (UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID, 1),
+    ]

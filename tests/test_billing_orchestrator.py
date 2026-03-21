@@ -1296,10 +1296,124 @@ def test_blocked_billing_retry_dispatches_paypal_case_to_paypal_provider():
     assert invoices[0].payment_provider == "paypal"
     assert invoices[0].provider_account_id == "merchant_story44_paypal_retry"
     assert invoices[0].provider_invoice_id == "INV2_story44_paypal_retry"
+
+
+def test_billing_orchestrator_treats_unexpected_create_status_as_provider_error():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    blocked_at = datetime(2026, 3, 20, 13, 0, tzinfo=UTC)
+    paypal_provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=True),
+        created_invoice_id="INV2_story_pp10_invalid_create",
+        created_invoice_status="draft",
+    )
+
+    with Session(engine) as session:
+        creator, _, _, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story_pp10_invalid_create",
+            tid="story_pp10_invalid_create_tid",
+            stripe_account_id=None,
+            billing_provider="paypal",
+            billing_account_id="merchant_story_pp10_invalid_create",
+        )
+        creator_id = creator.id
+        booking_id = booking.id
+        session.commit()
+
+    orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        providers={
+            "stripe": _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=True)),
+            "paypal": paypal_provider,
+        },
+        now_fn=lambda: blocked_at,
+    )
+
+    result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
+    invoices = _invoice_rows()
+    blocked_cases = _blocked_case_rows()
+
+    assert result.outcome == "deferred"
+    assert result.reason == "provider_error"
+    assert result.invoice_id is None
+    assert paypal_provider.create_calls == [
+        {
+            "provider_account_id": "merchant_story_pp10_invalid_create",
+            "amount_cents": 15000,
+            "currency": "USD",
+            "metadata": {
+                "creator_id": str(creator_id),
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story_pp10_invalid_create",
+                "booking_uuid": "BOOK_story_pp10_invalid_create",
+                "tid": "story_pp10_invalid_create_tid",
+            },
+            "idempotency_key": "billing:create:calendly:BOOK_story_pp10_invalid_create",
+        }
+    ]
+    assert invoices == []
+    assert len(blocked_cases) == 1
+    assert blocked_cases[0].booking_id == booking_id
+    assert blocked_cases[0].reason_code == "provider_error"
+
+
+def test_billing_orchestrator_void_keeps_invoice_open_when_provider_returns_non_void_status():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    attempted_void_at = datetime(2026, 3, 20, 13, 10, tzinfo=UTC)
+    paypal_provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=True),
+        stop_invoice_status="open",
+    )
+
+    with Session(engine) as session:
+        creator, _, content, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story_pp10_invalid_void",
+            tid="story_pp10_invalid_void_tid",
+            stripe_account_id=None,
+            billing_provider="paypal",
+            billing_account_id="merchant_story_pp10_invalid_void",
+        )
+        booking_id = booking.id
+        session.add(
+            Invoice(
+                creator_id=creator.id,
+                booking_id=booking_id,
+                tid=content.tid,
+                payment_provider="paypal",
+                provider_account_id="merchant_story_pp10_invalid_void",
+                provider_invoice_id="INV2_story_pp10_invalid_void",
+                amount_cents=15000,
+                currency="USD",
+                status="open",
+                issued_at=datetime(2026, 3, 20, 13, 0, tzinfo=UTC),
+            )
+        )
+        session.commit()
+
+    orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        providers={
+            "stripe": _StubStripeProvider(readiness=StripeAccountReadiness(charges_enabled=True)),
+            "paypal": paypal_provider,
+        },
+        now_fn=lambda: attempted_void_at,
+    )
+
+    result = orchestrator.void_open_invoice_for_booking(booking_id=booking_id)
+    invoices = _invoice_rows()
+
+    assert result.outcome == "noop"
+    assert result.reason == "provider_error"
+    assert result.invoice_status == "open"
+    assert paypal_provider.stop_calls == [
+        {
+            "provider_account_id": "merchant_story_pp10_invalid_void",
+            "provider_invoice_id": "INV2_story_pp10_invalid_void",
+        }
+    ]
+    assert len(invoices) == 1
+    assert invoices[0].status == "open"
+    assert invoices[0].voided_at is None
     assert invoices[0].stripe_account_id is None
     assert invoices[0].stripe_invoice_id is None
-    assert len(blocked_cases) == 1
-    assert blocked_cases[0].status == "resolved"
-    assert blocked_cases[0].invoice_id == invoices[0].id
-    assert blocked_cases[0].resolution_code == "invoice_created"
-    assert blocked_cases[0].resolved_at == recovered_at

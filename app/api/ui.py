@@ -41,6 +41,7 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal, get_db
 from app.models.auth_user import AuthUser
 from app.models.billing_provider import BILLING_PROVIDER_PAYPAL, BILLING_PROVIDER_STRIPE
+from app.models.billing_provider_switch_attempt import BillingProviderSwitchAttempt
 from app.models.booking_provider import (
     BOOKING_PROVIDER_CALENDLY,
     BOOKING_PROVIDER_FULLSCOPE,
@@ -58,6 +59,23 @@ from app.schemas.content import (
 )
 from app.services.auth_magic_link import start_magic_link
 from app.services.billing_provider import BillingProviderError, build_billing_provider_registry
+from app.services.billing_provider_switch import (
+    BILLING_PROVIDER_SWITCH_REASON_SWITCH_ATTEMPT_MISSING,
+    BILLING_PROVIDER_SWITCH_REASON_SWITCH_NOT_CLEAN,
+    BILLING_PROVIDER_SWITCH_REASON_SWITCH_REQUIRES_CONNECTED_PROVIDER,
+    BILLING_PROVIDER_SWITCH_REASON_SWITCH_TARGET_ALREADY_CONNECTED,
+    BILLING_PROVIDER_SWITCH_REASON_SWITCH_TARGET_NOT_CONNECTED,
+    BILLING_PROVIDER_SWITCH_REASON_SWITCH_TARGET_NOT_READY,
+    BillingProviderSwitchCleanState,
+    BillingProviderSwitchError,
+    cancel_billing_provider_switch_attempt,
+    commit_billing_provider_switch_attempt,
+    get_billing_provider_switch_attempt,
+    get_billing_provider_switch_clean_state,
+    get_billing_provider_switch_target_ready,
+    replacement_billing_provider_name,
+    restart_billing_provider_switch_attempt,
+)
 from app.services.blocked_billing import (
     BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
     BLOCKED_BILLING_REASON_PROVIDER_ERROR,
@@ -257,6 +275,36 @@ ACCOUNT_REQUEST_STATUS_MESSAGES = {
         "body": "We recorded too many recent account deletion submit attempts. Wait a few minutes before trying again.",
         "notice_class": "notice error",
     },
+    "billing-provider-switch-blocked": {
+        "title": "Provider switch is blocked",
+        "body": "Finish or clear any open invoices and other active billing work before starting or committing a provider switch.",
+        "notice_class": "notice error",
+    },
+    "billing-provider-switch-connected": {
+        "title": "Replacement provider saved",
+        "body": "The replacement provider was connected for the pending switch. Review the billing connection card below to finish or cancel the switch.",
+        "notice_class": "notice success",
+    },
+    "billing-provider-switch-failed": {
+        "title": "Replacement provider could not be saved",
+        "body": "The current billing provider stayed active. Start the replacement setup again or cancel the pending switch from the billing connection card below.",
+        "notice_class": "notice error",
+    },
+    "billing-provider-switch-committed": {
+        "title": "Billing provider switched",
+        "body": "Future billing on this workspace now uses the replacement provider. Existing local history stays unchanged.",
+        "notice_class": "notice success",
+    },
+    "billing-provider-switch-canceled": {
+        "title": "Pending provider switch canceled",
+        "body": "The pending replacement provider was cleared. The currently active billing provider on this workspace did not change.",
+        "notice_class": "notice success",
+    },
+    "billing-provider-switch-missing": {
+        "title": "No pending provider switch found",
+        "body": "Start a new provider switch from the current billing connection when you are ready.",
+        "notice_class": "notice error",
+    },
 }
 OPERATOR_SUPPORT_REQUEST_STATUS_MESSAGES = {
     "status-updated": {
@@ -424,6 +472,22 @@ def creator_account_page(
         db,
         creator_id=current_user.creator_id,
     )
+    switch_attempt = get_billing_provider_switch_attempt(
+        db=db,
+        creator_id=current_user.creator_id,
+    )
+    switch_clean_state = get_billing_provider_switch_clean_state(
+        db=db,
+        creator_id=current_user.creator_id,
+    )
+    switch_target_ready = (
+        _billing_provider_switch_target_ready(
+            request=request,
+            switch_attempt=switch_attempt,
+        )
+        if switch_attempt is not None
+        else None
+    )
     return _html_response(
         _render_account_page(
             current_user=current_user,
@@ -432,6 +496,9 @@ def creator_account_page(
             active_support_requests=active_support_requests,
             status_value=status_value,
             confirm_value=confirm_value,
+            switch_attempt=switch_attempt,
+            switch_clean_state=switch_clean_state,
+            switch_target_ready=switch_target_ready,
         )
     )
 
@@ -462,6 +529,95 @@ def creator_account_deletion_request(
         db=db,
         request_type=SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION,
     )
+
+
+@router.post("/app/account/billing-switch/cancel")
+def creator_billing_switch_cancel(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    canceled = cancel_billing_provider_switch_attempt(
+        db=db,
+        creator_id=current_user.creator_id,
+    )
+    db.commit()
+    status_value = "billing-provider-switch-canceled" if canceled else "billing-provider-switch-missing"
+    return _redirect(f"/app/account?status={status_value}")
+
+
+@router.post("/app/account/billing-switch/commit")
+def creator_billing_switch_commit(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    try:
+        commit_billing_provider_switch_attempt(
+            db=db,
+            creator=current_user.creator,
+            providers=_ui_billing_providers(request),
+        )
+    except BillingProviderSwitchError as exc:
+        return _redirect(
+            f"/app/account?status={_billing_provider_switch_status_value(reason_code=exc.reason_code)}"
+        )
+
+    db.commit()
+    return _redirect("/app/account?status=billing-provider-switch-committed")
+
+
+@router.post("/app/account/billing-switch/restart")
+def creator_billing_switch_restart(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    switch_attempt = get_billing_provider_switch_attempt(
+        db=db,
+        creator_id=current_user.creator_id,
+    )
+    if switch_attempt is None:
+        return _redirect("/app/account?status=billing-provider-switch-missing")
+
+    try:
+        restart_target_provider = switch_attempt.target_billing_provider
+        restart_billing_provider_switch_attempt(
+            db=db,
+            creator=current_user.creator,
+            target_provider=restart_target_provider,
+        )
+        if restart_target_provider == BILLING_PROVIDER_PAYPAL:
+            start_response = build_paypal_connect_start_response(
+                request=request,
+                current_user=current_user,
+                db=db,
+            )
+        else:
+            start_response = build_stripe_connect_start_response(
+                request=request,
+                current_user=current_user,
+                db=db,
+            )
+    except BillingProviderSwitchError as exc:
+        return _redirect(
+            f"/app/account?status={_billing_provider_switch_status_value(reason_code=exc.reason_code)}"
+        )
+
+    db.commit()
+    return _redirect(str(start_response.onboarding_url))
 
 
 @router.get("/app/operator/support-requests")
@@ -557,15 +713,23 @@ async def operator_support_request_status_update(
 def creator_stripe_connect_start(
     request: Request,
     current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
 ) -> Response:
     should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
     if current_user is None:
         return _redirect("/sign-in", clear_session=should_clear_cookie)
 
-    start_response = build_stripe_connect_start_response(
-        request=request,
-        current_user=current_user,
-    )
+    try:
+        start_response = build_stripe_connect_start_response(
+            request=request,
+            current_user=current_user,
+            db=db,
+        )
+    except BillingProviderSwitchError as exc:
+        return _redirect(
+            f"/app/account?status={_billing_provider_switch_status_value(reason_code=exc.reason_code)}"
+        )
+    db.commit()
     return _redirect(str(start_response.onboarding_url))
 
 
@@ -573,15 +737,23 @@ def creator_stripe_connect_start(
 def creator_paypal_connect_start(
     request: Request,
     current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
 ) -> Response:
     should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
     if current_user is None:
         return _redirect("/sign-in", clear_session=should_clear_cookie)
 
-    start_response = build_paypal_connect_start_response(
-        request=request,
-        current_user=current_user,
-    )
+    try:
+        start_response = build_paypal_connect_start_response(
+            request=request,
+            current_user=current_user,
+            db=db,
+        )
+    except BillingProviderSwitchError as exc:
+        return _redirect(
+            f"/app/account?status={_billing_provider_switch_status_value(reason_code=exc.reason_code)}"
+        )
+    db.commit()
     return _redirect(str(start_response.onboarding_url))
 
 
@@ -1859,6 +2031,9 @@ def _render_account_page(
     active_support_requests: dict[str, SupportRequestRecord],
     status_value: str | None,
     confirm_value: str | None,
+    switch_attempt: BillingProviderSwitchAttempt | None,
+    switch_clean_state: BillingProviderSwitchCleanState,
+    switch_target_ready: bool | None,
 ) -> str:
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
@@ -1867,8 +2042,12 @@ def _render_account_page(
         readiness=readiness,
     )
     billing_state = _account_billing_management_state(
+        current_billing_provider=current_user.creator.resolved_billing_provider,
         readiness=readiness,
         show_provider_choice=show_provider_choice,
+        switch_attempt=switch_attempt,
+        switch_clean_state=switch_clean_state,
+        switch_target_ready=switch_target_ready,
     )
     booking_links_count = readiness.booking_links_count
     trackable_booking_links_count = readiness.trackable_booking_links_count
@@ -1890,15 +2069,22 @@ def _render_account_page(
             f"<p><strong>Connected on</strong>: "
             f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
         )
-    billing_action = ""
-    if show_provider_choice:
-        billing_action = _render_billing_provider_choice_actions()
-    elif billing_state["action_label"]:
-        billing_action = f"""
-        <form action="{html.escape(billing_state['action_href'])}" method="post">
-          <button type="submit">{html.escape(billing_state["action_label"])}</button>
-        </form>
-        """
+    if switch_attempt is not None:
+        billing_detail_lines.append(
+            f"<p><strong>Pending switch target</strong>: "
+            f"{html.escape(_billing_provider_label(switch_attempt.target_billing_provider))}</p>"
+        )
+        if switch_attempt.target_billing_account_id:
+            billing_detail_lines.append(
+                f"<p><strong>Pending target account</strong>: "
+                f"{html.escape(switch_attempt.target_billing_account_id)}</p>"
+            )
+        if switch_attempt.target_billing_connected_at:
+            billing_detail_lines.append(
+                f"<p><strong>Pending target connected on</strong>: "
+                f"{_format_connected_at(switch_attempt.target_billing_connected_at)}</p>"
+            )
+    billing_action = billing_state["actions_html"]
 
     booking_links_summary = "No booking links are saved yet for this workspace."
     if booking_links_count > 0:
@@ -5540,33 +5726,57 @@ def _billing_setup_home_state(
 
 def _account_billing_management_state(
     *,
+    current_billing_provider: str | None,
     readiness: CreatorWorkspaceReadiness,
     show_provider_choice: bool,
+    switch_attempt: BillingProviderSwitchAttempt | None,
+    switch_clean_state: BillingProviderSwitchCleanState,
+    switch_target_ready: bool | None,
 ) -> dict[str, str]:
     normalized_status = readiness.billing_connect_status
     if normalized_status == "connected":
-        body = (
-            "This workspace has a connected billing provider, but it is not billable now yet. Save "
-            "amount and currency on at least one booking link before new bookings can move "
-            "into invoicing."
+        current_provider_label = _billing_provider_label(current_billing_provider)
+        target_provider_name = replacement_billing_provider_name(
+            current_provider=current_billing_provider
         )
-        action_label = "Reconnect Stripe"
-        if _billing_provider_is_connected_but_not_ready(readiness):
-            body = _billing_provider_not_ready_copy(readiness)
-        if readiness.billing_provider == BILLING_PROVIDER_PAYPAL:
-            action_label = ""
-        if readiness.billable_now:
+        target_provider_label = _billing_provider_label(target_provider_name)
+        body = _connected_account_billing_body(readiness)
+        actions_html = ""
+        if switch_attempt is not None:
+            body = _billing_provider_switch_attempt_body(
+                current_provider_label=current_provider_label,
+                switch_attempt=switch_attempt,
+                switch_clean_state=switch_clean_state,
+                switch_target_ready=switch_target_ready,
+            )
+            actions_html = _render_billing_provider_switch_attempt_actions(
+                switch_attempt=switch_attempt,
+                switch_clean_state=switch_clean_state,
+                switch_target_ready=switch_target_ready,
+            )
+        elif switch_clean_state.is_clean:
             body = (
-                "This workspace has a connected billing provider and is billable now for future "
-                "invoicing. You can reconnect that setup without deleting "
-                "your historical bookings, invoices, reports, or recovery history."
+                f"{body} You can start a {target_provider_label} switch here. "
+                f"{current_provider_label} stays active until {target_provider_label} is connected, "
+                "ready, and you commit the switch."
+            )
+            actions_html = _render_post_action_button(
+                action=_billing_provider_connect_action(
+                    provider_name=target_provider_name,
+                    reconnect=False,
+                ),
+                label=f"Start {target_provider_label} switch",
+            )
+        else:
+            body = (
+                f"{body} Provider switching stays blocked until this workspace has no open invoices "
+                "and no other active billing work still waiting to be cleared."
             )
         return {
             "label": "Connected",
             "body": body,
-            "action_label": action_label,
-            "action_href": "/app/stripe/connect/start",
             "badge_class": "connected",
+            "actions_html": actions_html,
         }
 
     if normalized_status == "disconnected":
@@ -5581,9 +5791,8 @@ def _account_billing_management_state(
         return {
             "label": "Disconnected",
             "body": body,
-            "action_label": provider_action["label"],
-            "action_href": provider_action["href"],
             "badge_class": "disconnected",
+            "actions_html": _render_post_action_button(action=provider_action),
         }
 
     if show_provider_choice:
@@ -5592,8 +5801,7 @@ def _account_billing_management_state(
             "Choose Stripe or PayPal here when you are ready. No billing provider is preselected "
             "for this workspace."
         )
-        action_label = ""
-        action_href = ""
+        actions_html = _render_billing_provider_choice_actions()
     else:
         provider_action = _billing_provider_connect_action(
             provider_name=readiness.billing_provider,
@@ -5603,15 +5811,146 @@ def _account_billing_management_state(
             "This workspace is not currently connected to a billing provider for invoicing. "
             "You can continue the current setup here when you are ready."
         )
-        action_label = provider_action["label"]
-        action_href = provider_action["href"]
+        actions_html = _render_post_action_button(action=provider_action)
     return {
         "label": "Pending",
         "body": body,
-        "action_label": action_label,
-        "action_href": action_href,
         "badge_class": "pending",
+        "actions_html": actions_html,
     }
+
+
+def _connected_account_billing_body(readiness: CreatorWorkspaceReadiness) -> str:
+    if _billing_provider_is_connected_but_not_ready(readiness):
+        return _billing_provider_not_ready_copy(readiness)
+    if readiness.billable_now:
+        return (
+            "This workspace has a connected billing provider and is billable now for future "
+            "invoicing."
+        )
+    return (
+        "This workspace has a connected billing provider, but it is not billable now yet. Save "
+        "amount and currency on at least one booking link before new bookings can move into invoicing."
+    )
+
+
+def _billing_provider_switch_attempt_body(
+    *,
+    current_provider_label: str,
+    switch_attempt: BillingProviderSwitchAttempt,
+    switch_clean_state: BillingProviderSwitchCleanState,
+    switch_target_ready: bool | None,
+) -> str:
+    target_provider_label = _billing_provider_label(switch_attempt.target_billing_provider)
+    if (
+        switch_attempt.target_billing_connect_status != "connected"
+        or switch_attempt.target_billing_account_id is None
+    ):
+        return (
+            f"A {target_provider_label} switch is in progress. {current_provider_label} stays active "
+            f"until {target_provider_label} is connected, ready, and you commit the switch."
+        )
+    if switch_target_ready is False:
+        return (
+            f"{target_provider_label} is connected for the pending switch, but it is not ready to "
+            f"create invoices yet. {current_provider_label} stays active until {target_provider_label} "
+            "is ready and you commit the switch."
+        )
+    if not switch_clean_state.is_clean:
+        return (
+            f"{target_provider_label} is connected for the pending switch, but this workspace is not "
+            f"clean enough to finish the switch yet. {current_provider_label} stays active until the "
+            "remaining billing work is cleared."
+        )
+    return (
+        f"{target_provider_label} is connected and ready for the pending switch. "
+        f"{current_provider_label} stays active until you commit the switch."
+    )
+
+
+def _render_billing_provider_switch_attempt_actions(
+    *,
+    switch_attempt: BillingProviderSwitchAttempt,
+    switch_clean_state: BillingProviderSwitchCleanState,
+    switch_target_ready: bool | None,
+) -> str:
+    target_provider_label = _billing_provider_label(switch_attempt.target_billing_provider)
+    actions: list[str] = []
+    if (
+        switch_attempt.target_billing_connect_status != "connected"
+        or switch_attempt.target_billing_account_id is None
+    ):
+        actions.append(
+            _render_post_action_button(
+                action=_billing_provider_connect_action(
+                    provider_name=switch_attempt.target_billing_provider,
+                    reconnect=False,
+                ),
+                label=f"Resume {target_provider_label} setup",
+            )
+        )
+    elif switch_target_ready and switch_clean_state.is_clean:
+        actions.append(
+            _render_post_action_button(
+                action={"href": "/app/account/billing-switch/commit", "label": ""},
+                label=f"Switch to {target_provider_label}",
+            )
+        )
+    actions.append(
+        _render_post_action_button(
+            action={"href": "/app/account/billing-switch/restart", "label": ""},
+            label="Restart switch",
+            secondary=True,
+        )
+    )
+    actions.append(
+        _render_post_action_button(
+            action={"href": "/app/account/billing-switch/cancel", "label": ""},
+            label="Cancel switch",
+            secondary=True,
+        )
+    )
+    return "".join(actions)
+
+
+def _render_post_action_button(
+    *,
+    action: dict[str, str],
+    label: str | None = None,
+    secondary: bool = False,
+) -> str:
+    button_class = ' class="secondary"' if secondary else ""
+    return (
+        f'<form action="{html.escape(action["href"])}" method="post">'
+        f'<button type="submit"{button_class}>{html.escape(label or action["label"])}</button>'
+        "</form>"
+    )
+
+
+def _billing_provider_switch_status_value(*, reason_code: str) -> str:
+    if reason_code == BILLING_PROVIDER_SWITCH_REASON_SWITCH_ATTEMPT_MISSING:
+        return "billing-provider-switch-missing"
+    if reason_code == BILLING_PROVIDER_SWITCH_REASON_SWITCH_TARGET_ALREADY_CONNECTED:
+        return "billing-provider-switch-connected"
+    if reason_code in {
+        BILLING_PROVIDER_SWITCH_REASON_SWITCH_NOT_CLEAN,
+        BILLING_PROVIDER_SWITCH_REASON_SWITCH_REQUIRES_CONNECTED_PROVIDER,
+        BILLING_PROVIDER_SWITCH_REASON_SWITCH_TARGET_NOT_CONNECTED,
+        BILLING_PROVIDER_SWITCH_REASON_SWITCH_TARGET_NOT_READY,
+    }:
+        return "billing-provider-switch-blocked"
+    return "billing-provider-switch-failed"
+
+
+def _billing_provider_switch_target_ready(
+    *,
+    request: Request,
+    switch_attempt: BillingProviderSwitchAttempt,
+) -> bool | None:
+    return get_billing_provider_switch_target_ready(
+        attempt=switch_attempt,
+        providers=_ui_billing_providers(request),
+    )
 
 
 def _booking_activity_status(raw_status: str) -> dict[str, str]:

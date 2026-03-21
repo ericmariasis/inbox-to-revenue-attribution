@@ -92,6 +92,18 @@ def _access_token(*, user_id: str, creator_id: str, email: str, expires_delta: t
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
+def _switch_attempt_rows():
+    with _engine().connect() as conn:
+        return conn.execute(
+            text(
+                "SELECT creator_id::text AS creator_id, source_billing_provider, target_billing_provider, "
+                "target_billing_connect_status, target_billing_account_id, "
+                "target_billing_provider_correlation_id, target_billing_connected_at "
+                "FROM billing_provider_switch_attempts ORDER BY created_at"
+            )
+        ).mappings().all()
+
+
 @contextmanager
 def _override_app_state(name, value):
     had_attr = hasattr(app.state, name)
@@ -225,6 +237,85 @@ def test_paypal_connect_callback_persists_connected_fields_and_returns_browser_s
     assert payload["billing_connected_at"] is not None
     assert payload["stripe_connect_status"] == "pending"
     assert payload["stripe_account_id"] is None
+
+
+def test_paypal_connect_callback_stores_pending_switch_attempt_without_mutating_active_provider():
+    connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    inserted = _insert_creator_user(
+        email=f"paypal_switch_callback_{uuid.uuid4().hex}@example.com",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_pp11b_source",
+        stripe_connected_at=connected_at,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider()
+
+    with _override_app_state("paypal_provider", provider):
+        with TestClient(app) as client:
+            start_response = client.post(
+                "/paypal/connect/start",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            state = start_response.json()["state"]
+            tracking_id = decode_paypal_connect_state(state)["tracking_id"]
+            provider.seller_status = PayPalSellerStatus(
+                merchant_id="merchant_pp11b_target",
+                tracking_id=tracking_id,
+                payments_receivable=True,
+                primary_email_confirmed=True,
+            )
+            callback_response = client.get(
+                "/paypal/connect/callback",
+                params={
+                    "state": state,
+                    "merchantId": tracking_id,
+                    "merchantIdInPayPal": "merchant_pp11b_target",
+                    "permissionsGranted": "true",
+                    "consentStatus": "true",
+                },
+                headers=HTML_ACCEPT_HEADERS,
+            )
+            me_response = client.get("/me", headers={"Authorization": f"Bearer {access_token}"})
+
+    assert start_response.status_code == 200
+    assert callback_response.status_code == 200
+    assert "PayPal switch setup completed" in callback_response.text
+    assert "merchant_pp11b_target" in callback_response.text
+    assert provider.status_calls == [tracking_id]
+
+    with _engine().connect() as conn:
+        creator_row = conn.execute(
+            text(
+                "SELECT billing_provider, billing_connect_status, billing_account_id, "
+                "billing_provider_correlation_id, stripe_connect_status, stripe_account_id "
+                "FROM creators WHERE id = :creator_id"
+            ),
+            {"creator_id": inserted["creator_id"]},
+        ).mappings().one()
+
+    switch_attempt_rows = _switch_attempt_rows()
+    assert creator_row["billing_provider"] == "stripe"
+    assert creator_row["billing_connect_status"] == "connected"
+    assert creator_row["billing_account_id"] == "acct_pp11b_source"
+    assert creator_row["billing_provider_correlation_id"] is None
+    assert creator_row["stripe_connect_status"] == "connected"
+    assert creator_row["stripe_account_id"] == "acct_pp11b_source"
+    assert len(switch_attempt_rows) == 1
+    assert switch_attempt_rows[0]["creator_id"] == inserted["creator_id"]
+    assert switch_attempt_rows[0]["source_billing_provider"] == "stripe"
+    assert switch_attempt_rows[0]["target_billing_provider"] == "paypal"
+    assert switch_attempt_rows[0]["target_billing_connect_status"] == "connected"
+    assert switch_attempt_rows[0]["target_billing_account_id"] == "merchant_pp11b_target"
+    assert switch_attempt_rows[0]["target_billing_provider_correlation_id"] == tracking_id
+    assert switch_attempt_rows[0]["target_billing_connected_at"] is not None
+    assert me_response.status_code == 200
+    assert me_response.json()["billing_provider"] == "stripe"
+    assert me_response.json()["billing_account_id"] == "acct_pp11b_source"
 
 
 def test_paypal_connect_callback_rejects_invalid_state_without_mutating_creator():

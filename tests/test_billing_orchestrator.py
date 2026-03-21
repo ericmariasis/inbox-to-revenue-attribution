@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.models.booking import Booking
 from app.models.booking_link import BookingLink
 from app.models.blocked_billing_case import BlockedBillingCase
+from app.models.billing_provider_switch_attempt import BillingProviderSwitchAttempt
 from app.models.content import Content
 from app.models.creator import Creator
 from app.models.invoice import Invoice
@@ -1134,6 +1135,61 @@ def test_billing_orchestrator_dispatches_paypal_creator_to_paypal_provider():
     assert invoices[0].stripe_account_id is None
     assert invoices[0].stripe_invoice_id is None
     assert invoices[0].status == "open"
+
+
+def test_billing_orchestrator_keeps_active_provider_authoritative_while_switch_attempt_is_pending():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    issued_at = datetime(2026, 3, 21, 12, 5, tzinfo=UTC)
+    stripe_provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_story44_pending_switch",
+    )
+    paypal_provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=True),
+        created_invoice_id="INV2_story44_unused_switch",
+    )
+
+    with Session(engine) as session:
+        creator, _, _, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story44_pending_switch",
+            tid="story44_pending_switch_tid",
+            stripe_account_id="acct_story44_pending_switch",
+        )
+        booking_id = booking.id
+        session.add(
+            BillingProviderSwitchAttempt(
+                creator_id=creator.id,
+                source_billing_provider="stripe",
+                target_billing_provider="paypal",
+                target_billing_connect_status="connected",
+                target_billing_account_id="merchant_story44_pending_switch",
+                target_billing_connected_at=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+                target_billing_provider_correlation_id="tracking_story44_pending_switch",
+            )
+        )
+        session.commit()
+
+    orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        providers={
+            "stripe": stripe_provider,
+            "paypal": paypal_provider,
+        },
+        now_fn=lambda: issued_at,
+    )
+
+    result = orchestrator.create_invoice_for_booking(booking_id=booking_id)
+    invoices = _invoice_rows()
+
+    assert result.outcome == "created"
+    assert stripe_provider.readiness_calls == ["acct_story44_pending_switch"]
+    assert len(stripe_provider.create_calls) == 1
+    assert paypal_provider.readiness_calls == []
+    assert paypal_provider.create_calls == []
+    assert len(invoices) == 1
+    assert invoices[0].payment_provider == "stripe"
+    assert invoices[0].provider_account_id == "acct_story44_pending_switch"
 
 
 def test_billing_orchestrator_voids_paypal_invoice_via_provider_registry():

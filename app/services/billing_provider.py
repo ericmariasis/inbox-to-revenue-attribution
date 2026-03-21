@@ -31,9 +31,17 @@ class BillingProviderResolutionError(LookupError):
         self.provider_name = provider_name
 
 
+BILLING_ACCOUNT_READINESS_ISSUE_COMPLETE_STRIPE_SETUP = "complete_stripe_setup"
+BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL = "confirm_paypal_primary_email"
+BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE = (
+    "enable_paypal_payments_receivable"
+)
+
+
 @dataclass(frozen=True)
 class BillingAccountReadiness:
     can_create_invoices: bool
+    creator_actionable_issue_codes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -122,7 +130,15 @@ def get_billing_account_readiness(
         legacy_readiness = legacy_method(stripe_account_id=provider_account_id)
         can_create_invoices = getattr(legacy_readiness, "charges_enabled", None)
         if isinstance(can_create_invoices, bool):
-            return BillingAccountReadiness(can_create_invoices=can_create_invoices)
+            issue_codes = (
+                ()
+                if can_create_invoices
+                else (BILLING_ACCOUNT_READINESS_ISSUE_COMPLETE_STRIPE_SETUP,)
+            )
+            return BillingAccountReadiness(
+                can_create_invoices=can_create_invoices,
+                creator_actionable_issue_codes=issue_codes,
+            )
 
     raise TypeError("billing provider does not implement account readiness")
 

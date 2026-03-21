@@ -16,7 +16,11 @@ from app.services.booking_attribution import (
     BOOKING_ATTRIBUTION_STATUS_UNATTRIBUTED,
     BOOKING_UNATTRIBUTED_REASON_MISSING_TID,
 )
-from app.services.billing_provider import BillingAccountReadiness
+from app.services.billing_provider import (
+    BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
+    BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
+    BillingAccountReadiness,
+)
 from app.services.email_provider import (
     MagicLinkEmailDeliveryError,
     SupportRequestEmailDeliveryError,
@@ -27,7 +31,7 @@ from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
 )
 from app.services.next_content_experiments import UNSUPPORTED_EXPERIMENTS_SUMMARY
-from app.services.paypal_provider import PayPalConnectOnboardingResult
+from app.services.paypal_provider import PayPalConnectOnboardingResult, PayPalProviderError
 from app.services.rate_limit import (
     DEFAULT_SHARED_RATE_LIMITER,
     SUPPORT_REQUEST_SUBMIT_POLICY,
@@ -962,8 +966,14 @@ class _StubStripeProvider:
 class _StubPayPalProvider:
     billing_provider_name = "paypal"
 
-    def __init__(self, *, readiness: BillingAccountReadiness):
+    def __init__(
+        self,
+        *,
+        readiness: BillingAccountReadiness,
+        readiness_error: PayPalProviderError | None = None,
+    ):
         self._readiness = readiness
+        self._readiness_error = readiness_error
         self.readiness_calls: list[str] = []
         self.start_calls: list[dict[str, str]] = []
 
@@ -973,6 +983,8 @@ class _StubPayPalProvider:
         provider_account_id: str,
     ) -> BillingAccountReadiness:
         self.readiness_calls.append(provider_account_id)
+        if self._readiness_error is not None:
+            raise self._readiness_error
         return self._readiness
 
     def create_connect_onboarding(
@@ -1466,7 +1478,13 @@ def test_setup_and_account_pages_show_paypal_not_ready_truth_and_offer_stripe_sw
         billing_currency="USD",
     )
     provider = _StubPayPalProvider(
-        readiness=BillingAccountReadiness(can_create_invoices=False)
+        readiness=BillingAccountReadiness(
+            can_create_invoices=False,
+            creator_actionable_issue_codes=(
+                BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
+                BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
+            ),
+        )
     )
 
     with _override_app_state("paypal_provider", provider):
@@ -1478,16 +1496,70 @@ def test_setup_and_account_pages_show_paypal_not_ready_truth_and_offer_stripe_sw
     assert setup_response.status_code == 200
     assert account_response.status_code == 200
     assert (
-        "PayPal is connected, but the PayPal account is not ready to create invoices yet."
+        "PayPal is connected, but it still needs this setup work before it can create invoices: confirm the primary email on the connected PayPal business account and finish the PayPal payments-receivable setup."
         in setup_response.text
     )
     assert (
-        "PayPal is connected, but the PayPal account is not ready to create invoices yet."
+        "PayPal is connected, but it still needs this setup work before it can create invoices: confirm the primary email on the connected PayPal business account and finish the PayPal payments-receivable setup."
         in account_response.text
     )
     assert "Start Stripe switch" in account_response.text
     assert 'action="/app/stripe/connect/start"' in account_response.text
     assert provider.readiness_calls == ["merchant_ui_paypal_not_ready", "merchant_ui_paypal_not_ready"]
+
+
+def test_setup_and_account_pages_collapse_paypal_readiness_failures_into_blocked_state():
+    inserted = _insert_creator_user(
+        email=f"ui_paypal_blocked_{uuid.uuid4().hex}@example.com",
+        name="PayPal Blocked Creator",
+        stripe_connect_status="pending",
+        stripe_account_id=None,
+        billing_provider="paypal",
+        billing_connect_status="connected",
+        billing_account_id="merchant_ui_paypal_blocked",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="PayPal Blocked Call",
+        calendly_url="https://calendly.com/example/paypal-blocked",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=False),
+        readiness_error=PayPalProviderError(
+            "paypal merchant status lookup failed",
+            operation="paypal_merchant_status",
+            http_status=500,
+            error_code="INTERNAL_SERVER_ERROR",
+        ),
+    )
+
+    with _override_app_state("paypal_provider", provider):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            setup_response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+            account_response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert setup_response.status_code == 200
+    assert account_response.status_code == 200
+    assert "Connected, but billing setup is blocked" in setup_response.text
+    assert (
+        "PayPal is connected, but its invoice readiness could not be verified right now. Try again later before relying on new bookings."
+        in setup_response.text
+    )
+    assert (
+        "PayPal is connected, but its invoice readiness could not be verified right now. Try again later before relying on new bookings."
+        in account_response.text
+    )
+    assert "Start Stripe switch" in account_response.text
+    assert provider.readiness_calls == ["merchant_ui_paypal_blocked", "merchant_ui_paypal_blocked"]
 
 
 def test_booking_links_page_empty_state_renders_form_and_next_step_copy():
@@ -3703,7 +3775,10 @@ def test_account_page_connected_state_blocks_switch_when_open_invoice_exists():
         response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Provider switching stays blocked until this workspace has no open invoices" in response.text
+    assert (
+        "Provider switching is blocked right now because this workspace still has 1 open invoice. Clear those items before starting a PayPal switch."
+        in response.text
+    )
     assert "Start PayPal switch" not in response.text
     assert 'action="/app/paypal/connect/start"' not in response.text
 
@@ -3783,6 +3858,106 @@ def test_account_page_ready_pending_paypal_switch_shows_commit_action():
     assert "Switch to PayPal" in response.text
     assert 'action="/app/account/billing-switch/commit"' in response.text
     assert provider.readiness_calls == ["merchant_ui_account_switch_ready"]
+
+
+def test_account_page_pending_paypal_switch_shows_actionable_not_ready_steps():
+    connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    inserted = _insert_creator_user(
+        email=f"ui_account_switch_not_ready_{uuid.uuid4().hex}@example.com",
+        name="Not Ready Switch Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_switch_not_ready",
+        stripe_connected_at=connected_at,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_billing_provider_switch_attempt(
+        creator_id=inserted["creator_id"],
+        source_billing_provider="stripe",
+        target_billing_provider="paypal",
+        target_billing_connect_status="connected",
+        target_billing_account_id="merchant_ui_account_switch_not_ready",
+        target_billing_provider_correlation_id="tracking_ui_account_switch_not_ready",
+        target_billing_connected_at=datetime(2026, 3, 21, 12, 15, tzinfo=timezone.utc),
+    )
+    provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(
+            can_create_invoices=False,
+            creator_actionable_issue_codes=(
+                BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
+                BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
+            ),
+        )
+    )
+
+    with _override_app_state("paypal_provider", provider):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert (
+        "PayPal is connected for the pending switch, but it still needs this setup work before it can create invoices: confirm the primary email on the connected PayPal business account and finish the PayPal payments-receivable setup. Stripe stays active until PayPal is ready and you commit the switch."
+        in response.text
+    )
+    assert "Switch to PayPal" not in response.text
+    assert 'action="/app/account/billing-switch/restart"' in response.text
+    assert 'action="/app/account/billing-switch/cancel"' in response.text
+    assert provider.readiness_calls == ["merchant_ui_account_switch_not_ready"]
+
+
+def test_account_page_pending_paypal_switch_collapses_provider_failure_into_blocked_state():
+    connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    inserted = _insert_creator_user(
+        email=f"ui_account_switch_blocked_pending_{uuid.uuid4().hex}@example.com",
+        name="Blocked Switch Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_switch_blocked_pending",
+        stripe_connected_at=connected_at,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_billing_provider_switch_attempt(
+        creator_id=inserted["creator_id"],
+        source_billing_provider="stripe",
+        target_billing_provider="paypal",
+        target_billing_connect_status="connected",
+        target_billing_account_id="merchant_ui_account_switch_blocked_pending",
+        target_billing_provider_correlation_id="tracking_ui_account_switch_blocked_pending",
+        target_billing_connected_at=datetime(2026, 3, 21, 12, 20, tzinfo=timezone.utc),
+    )
+    provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=False),
+        readiness_error=PayPalProviderError(
+            "paypal merchant status lookup failed",
+            operation="paypal_merchant_status",
+            http_status=500,
+            error_code="INTERNAL_SERVER_ERROR",
+        ),
+    )
+
+    with _override_app_state("paypal_provider", provider):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert (
+        "PayPal is connected for the pending switch, but its invoice readiness could not be verified right now. Stripe stays active until the readiness check succeeds and you commit the switch."
+        in response.text
+    )
+    assert "Switch to PayPal" not in response.text
+    assert 'action="/app/account/billing-switch/restart"' in response.text
+    assert 'action="/app/account/billing-switch/cancel"' in response.text
+    assert provider.readiness_calls == ["merchant_ui_account_switch_blocked_pending"]
 
 
 def test_account_page_cancel_switch_route_clears_pending_attempt_without_switching_provider():

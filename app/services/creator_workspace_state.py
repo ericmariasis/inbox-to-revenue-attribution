@@ -23,6 +23,8 @@ class CreatorWorkspaceReadiness:
     paid_invoice_count: int
     billing_provider: str | None = None
     billing_provider_ready: bool | None = None
+    billing_provider_guidance_state: str | None = None
+    billing_provider_actionable_issue_codes: tuple[str, ...] = ()
 
     @property
     def stripe_status(self) -> str:
@@ -49,6 +51,8 @@ def build_creator_workspace_readiness(
     content_items: list[ContentResponse],
     paid_invoice_count: int,
     billing_provider_ready: bool | None = None,
+    billing_provider_guidance_state: str | None = None,
+    billing_provider_actionable_issue_codes: tuple[str, ...] = (),
 ) -> CreatorWorkspaceReadiness:
     normalized_billing_connect_status = raw_billing_connect_status.strip().lower()
     normalized_billing_provider = (
@@ -97,6 +101,8 @@ def build_creator_workspace_readiness(
         paid_invoice_count=paid_invoice_count,
         billing_provider=normalized_billing_provider,
         billing_provider_ready=billing_provider_ready,
+        billing_provider_guidance_state=billing_provider_guidance_state,
+        billing_provider_actionable_issue_codes=billing_provider_actionable_issue_codes,
     )
 
 
@@ -110,6 +116,8 @@ def build_creator_workspace_state(
     blocked_billing_count: int,
     unmatched_payment_count: int,
     billing_provider_ready: bool | None = None,
+    billing_provider_guidance_state: str | None = None,
+    billing_provider_actionable_issue_codes: tuple[str, ...] = (),
 ) -> CreatorWorkspaceState:
     readiness = build_creator_workspace_readiness(
         raw_billing_connect_status=raw_billing_connect_status,
@@ -118,6 +126,8 @@ def build_creator_workspace_state(
         content_items=content_items,
         paid_invoice_count=paid_invoice_count,
         billing_provider_ready=billing_provider_ready,
+        billing_provider_guidance_state=billing_provider_guidance_state,
+        billing_provider_actionable_issue_codes=billing_provider_actionable_issue_codes,
     )
     return CreatorWorkspaceState(
         readiness=readiness,

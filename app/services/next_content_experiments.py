@@ -1,3 +1,4 @@
+import hashlib
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -36,6 +37,19 @@ EXPERIMENT_GENERATOR_TYPE = "deterministic_rules"
 EXPERIMENT_RUN_CONTRACT_VERSION = "next_content_experiments_helper.v1"
 EXPERIMENT_RUN_REDUCER_VERSION = "next_content_experiments.rules.v1"
 EXPERIMENT_RUN_CONFIG_VERSION = "next_content_experiments.helper_config.v1"
+EXPERIMENT_RESULT_SCHEMA_VERSION = "next_content_experiments.result.v1"
+EXPERIMENT_EVIDENCE_INPUT_VERSION = "next_content_experiments.snapshot_inputs.v1"
+EXPERIMENT_FRESHNESS_POLICY_VERSION = "next_content_experiments.freshness_policy.v1"
+EXPERIMENT_CARD_ID_VERSION = "next_content_experiment_card_id.v1"
+EXPERIMENT_AUTHORITATIVE_CONTENT_WINDOW = (
+    "No max age cutoff. Use the current authoritative content snapshot at generation time."
+)
+EXPERIMENT_SETTLED_PAID_WINDOW = (
+    "No max age cutoff. Use all settled attributed paid results available at generation time."
+)
+EXPERIMENT_RERUN_BEHAVIOR = (
+    "Snapshots are immutable after generation. Refreshing the page does not rerun the helper."
+)
 EXPERIMENT_CARD_CLAIM_KIND = "next_content_experiment_card"
 EXPERIMENT_CARD_CLAIM_CONTRACT_VERSION = "next_content_experiment_card.v1"
 EXPERIMENT_CARD_CLAIM_REDUCER_VERSION = EXPERIMENT_RUN_REDUCER_VERSION
@@ -65,6 +79,21 @@ class NextContentExperimentsGenerationSpec:
     card_lineage: HelperGenerationLineage
 
 
+@dataclass(frozen=True)
+class HelperVersionSemantics:
+    schema_version: str
+    evidence_input_version: str
+    generation_config_version: str | None
+
+
+@dataclass(frozen=True)
+class HelperFreshnessPolicy:
+    policy_version: str
+    authoritative_content_window: str
+    settled_paid_window: str
+    rerun_behavior: str
+
+
 CURRENT_NEXT_CONTENT_EXPERIMENTS_GENERATION_SPEC = NextContentExperimentsGenerationSpec(
     run_lineage=HelperGenerationLineage(
         generator_type=EXPERIMENT_GENERATOR_TYPE,
@@ -84,6 +113,13 @@ CURRENT_NEXT_CONTENT_EXPERIMENTS_GENERATION_SPEC = NextContentExperimentsGenerat
     ),
 )
 
+CURRENT_NEXT_CONTENT_EXPERIMENTS_FRESHNESS_POLICY = HelperFreshnessPolicy(
+    policy_version=EXPERIMENT_FRESHNESS_POLICY_VERSION,
+    authoritative_content_window=EXPERIMENT_AUTHORITATIVE_CONTENT_WINDOW,
+    settled_paid_window=EXPERIMENT_SETTLED_PAID_WINDOW,
+    rerun_behavior=EXPERIMENT_RERUN_BEHAVIOR,
+)
+
 
 @dataclass(frozen=True)
 class NextContentExperimentCard:
@@ -93,6 +129,7 @@ class NextContentExperimentCard:
     evidence_summary: str
     content_tids: list[str]
     caution: str
+    card_id: str | None = None
     card_claim_snapshot_id: UUID | None = None
     card_order: int | None = None
     lineage: HelperGenerationLineage | None = None
@@ -104,6 +141,8 @@ class CreatorNextContentExperimentsResult:
     status: ExperimentRunStatus
     summary: str
     lineage: HelperGenerationLineage
+    version_semantics: HelperVersionSemantics
+    freshness_policy: HelperFreshnessPolicy
     experiments: list[NextContentExperimentCard]
     created_at: datetime
 
@@ -127,9 +166,12 @@ class NextContentExperimentPaidEvidenceDetail:
 class CreatorNextContentExperimentCardDrilldown:
     run_claim_snapshot_id: UUID
     card_claim_snapshot_id: UUID
+    card_id: str | None
     created_at: datetime
     run_lineage: HelperGenerationLineage
     card_lineage: HelperGenerationLineage
+    version_semantics: HelperVersionSemantics
+    freshness_policy: HelperFreshnessPolicy
     card_order: int
     title: str
     hypothesis: str
@@ -156,7 +198,7 @@ class _ExperimentCandidate:
 
 @dataclass(frozen=True)
 class CreatorNextContentExperimentCardComparison:
-    card_order: int
+    stable_card_id: str | None
     baseline_card: NextContentExperimentCard | None
     candidate_card: NextContentExperimentCard | None
 
@@ -227,6 +269,7 @@ def create_creator_next_content_experiments_run(
             run_record.cards.append(
                 CreatorExperimentRunCardRecord(
                     claim_snapshot_id=claim_snapshot.id,
+                    card_id=card.card_id,
                     content_tid=card.content_tids[0],
                     title=card.title,
                     hypothesis=card.hypothesis,
@@ -314,6 +357,51 @@ def get_creator_next_content_experiment_card_drilldown(
     )
     if card_record is None:
         return None
+    return _build_experiment_card_drilldown(
+        creator_id=creator_id,
+        run_record=run_record,
+        card_record=card_record,
+        db=db,
+    )
+
+
+def get_creator_next_content_experiment_card_drilldown_by_card_id(
+    *,
+    creator_id: UUID,
+    run_claim_snapshot_id: UUID,
+    card_id: str,
+    db: Session,
+) -> CreatorNextContentExperimentCardDrilldown | None:
+    run_record = db.execute(
+        _creator_experiment_run_query(creator_id=creator_id).where(
+            CreatorExperimentRunRecord.id == run_claim_snapshot_id
+        )
+    ).scalar_one_or_none()
+    if run_record is None:
+        return None
+
+    card_record = next(
+        (card for card in run_record.cards if card.card_id == card_id),
+        None,
+    )
+    if card_record is None:
+        return None
+
+    return _build_experiment_card_drilldown(
+        creator_id=creator_id,
+        run_record=run_record,
+        card_record=card_record,
+        db=db,
+    )
+
+
+def _build_experiment_card_drilldown(
+    *,
+    creator_id: UUID,
+    run_record: CreatorExperimentRunRecord,
+    card_record: CreatorExperimentRunCardRecord,
+    db: Session,
+) -> CreatorNextContentExperimentCardDrilldown | None:
 
     resolved_snapshot = resolve_creator_claim_snapshot(
         creator_id=creator_id,
@@ -325,12 +413,16 @@ def get_creator_next_content_experiment_card_drilldown(
 
     authoritative_content = resolved_snapshot.authoritative_content_evidence
     content = authoritative_content.artifact.content
+    run_lineage = _build_run_lineage(run_record)
     return CreatorNextContentExperimentCardDrilldown(
         run_claim_snapshot_id=run_record.id,
         card_claim_snapshot_id=card_record.claim_snapshot_id,
+        card_id=card_record.card_id,
         created_at=run_record.created_at,
-        run_lineage=_build_run_lineage(run_record),
+        run_lineage=run_lineage,
         card_lineage=_build_claim_lineage(resolved_snapshot.snapshot),
+        version_semantics=_build_version_semantics(run_lineage),
+        freshness_policy=CURRENT_NEXT_CONTENT_EXPERIMENTS_FRESHNESS_POLICY,
         card_order=card_record.card_order,
         title=card_record.title,
         hypothesis=card_record.hypothesis,
@@ -378,25 +470,34 @@ def compare_creator_next_content_experiments_runs(
     if candidate_run is None:
         return None
 
-    max_cards = max(len(baseline_run.experiments), len(candidate_run.experiments))
+    baseline_cards_by_key = {
+        _card_comparison_key(card): card for card in baseline_run.experiments
+    }
+    candidate_cards_by_key = {
+        _card_comparison_key(card): card for card in candidate_run.experiments
+    }
+    ordered_keys: list[tuple[str, str]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for card in baseline_run.experiments + candidate_run.experiments:
+        key = _card_comparison_key(card)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        ordered_keys.append(key)
+
     return CreatorNextContentExperimentsRunComparison(
         baseline_run=baseline_run,
         candidate_run=candidate_run,
         card_comparisons=[
             CreatorNextContentExperimentCardComparison(
-                card_order=index,
-                baseline_card=(
-                    baseline_run.experiments[index - 1]
-                    if index - 1 < len(baseline_run.experiments)
-                    else None
+                stable_card_id=_comparison_card_id(
+                    baseline_cards_by_key.get(key),
+                    candidate_cards_by_key.get(key),
                 ),
-                candidate_card=(
-                    candidate_run.experiments[index - 1]
-                    if index - 1 < len(candidate_run.experiments)
-                    else None
-                ),
+                baseline_card=baseline_cards_by_key.get(key),
+                candidate_card=candidate_cards_by_key.get(key),
             )
-            for index in range(1, max_cards + 1)
+            for key in ordered_keys
         ],
     )
 
@@ -564,6 +665,7 @@ def _build_experiment_result(
 ) -> CreatorNextContentExperimentsResult:
     experiments = [
         NextContentExperimentCard(
+            card_id=card.card_id,
             card_claim_snapshot_id=card.claim_snapshot_id,
             card_order=card.card_order,
             lineage=_build_card_record_lineage(card),
@@ -581,11 +683,14 @@ def _build_experiment_result(
         summary=run_record.summary_text,
         experiments=experiments,
     )
+    run_lineage = _build_run_lineage(run_record)
     return CreatorNextContentExperimentsResult(
         claim_snapshot_id=run_record.id,
         status=run_record.status,
         summary=run_record.summary_text,
-        lineage=_build_run_lineage(run_record),
+        lineage=run_lineage,
+        version_semantics=_build_version_semantics(run_lineage),
+        freshness_policy=CURRENT_NEXT_CONTENT_EXPERIMENTS_FRESHNESS_POLICY,
         experiments=experiments,
         created_at=run_record.created_at,
     )
@@ -626,6 +731,7 @@ def _build_experiment_card(
         evidence_summary=evidence_summary,
         content_tids=[tid],
         caution=caution,
+        card_id=_build_experiment_card_id(candidate=candidate),
     )
 
 
@@ -658,6 +764,42 @@ def _build_claim_lineage(claim_snapshot) -> HelperGenerationLineage:
         contract_version=claim_snapshot.claim_contract_version,
         reducer_version=claim_snapshot.claim_reducer_version,
     )
+
+
+def _build_version_semantics(
+    lineage: HelperGenerationLineage,
+) -> HelperVersionSemantics:
+    return HelperVersionSemantics(
+        schema_version=EXPERIMENT_RESULT_SCHEMA_VERSION,
+        evidence_input_version=EXPERIMENT_EVIDENCE_INPUT_VERSION,
+        generation_config_version=lineage.config_version,
+    )
+
+
+def _build_experiment_card_id(*, candidate: _ExperimentCandidate) -> str:
+    normalized_topic = candidate.primary_topic_label.casefold().strip()
+    seed = f"{EXPERIMENT_CARD_ID_VERSION}:{candidate.content.id}:{normalized_topic}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+    return f"ncexpcard_{digest}"
+
+
+def _card_comparison_key(card: NextContentExperimentCard) -> tuple[str, str]:
+    if card.card_id is not None:
+        return ("card_id", card.card_id)
+    if card.card_order is not None:
+        return ("legacy_order", str(card.card_order))
+    return ("legacy_tid", card.content_tids[0])
+
+
+def _comparison_card_id(
+    baseline_card: NextContentExperimentCard | None,
+    candidate_card: NextContentExperimentCard | None,
+) -> str | None:
+    if baseline_card is not None and baseline_card.card_id is not None:
+        return baseline_card.card_id
+    if candidate_card is not None:
+        return candidate_card.card_id
+    return None
 
 
 def _format_revenue_summary(rows: list[SettledPaidEvidenceRow]) -> str:
@@ -723,6 +865,8 @@ def _validate_experiment_result(
 
 
 def _validate_experiment_card(experiment: NextContentExperimentCard) -> None:
+    if experiment.card_id is not None and not experiment.card_id.strip():
+        raise ValueError("experiment card ids must be non-empty when recorded")
     if not experiment.title.strip():
         raise ValueError("experiment title is required")
     if not experiment.hypothesis.startswith("Test whether "):

@@ -22,6 +22,11 @@ class CreatorExperimentRunCardRecord(Base):
             "claim_snapshot_id",
             name="uq_creator_experiment_run_cards_run_claim_snapshot",
         ),
+        UniqueConstraint(
+            "run_id",
+            "card_id",
+            name="uq_creator_experiment_run_cards_run_card_id",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -35,6 +40,7 @@ class CreatorExperimentRunCardRecord(Base):
         ForeignKey("creator_claim_snapshots.id", ondelete="CASCADE"),
         nullable=False,
     )
+    card_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     content_tid: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     hypothesis: Mapped[str] = mapped_column(Text, nullable=False)

@@ -16,6 +16,9 @@ def test_migrations_upgrade_and_downgrade():
         with engine.connect() as conn:
             inspector = inspect(conn)
             table_names = inspector.get_table_names(schema="public")
+            experiment_run_card_columns = {
+                column["name"] for column in inspector.get_columns("creator_experiment_run_cards")
+            }
             creator_columns = {column["name"] for column in inspector.get_columns("creators")}
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
@@ -36,6 +39,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "creator_experiment_runs" in table_names
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
+            assert "card_id" in experiment_run_card_columns
             assert "calendly_webhook_events" in table_names
             assert "fullscope_webhook_events" in table_names
             assert "content_topic_candidates" in table_names
@@ -83,6 +87,9 @@ def test_migrations_upgrade_and_downgrade():
         with engine.connect() as conn:
             inspector = inspect(conn)
             table_names = inspector.get_table_names(schema="public")
+            experiment_run_card_columns = {
+                column["name"] for column in inspector.get_columns("creator_experiment_run_cards")
+            }
             creator_columns = {column["name"] for column in inspector.get_columns("creators")}
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
@@ -100,6 +107,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "creator_experiment_runs" in table_names
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
+            assert "card_id" not in experiment_run_card_columns
             assert "calendly_webhook_events" in table_names
             assert "fullscope_webhook_events" in table_names
             assert "content_topic_candidates" in table_names
@@ -248,7 +256,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "billing_connect_status" in creator_columns
             assert "billing_connected_at" in creator_columns
             assert "billing_account_id" in creator_columns
-            assert "billing_provider_correlation_id" not in creator_columns
+            assert "billing_provider_correlation_id" in creator_columns
             assert "run_generator_type" not in experiment_run_columns
             assert "run_model_name" not in experiment_run_columns
             assert "run_config_version" not in experiment_run_columns
@@ -321,11 +329,11 @@ def test_migrations_upgrade_and_downgrade():
             assert "payment_provider" in invoice_columns
             assert "provider_account_id" in invoice_columns
             assert "provider_invoice_id" in invoice_columns
-            assert "payment_provider" not in payment_event_columns
-            assert "provider_event_id" not in payment_event_columns
-            assert "provider_event_type" not in payment_event_columns
-            assert "provider_account_id" not in payment_event_columns
-            assert "provider_invoice_id" not in payment_event_columns
+            assert "payment_provider" in payment_event_columns
+            assert "provider_event_id" in payment_event_columns
+            assert "provider_event_type" in payment_event_columns
+            assert "provider_account_id" in payment_event_columns
+            assert "provider_invoice_id" in payment_event_columns
             assert "authoritative_extraction_artifact_id" in content_columns
             assert "attribution_status" in booking_columns
             assert "unattributed_reason" in booking_columns
@@ -848,6 +856,15 @@ def test_migrations_upgrade_and_downgrade():
             }
             assert "billing_amount_cents" in booking_link_columns
             assert "billing_currency" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
 
         command.downgrade(cfg, "-1")
         with engine.connect() as conn:
@@ -1178,6 +1195,7 @@ def test_creator_experiment_run_cards_table_has_expected_columns_fk_indexes_and_
             "id",
             "run_id",
             "claim_snapshot_id",
+            "card_id",
             "content_tid",
             "title",
             "hypothesis",
@@ -1220,6 +1238,11 @@ def test_creator_experiment_run_cards_table_has_expected_columns_fk_indexes_and_
         assert any(
             constraint["name"] == "uq_creator_experiment_run_cards_run_claim_snapshot"
             and constraint["column_names"] == ["run_id", "claim_snapshot_id"]
+            for constraint in unique_constraints
+        )
+        assert any(
+            constraint["name"] == "uq_creator_experiment_run_cards_run_card_id"
+            and constraint["column_names"] == ["run_id", "card_id"]
             for constraint in unique_constraints
         )
 

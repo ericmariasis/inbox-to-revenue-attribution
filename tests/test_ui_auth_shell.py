@@ -112,6 +112,15 @@ def _operator_allowlist_settings(*emails: str):
     return settings.model_copy(update={"operator_email_allowlist": ",".join(emails)})
 
 
+def _live_paypal_operator_only_settings(*emails: str):
+    return _operator_allowlist_settings(*emails).model_copy(
+        update={
+            "paypal_environment": "live",
+            "paypal_live_creator_access": "operator_only",
+        }
+    )
+
+
 def _insert_creator_user(
     *,
     email: str,
@@ -1321,6 +1330,61 @@ def test_setup_home_pending_billing_state_shows_provider_choice_and_checklist():
     assert 'href="/app/reports"' in response.text
     assert 'class="wrap-anywhere"' in response.text
     assert "Blocked billing and unresolved payments will appear on" in response.text
+
+
+def test_setup_home_pending_billing_state_hides_paypal_choice_for_non_operator_live_creator():
+    inserted = _insert_creator_user(
+        email=f"ui_pending_live_{uuid.uuid4().hex}@example.com",
+        name="Pending Live Creator",
+        stripe_connect_status="pending",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    settings = _live_paypal_operator_only_settings("ops@creatortrust.co")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Choose billing provider" in response.text
+    assert "Choose Stripe to start billing setup." in response.text
+    assert "Start Stripe setup" in response.text
+    assert 'action="/app/stripe/connect/start"' in response.text
+    assert "Start PayPal setup" not in response.text
+    assert 'action="/app/paypal/connect/start"' not in response.text
+    assert "Choose Stripe or PayPal to start billing setup." not in response.text
+
+
+def test_setup_home_pending_billing_state_keeps_paypal_choice_for_allowlisted_live_operator():
+    inserted = _insert_creator_user(
+        email=f"ui_pending_live_operator_{uuid.uuid4().hex}@example.com",
+        name="Pending Live Operator",
+        stripe_connect_status="pending",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    settings = _live_paypal_operator_only_settings(inserted["email"])
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Choose Stripe or PayPal to start billing setup." in response.text
+    assert "Start Stripe setup" in response.text
+    assert "Start PayPal setup" in response.text
+    assert 'action="/app/paypal/connect/start"' in response.text
 
 
 def test_setup_home_missing_billing_defaults_state_shows_blocked_next_action():
@@ -3645,6 +3709,35 @@ def test_setup_home_disconnected_paypal_state_shows_reconnect_cta():
     assert 'action="/app/paypal/connect/start"' in response.text
 
 
+def test_setup_home_disconnected_paypal_state_hides_reconnect_for_non_operator_live_creator():
+    inserted = _insert_creator_user(
+        email=f"ui_paypal_disconnected_live_{uuid.uuid4().hex}@example.com",
+        name="Disconnected Live PayPal Creator",
+        stripe_connect_status="pending",
+        billing_provider="paypal",
+        billing_connect_status="disconnected",
+        billing_account_id="merchant_ui_disconnected_live",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    settings = _live_paypal_operator_only_settings("ops@creatortrust.co")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Billing connection is disconnected" in response.text
+    assert "PayPal setup is not yet available for general live creators." in response.text
+    assert "Reconnect PayPal" not in response.text
+    assert 'action="/app/paypal/connect/start"' not in response.text
+
+
 def test_setup_home_connected_stripe_state_shows_connected_details():
     connected_at = datetime.now(timezone.utc).replace(microsecond=0)
     inserted = _insert_creator_user(
@@ -3722,6 +3815,41 @@ def test_account_page_connected_state_renders_switch_entry_point_and_policy_copy
     assert 'href="/app/account?confirm=account-deletion#danger-zone"' in response.text
     assert "Submit reset request" not in response.text
     assert "Submit deletion request" not in response.text
+
+
+def test_account_page_connected_state_hides_paypal_switch_for_non_operator_live_creator():
+    connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    inserted = _insert_creator_user(
+        email=f"ui_account_connected_live_{uuid.uuid4().hex}@example.com",
+        name="Account Connected Live Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_connected_live",
+        stripe_connected_at=connected_at,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Live Strategy",
+        calendly_url="https://calendly.com/example/live-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    settings = _live_paypal_operator_only_settings("ops@creatortrust.co")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "PayPal setup is not yet available for general live creators." in response.text
+    assert "Start PayPal switch" not in response.text
+    assert 'action="/app/paypal/connect/start"' not in response.text
 
 
 def test_account_page_connected_state_blocks_switch_when_open_invoice_exists():
@@ -3819,6 +3947,86 @@ def test_account_page_pending_paypal_switch_shows_resume_restart_and_cancel_acti
     assert 'action="/app/account/billing-switch/cancel"' in response.text
 
 
+def test_account_page_pending_paypal_switch_hides_resume_and_restart_for_non_operator_live_creator():
+    connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    inserted = _insert_creator_user(
+        email=f"ui_account_switch_pending_live_{uuid.uuid4().hex}@example.com",
+        name="Pending Switch Live Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_switch_pending_live",
+        stripe_connected_at=connected_at,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_billing_provider_switch_attempt(
+        creator_id=inserted["creator_id"],
+        source_billing_provider="stripe",
+        target_billing_provider="paypal",
+        target_billing_connect_status="pending",
+        target_billing_provider_correlation_id="tracking_ui_account_switch_pending_live",
+    )
+    settings = _live_paypal_operator_only_settings("ops@creatortrust.co")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Pending switch target" in response.text
+    assert "PayPal setup is not yet available for general live creators." in response.text
+    assert "Resume PayPal setup" not in response.text
+    assert "Restart switch" not in response.text
+    assert 'action="/app/account/billing-switch/cancel"' in response.text
+    assert 'action="/app/paypal/connect/start"' not in response.text
+
+
+def test_account_page_restart_switch_route_redirects_non_operator_live_creator_to_unavailable_notice():
+    connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    inserted = _insert_creator_user(
+        email=f"ui_account_switch_restart_live_{uuid.uuid4().hex}@example.com",
+        name="Restart Switch Live Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_switch_restart_live",
+        stripe_connected_at=connected_at,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_billing_provider_switch_attempt(
+        creator_id=inserted["creator_id"],
+        source_billing_provider="stripe",
+        target_billing_provider="paypal",
+        target_billing_connect_status="pending",
+        target_billing_provider_correlation_id="tracking_ui_account_switch_restart_live",
+    )
+    provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=True)
+    )
+    settings = _live_paypal_operator_only_settings("ops@creatortrust.co")
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.post(
+                    "/app/account/billing-switch/restart",
+                    headers=HTML_ACCEPT_HEADERS,
+                    follow_redirects=False,
+                )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/app/account?status=paypal-unavailable"
+    assert provider.start_calls == []
+
+
 def test_account_page_ready_pending_paypal_switch_shows_commit_action():
     connected_at = datetime.now(timezone.utc).replace(microsecond=0)
     inserted = _insert_creator_user(
@@ -3858,6 +4066,103 @@ def test_account_page_ready_pending_paypal_switch_shows_commit_action():
     assert "Switch to PayPal" in response.text
     assert 'action="/app/account/billing-switch/commit"' in response.text
     assert provider.readiness_calls == ["merchant_ui_account_switch_ready"]
+
+
+def test_account_page_ready_pending_paypal_switch_hides_commit_for_non_operator_live_creator():
+    connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    inserted = _insert_creator_user(
+        email=f"ui_account_switch_ready_live_{uuid.uuid4().hex}@example.com",
+        name="Ready Switch Live Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_switch_ready_live",
+        stripe_connected_at=connected_at,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_billing_provider_switch_attempt(
+        creator_id=inserted["creator_id"],
+        source_billing_provider="stripe",
+        target_billing_provider="paypal",
+        target_billing_connect_status="connected",
+        target_billing_account_id="merchant_ui_account_switch_ready_live",
+        target_billing_provider_correlation_id="tracking_ui_account_switch_ready_live",
+        target_billing_connected_at=datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc),
+    )
+    provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=True)
+    )
+    settings = _live_paypal_operator_only_settings("ops@creatortrust.co")
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Pending target account" in response.text
+    assert "PayPal setup is not yet available for general live creators." in response.text
+    assert "Switch to PayPal" not in response.text
+    assert "Restart switch" not in response.text
+    assert 'action="/app/account/billing-switch/cancel"' in response.text
+    assert provider.readiness_calls == ["merchant_ui_account_switch_ready_live"]
+
+
+def test_account_page_commit_switch_route_redirects_non_operator_live_creator_to_unavailable_notice():
+    connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    inserted = _insert_creator_user(
+        email=f"ui_account_switch_commit_live_{uuid.uuid4().hex}@example.com",
+        name="Commit Switch Live Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_account_switch_commit_live",
+        stripe_connected_at=connected_at,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    _insert_billing_provider_switch_attempt(
+        creator_id=inserted["creator_id"],
+        source_billing_provider="stripe",
+        target_billing_provider="paypal",
+        target_billing_connect_status="connected",
+        target_billing_account_id="merchant_ui_account_switch_commit_live",
+        target_billing_provider_correlation_id="tracking_ui_account_switch_commit_live",
+        target_billing_connected_at=datetime(2026, 3, 21, 13, 0, tzinfo=timezone.utc),
+    )
+    settings = _live_paypal_operator_only_settings("ops@creatortrust.co")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.post(
+                "/app/account/billing-switch/commit",
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/app/account?status=paypal-unavailable"
+    with _engine().connect() as conn:
+        attempt_rows = conn.execute(
+            text("SELECT id FROM billing_provider_switch_attempts WHERE creator_id = :creator_id"),
+            {"creator_id": inserted["creator_id"]},
+        ).mappings().all()
+        creator_row = conn.execute(
+            text(
+                "SELECT billing_provider, billing_account_id FROM creators WHERE id = :creator_id"
+            ),
+            {"creator_id": inserted["creator_id"]},
+        ).mappings().one()
+    assert len(attempt_rows) == 1
+    assert creator_row["billing_provider"] == "stripe"
+    assert creator_row["billing_account_id"] == "acct_ui_account_switch_commit_live"
 
 
 def test_account_page_pending_paypal_switch_shows_actionable_not_ready_steps():
@@ -4729,6 +5034,72 @@ def test_setup_home_paypal_connect_cta_redirects_to_paypal_onboarding():
     assert len(provider.start_calls) == 1
     assert provider.start_calls[0]["tracking_id"].startswith("ccp-paypal-")
     assert "state=" in provider.start_calls[0]["return_url"]
+
+
+def test_setup_home_paypal_connect_cta_redirects_non_operator_live_creator_to_unavailable_notice():
+    inserted = _insert_creator_user(
+        email=f"ui_paypal_cta_live_{uuid.uuid4().hex}@example.com",
+        name="PayPal CTA Live Creator",
+        stripe_connect_status="pending",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=True)
+    )
+    settings = _live_paypal_operator_only_settings("ops@creatortrust.co")
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                start_response = client.post(
+                    "/app/paypal/connect/start",
+                    headers=HTML_ACCEPT_HEADERS,
+                    follow_redirects=False,
+                )
+
+    assert start_response.status_code == 303
+    assert start_response.headers["location"] == "/app/account?status=paypal-unavailable"
+    assert provider.start_calls == []
+
+
+def test_setup_home_paypal_connect_cta_keeps_live_operator_path():
+    inserted = _insert_creator_user(
+        email=f"ui_paypal_cta_live_operator_{uuid.uuid4().hex}@example.com",
+        name="PayPal CTA Live Operator",
+        stripe_connect_status="pending",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=True)
+    )
+    settings = _live_paypal_operator_only_settings(inserted["email"])
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                start_response = client.post(
+                    "/app/paypal/connect/start",
+                    headers=HTML_ACCEPT_HEADERS,
+                    follow_redirects=False,
+                )
+
+    assert start_response.status_code == 303
+    assert start_response.headers["location"].startswith(
+        "https://www.sandbox.paypal.com/bizsignup/partner/entry"
+    )
+    assert len(provider.start_calls) == 1
 
 
 def test_browser_stripe_connect_callback_interrupted_redirects_to_setup_recovery():

@@ -313,6 +313,11 @@ ACCOUNT_REQUEST_STATUS_MESSAGES = {
         "body": "Start a new provider switch from the current billing connection when you are ready.",
         "notice_class": "notice error",
     },
+    "paypal-unavailable": {
+        "title": "PayPal setup is not available yet",
+        "body": "PayPal setup is not yet available for general live creators. Stripe remains the supported self-serve billing path for now.",
+        "notice_class": "notice error",
+    },
 }
 OPERATOR_SUPPORT_REQUEST_STATUS_MESSAGES = {
     "status-updated": {
@@ -333,6 +338,10 @@ _BILLING_PROVIDER_SETUP_STATE_PENDING_CONNECTION = "pending_connection"
 _BILLING_PROVIDER_SETUP_STATE_READY = "ready"
 _BILLING_PROVIDER_SETUP_STATE_NOT_READY = "not_ready"
 _BILLING_PROVIDER_SETUP_STATE_BLOCKED = "blocked"
+_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY = (
+    "PayPal setup is not yet available for general live creators. "
+    "Stripe remains the supported self-serve billing path for now."
+)
 
 
 @dataclass(frozen=True)
@@ -445,6 +454,10 @@ def creator_app_shell(
         request=request,
         current_user=current_user,
     )
+    paypal_available_to_creator = _paypal_available_to_creator(
+        request=request,
+        current_user=current_user,
+    )
     workspace_state = build_creator_workspace_state(
         raw_billing_connect_status=current_user.creator.resolved_billing_connect_status,
         raw_billing_provider=current_user.creator.resolved_billing_provider,
@@ -469,6 +482,7 @@ def creator_app_shell(
             current_user=current_user,
             workspace_state=workspace_state,
             status_value=status_value,
+            paypal_available_to_creator=paypal_available_to_creator,
         )
     )
 
@@ -543,6 +557,10 @@ def creator_account_page(
             state=_BILLING_PROVIDER_SETUP_STATE_NOT_APPLICABLE
         )
     )
+    paypal_available_to_creator = _paypal_available_to_creator(
+        request=request,
+        current_user=current_user,
+    )
     return _html_response(
         _render_account_page(
             current_user=current_user,
@@ -554,6 +572,7 @@ def creator_account_page(
             switch_attempt=switch_attempt,
             switch_clean_state=switch_clean_state,
             switch_target_guidance=switch_target_guidance,
+            paypal_available_to_creator=paypal_available_to_creator,
         )
     )
 
@@ -615,6 +634,20 @@ def creator_billing_switch_commit(
     if current_user is None:
         return _redirect("/sign-in", clear_session=should_clear_cookie)
 
+    switch_attempt = get_billing_provider_switch_attempt(
+        db=db,
+        creator_id=current_user.creator_id,
+    )
+    if (
+        switch_attempt is not None
+        and switch_attempt.target_billing_provider == BILLING_PROVIDER_PAYPAL
+        and not _paypal_available_to_creator(
+            request=request,
+            current_user=current_user,
+        )
+    ):
+        return _redirect("/app/account?status=paypal-unavailable")
+
     try:
         commit_billing_provider_switch_attempt(
             db=db,
@@ -649,6 +682,14 @@ def creator_billing_switch_restart(
 
     try:
         restart_target_provider = switch_attempt.target_billing_provider
+        if (
+            restart_target_provider == BILLING_PROVIDER_PAYPAL
+            and not _paypal_available_to_creator(
+                request=request,
+                current_user=current_user,
+            )
+        ):
+            return _redirect("/app/account?status=paypal-unavailable")
         restart_billing_provider_switch_attempt(
             db=db,
             creator=current_user.creator,
@@ -797,6 +838,12 @@ def creator_paypal_connect_start(
     should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
     if current_user is None:
         return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    if not _paypal_available_to_creator(
+        request=request,
+        current_user=current_user,
+    ):
+        return _redirect("/app/account?status=paypal-unavailable")
 
     try:
         start_response = build_paypal_connect_start_response(
@@ -2018,6 +2065,7 @@ def _render_app_shell(
     current_user: AuthUser,
     workspace_state: CreatorWorkspaceState,
     status_value: str | None,
+    paypal_available_to_creator: bool,
 ) -> str:
     readiness = workspace_state.readiness
     creator_name = html.escape(current_user.creator.name)
@@ -2029,10 +2077,12 @@ def _render_app_shell(
     billing_status = _billing_setup_home_state(
         readiness=readiness,
         show_provider_choice=show_provider_choice,
+        paypal_available_to_creator=paypal_available_to_creator,
     )
     setup_progress = _build_setup_home_progress(
         workspace_state=workspace_state,
         show_provider_choice=show_provider_choice,
+        paypal_available_to_creator=paypal_available_to_creator,
     )
 
     billing_detail_lines = []
@@ -2052,7 +2102,9 @@ def _render_app_shell(
         )
     billing_action = ""
     if show_provider_choice:
-        billing_action = _render_billing_provider_choice_actions()
+        billing_action = _render_billing_provider_choice_actions(
+            paypal_available_to_creator=paypal_available_to_creator
+        )
     elif billing_status["button_label"]:
         billing_action = f"""
         <form action="{html.escape(billing_status['button_href'])}" method="post">
@@ -2101,13 +2153,16 @@ def _render_app_shell(
           {_render_setup_checklist_items(setup_progress['steps'])}
         </ul>
       </article>
-      <article class="card accent stack">
+        <article class="card accent stack">
         <div>
           <p class="eyebrow">Next step</p>
           <h2>{html.escape(setup_progress['next_action']['title'])}</h2>
         </div>
         <p>{setup_progress['next_action']['copy_html']}</p>
-        {_render_setup_next_action_cta(setup_progress['next_action'])}
+        {_render_setup_next_action_cta(
+            setup_progress['next_action'],
+            paypal_available_to_creator=paypal_available_to_creator,
+        )}
         <p class="footnote">{_setup_attention_copy(setup_progress['attention_count'])}</p>
       </article>
     </section>
@@ -2126,6 +2181,7 @@ def _render_account_page(
     switch_attempt: BillingProviderSwitchAttempt | None,
     switch_clean_state: BillingProviderSwitchCleanState,
     switch_target_guidance: _BillingProviderSetupGuidance,
+    paypal_available_to_creator: bool,
 ) -> str:
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
@@ -2140,6 +2196,7 @@ def _render_account_page(
         switch_attempt=switch_attempt,
         switch_clean_state=switch_clean_state,
         switch_target_guidance=switch_target_guidance,
+        paypal_available_to_creator=paypal_available_to_creator,
     )
     booking_links_count = readiness.booking_links_count
     trackable_booking_links_count = readiness.trackable_booking_links_count
@@ -2659,9 +2716,15 @@ def _render_setup_checklist_items(steps: list[dict[str, object]]) -> str:
     return "".join(items)
 
 
-def _render_setup_next_action_cta(next_action: dict[str, str]) -> str:
+def _render_setup_next_action_cta(
+    next_action: dict[str, str],
+    *,
+    paypal_available_to_creator: bool,
+) -> str:
     if next_action["action_method"] == "provider-choice":
-        return _render_billing_provider_choice_actions()
+        return _render_billing_provider_choice_actions(
+            paypal_available_to_creator=paypal_available_to_creator
+        )
     if next_action["action_method"] == "post":
         return f"""
         <form action="{html.escape(next_action['action_href'])}" method="post">
@@ -2891,6 +2954,7 @@ def _build_setup_home_progress(
     *,
     workspace_state: CreatorWorkspaceState,
     show_provider_choice: bool,
+    paypal_available_to_creator: bool,
 ) -> dict[str, object]:
     readiness = workspace_state.readiness
     normalized_billing_status = readiness.billing_connect_status
@@ -2957,21 +3021,36 @@ def _build_setup_home_progress(
         provider_action = _billing_provider_connect_action(
             provider_name=readiness.billing_provider,
             reconnect=True,
+            paypal_available_to_creator=paypal_available_to_creator,
         )
         billing_step_copy_html = (
             f"{html.escape(_billing_provider_label(readiness.billing_provider))} was connected before, "
             "but it is disconnected now. Reconnect it before new bookings can move into invoicing."
         )
-        next_action = {
-            "title": "Reconnect billing setup",
-            "copy_html": (
-                f"Billing setup is the first setup blocker. {html.escape(provider_action['label'])} "
-                "from this page before you rely on new bookings."
-            ),
-            "action_label": provider_action["label"],
-            "action_href": provider_action["href"],
-            "action_method": "post",
-        }
+        if provider_action is None:
+            billing_step_copy_html = (
+                f"{html.escape(_billing_provider_label(readiness.billing_provider))} was connected before, "
+                "but it is disconnected now. "
+                f"{_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY}"
+            )
+            next_action = {
+                "title": "Review billing connection",
+                "copy_html": _PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY,
+                "action_label": "Open account",
+                "action_href": "/app/account",
+                "action_method": "get",
+            }
+        else:
+            next_action = {
+                "title": "Reconnect billing setup",
+                "copy_html": (
+                    f"Billing setup is the first setup blocker. {html.escape(provider_action['label'])} "
+                    "from this page before you rely on new bookings."
+                ),
+                "action_label": provider_action["label"],
+                "action_href": provider_action["href"],
+                "action_method": "post",
+            }
         billing_step = _setup_step(
             title="Connect billing provider",
             copy_html=billing_step_copy_html,
@@ -2985,36 +3064,54 @@ def _build_setup_home_progress(
             billing_step_copy_html = (
                 "Choose Stripe or PayPal to start billing setup. No billing provider is preselected "
                 "for this workspace."
+                if paypal_available_to_creator
+                else "Choose Stripe to start billing setup. PayPal setup is not yet available for general live creators."
             )
             next_action = {
                 "title": "Choose billing provider",
                 "copy_html": (
                     "Choose Stripe or PayPal to start billing setup. This release still keeps one "
                     "active billing provider per creator."
+                    if paypal_available_to_creator
+                    else "Choose Stripe to start billing setup. PayPal setup is not yet available for general live creators."
                 ),
                 "action_label": "",
                 "action_href": "",
                 "action_method": "provider-choice",
+                "paypal_available_to_creator": (
+                    "true" if paypal_available_to_creator else "false"
+                ),
             }
         else:
             provider_action = _billing_provider_connect_action(
                 provider_name=readiness.billing_provider,
                 reconnect=False,
+                paypal_available_to_creator=paypal_available_to_creator,
             )
-            billing_step_copy_html = (
-                f"Finish {html.escape(_billing_provider_label(readiness.billing_provider))} "
-                "setup so this workspace has a payment account ready for invoicing."
-            )
-            next_action = {
-                "title": "Finish billing setup",
-                "copy_html": (
-                    f"{html.escape(provider_action['label'])} so the rest of the setup flow leads "
-                    "to a billable workspace."
-                ),
-                "action_label": provider_action["label"],
-                "action_href": provider_action["href"],
-                "action_method": "post",
-            }
+            if provider_action is None:
+                billing_step_copy_html = _PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY
+                next_action = {
+                    "title": "Review billing setup",
+                    "copy_html": _PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY,
+                    "action_label": "Open account",
+                    "action_href": "/app/account",
+                    "action_method": "get",
+                }
+            else:
+                billing_step_copy_html = (
+                    f"Finish {html.escape(_billing_provider_label(readiness.billing_provider))} "
+                    "setup so this workspace has a payment account ready for invoicing."
+                )
+                next_action = {
+                    "title": "Finish billing setup",
+                    "copy_html": (
+                        f"{html.escape(provider_action['label'])} so the rest of the setup flow leads "
+                        "to a billable workspace."
+                    ),
+                    "action_label": provider_action["label"],
+                    "action_href": provider_action["href"],
+                    "action_method": "post",
+                }
         billing_step = _setup_step(
             title="Connect billing provider",
             copy_html=billing_step_copy_html,
@@ -5770,6 +5867,7 @@ def _billing_setup_home_state(
     *,
     readiness: CreatorWorkspaceReadiness,
     show_provider_choice: bool,
+    paypal_available_to_creator: bool,
 ) -> dict[str, str]:
     normalized_status = readiness.billing_connect_status
     if normalized_status == "connected":
@@ -5812,17 +5910,26 @@ def _billing_setup_home_state(
         provider_action = _billing_provider_connect_action(
             provider_name=readiness.billing_provider,
             reconnect=True,
+            paypal_available_to_creator=paypal_available_to_creator,
         )
         description = (
             f"This workspace was connected to {html.escape(_billing_provider_label(readiness.billing_provider))} "
             "before, but it is disconnected now. Reconnect it before new bookings can move into invoicing."
         )
+        button_label = provider_action["label"] if provider_action is not None else ""
+        button_href = provider_action["href"] if provider_action is not None else ""
+        if provider_action is None:
+            description = (
+                f"This workspace was connected to {html.escape(_billing_provider_label(readiness.billing_provider))} "
+                "before, but it is disconnected now. "
+                f"{_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY}"
+            )
         return {
             "label": "Disconnected",
             "heading": "Billing connection is disconnected",
             "description": description,
-            "button_label": provider_action["label"],
-            "button_href": provider_action["href"],
+            "button_label": button_label,
+            "button_href": button_href,
             "badge_class": "disconnected",
             "item_class": "todo",
             "checklist_label": "Blocked",
@@ -5833,6 +5940,9 @@ def _billing_setup_home_state(
         description = (
             "A billing provider is required before this workspace can turn new bookings into invoices. "
             "Choose Stripe or PayPal to continue. No billing provider is preselected for this workspace."
+            if paypal_available_to_creator
+            else "A billing provider is required before this workspace can turn new bookings into invoices. "
+            "Choose Stripe to continue. PayPal setup is not yet available for general live creators."
         )
         button_label = ""
         button_href = ""
@@ -5840,13 +5950,19 @@ def _billing_setup_home_state(
         provider_action = _billing_provider_connect_action(
             provider_name=readiness.billing_provider,
             reconnect=False,
+            paypal_available_to_creator=paypal_available_to_creator,
         )
-        description = (
-            "A billing provider is required before this workspace can turn new bookings into invoices. "
-            "Start or resume the connection from this page."
-        )
-        button_label = provider_action["label"]
-        button_href = provider_action["href"]
+        if provider_action is None:
+            description = _PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY
+            button_label = ""
+            button_href = ""
+        else:
+            description = (
+                "A billing provider is required before this workspace can turn new bookings into invoices. "
+                "Start or resume the connection from this page."
+            )
+            button_label = provider_action["label"]
+            button_href = provider_action["href"]
     return {
         "label": "Pending",
         "heading": "Billing setup is still pending",
@@ -5868,6 +5984,7 @@ def _account_billing_management_state(
     switch_attempt: BillingProviderSwitchAttempt | None,
     switch_clean_state: BillingProviderSwitchCleanState,
     switch_target_guidance: _BillingProviderSetupGuidance,
+    paypal_available_to_creator: bool,
 ) -> dict[str, str]:
     normalized_status = readiness.billing_connect_status
     if normalized_status == "connected":
@@ -5889,20 +6006,36 @@ def _account_billing_management_state(
                 switch_attempt=switch_attempt,
                 switch_clean_state=switch_clean_state,
                 switch_target_guidance=switch_target_guidance,
+                paypal_available_to_creator=paypal_available_to_creator,
             )
+            if (
+                switch_attempt.target_billing_provider == BILLING_PROVIDER_PAYPAL
+                and not paypal_available_to_creator
+            ):
+                body = (
+                    f"{body} {_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY} "
+                    "Cancel the pending switch if you need to stay on the current provider."
+                )
         elif switch_clean_state.is_clean:
-            body = (
-                f"{body} You can start a {target_provider_label} switch here. "
-                f"{current_provider_label} stays active until {target_provider_label} is connected, "
-                "ready, and you commit the switch."
+            target_provider_action = _billing_provider_connect_action(
+                provider_name=target_provider_name,
+                reconnect=False,
+                paypal_available_to_creator=paypal_available_to_creator,
             )
-            actions_html = _render_post_action_button(
-                action=_billing_provider_connect_action(
-                    provider_name=target_provider_name,
-                    reconnect=False,
-                ),
-                label=f"Start {target_provider_label} switch",
-            )
+            if target_provider_action is None:
+                body = (
+                    f"{body} {_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY}"
+                )
+            else:
+                body = (
+                    f"{body} You can start a {target_provider_label} switch here. "
+                    f"{current_provider_label} stays active until {target_provider_label} is connected, "
+                    "ready, and you commit the switch."
+                )
+                actions_html = _render_post_action_button(
+                    action=target_provider_action,
+                    label=f"Start {target_provider_label} switch",
+                )
         else:
             body = (
                 f"{body} Provider switching is blocked right now because this workspace still has "
@@ -5920,16 +6053,23 @@ def _account_billing_management_state(
         provider_action = _billing_provider_connect_action(
             provider_name=readiness.billing_provider,
             reconnect=True,
+            paypal_available_to_creator=paypal_available_to_creator,
         )
         body = (
             f"This workspace is not currently connected to {html.escape(_billing_provider_label(readiness.billing_provider))} "
             "for invoicing. You can reconnect it here when you are ready."
         )
+        actions_html = _render_post_action_button(action=provider_action) if provider_action is not None else ""
+        if provider_action is None:
+            body = (
+                f"This workspace is not currently connected to {html.escape(_billing_provider_label(readiness.billing_provider))} "
+                f"for invoicing. {_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY}"
+            )
         return {
             "label": "Disconnected",
             "body": body,
             "badge_class": "disconnected",
-            "actions_html": _render_post_action_button(action=provider_action),
+            "actions_html": actions_html,
         }
 
     if show_provider_choice:
@@ -5937,18 +6077,31 @@ def _account_billing_management_state(
             "This workspace is not currently connected to a billing provider for invoicing. "
             "Choose Stripe or PayPal here when you are ready. No billing provider is preselected "
             "for this workspace."
+            if paypal_available_to_creator
+            else "This workspace is not currently connected to a billing provider for invoicing. "
+            "Choose Stripe here when you are ready. PayPal setup is not yet available for general live creators."
         )
-        actions_html = _render_billing_provider_choice_actions()
+        actions_html = _render_billing_provider_choice_actions(
+            paypal_available_to_creator=paypal_available_to_creator
+        )
     else:
         provider_action = _billing_provider_connect_action(
             provider_name=readiness.billing_provider,
             reconnect=False,
+            paypal_available_to_creator=paypal_available_to_creator,
         )
-        body = (
-            "This workspace is not currently connected to a billing provider for invoicing. "
-            "You can continue the current setup here when you are ready."
-        )
-        actions_html = _render_post_action_button(action=provider_action)
+        if provider_action is None:
+            body = (
+                "This workspace is not currently connected to a billing provider for invoicing. "
+                f"{_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY}"
+            )
+            actions_html = ""
+        else:
+            body = (
+                "This workspace is not currently connected to a billing provider for invoicing. "
+                "You can continue the current setup here when you are ready."
+            )
+            actions_html = _render_post_action_button(action=provider_action)
     return {
         "label": "Pending",
         "body": body,
@@ -6021,36 +6174,49 @@ def _render_billing_provider_switch_attempt_actions(
     switch_attempt: BillingProviderSwitchAttempt,
     switch_clean_state: BillingProviderSwitchCleanState,
     switch_target_guidance: _BillingProviderSetupGuidance,
+    paypal_available_to_creator: bool,
 ) -> str:
     target_provider_label = _billing_provider_label(switch_attempt.target_billing_provider)
     actions: list[str] = []
+    paypal_target_available = (
+        switch_attempt.target_billing_provider != BILLING_PROVIDER_PAYPAL
+        or paypal_available_to_creator
+    )
     if (
         switch_attempt.target_billing_connect_status != "connected"
         or switch_attempt.target_billing_account_id is None
-    ):
-        actions.append(
-            _render_post_action_button(
-                action=_billing_provider_connect_action(
-                    provider_name=switch_attempt.target_billing_provider,
-                    reconnect=False,
-                ),
-                label=f"Resume {target_provider_label} setup",
-            )
+    ) and paypal_target_available:
+        target_action = _billing_provider_connect_action(
+            provider_name=switch_attempt.target_billing_provider,
+            reconnect=False,
+            paypal_available_to_creator=paypal_available_to_creator,
         )
-    elif switch_target_guidance.ready is True and switch_clean_state.is_clean:
+        if target_action is not None:
+            actions.append(
+                _render_post_action_button(
+                    action=target_action,
+                    label=f"Resume {target_provider_label} setup",
+                )
+            )
+    elif (
+        switch_target_guidance.ready is True
+        and switch_clean_state.is_clean
+        and paypal_target_available
+    ):
         actions.append(
             _render_post_action_button(
                 action={"href": "/app/account/billing-switch/commit", "label": ""},
                 label=f"Switch to {target_provider_label}",
             )
         )
-    actions.append(
-        _render_post_action_button(
-            action={"href": "/app/account/billing-switch/restart", "label": ""},
-            label="Restart switch",
-            secondary=True,
+    if paypal_target_available:
+        actions.append(
+            _render_post_action_button(
+                action={"href": "/app/account/billing-switch/restart", "label": ""},
+                label="Restart switch",
+                secondary=True,
+            )
         )
-    )
     actions.append(
         _render_post_action_button(
             action={"href": "/app/account/billing-switch/cancel", "label": ""},
@@ -6155,9 +6321,12 @@ def _billing_provider_connect_action(
     *,
     provider_name: str | None,
     reconnect: bool,
-) -> dict[str, str]:
+    paypal_available_to_creator: bool = True,
+) -> dict[str, str] | None:
     normalized_provider = (provider_name or BILLING_PROVIDER_STRIPE).strip().lower()
     if normalized_provider == BILLING_PROVIDER_PAYPAL:
+        if not paypal_available_to_creator:
+            return None
         return {
             "label": "Reconnect PayPal" if reconnect else "Start PayPal setup",
             "href": "/app/paypal/connect/start",
@@ -6168,7 +6337,10 @@ def _billing_provider_connect_action(
     }
 
 
-def _render_billing_provider_choice_actions() -> str:
+def _render_billing_provider_choice_actions(
+    *,
+    paypal_available_to_creator: bool,
+) -> str:
     stripe_action = _billing_provider_connect_action(
         provider_name=BILLING_PROVIDER_STRIPE,
         reconnect=False,
@@ -6176,7 +6348,22 @@ def _render_billing_provider_choice_actions() -> str:
     paypal_action = _billing_provider_connect_action(
         provider_name=BILLING_PROVIDER_PAYPAL,
         reconnect=False,
+        paypal_available_to_creator=paypal_available_to_creator,
     )
+    paypal_card_html = ""
+    if paypal_action is not None:
+        paypal_card_html = f"""
+        <article class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Provider option</p>
+            <h2>PayPal</h2>
+          </div>
+          <p>Connect PayPal for invoice-based billing through the same creator setup flow.</p>
+          <form action="{html.escape(paypal_action['href'])}" method="post">
+            <button type="submit">{html.escape(paypal_action['label'])}</button>
+          </form>
+        </article>
+        """
     return f"""
     <section class="stack">
       <p><strong>Choose billing provider</strong></p>
@@ -6192,16 +6379,7 @@ def _render_billing_provider_choice_actions() -> str:
             <button type="submit">{html.escape(stripe_action['label'])}</button>
           </form>
         </article>
-        <article class="topic-summary stack">
-          <div>
-            <p class="eyebrow">Provider option</p>
-            <h2>PayPal</h2>
-          </div>
-          <p>Connect PayPal for invoice-based billing through the same creator setup flow.</p>
-          <form action="{html.escape(paypal_action['href'])}" method="post">
-            <button type="submit">{html.escape(paypal_action['label'])}</button>
-          </form>
-        </article>
+        {paypal_card_html}
       </div>
     </section>
     """
@@ -6377,6 +6555,16 @@ def _support_request_submit_policy(request: Request):
 
 def _request_settings(request: Request):
     return getattr(request.app.state, "settings", get_settings())
+
+
+def _paypal_available_to_creator(
+    *,
+    request: Request,
+    current_user: AuthUser | None,
+) -> bool:
+    if current_user is None:
+        return False
+    return _request_settings(request).paypal_live_available_to_creator(current_user.email)
 
 
 def _allowlisted_operator_from_browser_request(

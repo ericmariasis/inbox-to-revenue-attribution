@@ -283,7 +283,12 @@ def test_paypal_available_to_creator_follows_creator_access_mode():
     assert not sandbox_settings.paypal_available_to_creator("creator@example.com")
 
 
-def test_paypal_creator_access_uses_legacy_live_setting_as_fallback_alias():
+def test_paypal_creator_access_uses_legacy_live_setting_as_fallback_alias(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("PAYPAL_CREATOR_ACCESS", raising=False)
+    monkeypatch.delenv("PAYPAL_LIVE_CREATOR_ACCESS", raising=False)
+
     settings = Settings.model_validate(
         {
             "app_env": "local",

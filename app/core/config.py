@@ -13,7 +13,13 @@ DEFAULT_STRIPE_SECRET_KEY = "sk_test_example"
 DEFAULT_STRIPE_CONNECT_AUTHORIZE_URL = "https://connect.stripe.com/oauth/authorize"
 DEFAULT_STRIPE_CONNECT_REDIRECT_URI = "http://localhost:8000/stripe/connect/callback"
 DEFAULT_STRIPE_WEBHOOK_SECRET = "whsec_test_example"
+PAYPAL_ENVIRONMENT_SANDBOX = "sandbox"
+PAYPAL_ENVIRONMENT_LIVE = "live"
+SUPPORTED_PAYPAL_ENVIRONMENTS = frozenset(
+    {PAYPAL_ENVIRONMENT_SANDBOX, PAYPAL_ENVIRONMENT_LIVE}
+)
 DEFAULT_PAYPAL_SANDBOX_API_BASE_URL = "https://api-m.sandbox.paypal.com"
+DEFAULT_PAYPAL_LIVE_API_BASE_URL = "https://api-m.paypal.com"
 DEFAULT_PAYPAL_CONNECT_REDIRECT_URI = "http://localhost:8000/paypal/connect/callback"
 DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY = "whsec_calendly_test_example"
 DEFAULT_FULLSCOPE_WEBHOOK_SHARED_SECRET = "fullscope_webhook_secret_test_example"
@@ -97,6 +103,10 @@ def _email_domain_is_example(value: str) -> bool:
     if not domain:
         return False
     return _host_is_example(domain)
+
+
+def _normalized_paypal_environment(value: str) -> str:
+    return _cleaned_value(value).lower()
 
 
 def _require_non_placeholder(
@@ -183,13 +193,19 @@ class Settings(BaseSettings):
     stripe_connect_authorize_url: str = DEFAULT_STRIPE_CONNECT_AUTHORIZE_URL
     stripe_connect_redirect_uri: str = DEFAULT_STRIPE_CONNECT_REDIRECT_URI
     stripe_webhook_secret: str = DEFAULT_STRIPE_WEBHOOK_SECRET
+    paypal_environment: str = PAYPAL_ENVIRONMENT_SANDBOX
     paypal_sandbox_client_id: str = ""
     paypal_sandbox_client_secret: str = ""
     paypal_sandbox_partner_id: str = ""
+    paypal_live_client_id: str = ""
+    paypal_live_client_secret: str = ""
+    paypal_live_partner_id: str = ""
     paypal_partner_attribution_id: str = ""
     paypal_sandbox_api_base_url: str = DEFAULT_PAYPAL_SANDBOX_API_BASE_URL
+    paypal_live_api_base_url: str = DEFAULT_PAYPAL_LIVE_API_BASE_URL
     paypal_connect_redirect_uri: str = DEFAULT_PAYPAL_CONNECT_REDIRECT_URI
     paypal_sandbox_webhook_id: str = ""
+    paypal_live_webhook_id: str = ""
     stripe_webhook_tolerance_seconds: int = 300
     calendly_webhook_signing_key: str = DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY
     calendly_webhook_tolerance_seconds: int = 300
@@ -222,10 +238,50 @@ class Settings(BaseSettings):
     def is_operator_email_allowed(self, email: str) -> bool:
         return _normalized_email(email) in frozenset(self.operator_email_allowlist_values())
 
+    def paypal_environment_value(self) -> str:
+        normalized_value = _normalized_paypal_environment(self.paypal_environment)
+        if normalized_value not in SUPPORTED_PAYPAL_ENVIRONMENTS:
+            supported_values = ", ".join(sorted(SUPPORTED_PAYPAL_ENVIRONMENTS))
+            raise SettingsValidationError(
+                f"paypal_environment must be one of: {supported_values}"
+            )
+        return normalized_value
+
+    def selected_paypal_client_id(self) -> str:
+        if self.paypal_environment_value() == PAYPAL_ENVIRONMENT_LIVE:
+            return self.paypal_live_client_id
+        return self.paypal_sandbox_client_id
+
+    def selected_paypal_client_secret(self) -> str:
+        if self.paypal_environment_value() == PAYPAL_ENVIRONMENT_LIVE:
+            return self.paypal_live_client_secret
+        return self.paypal_sandbox_client_secret
+
+    def selected_paypal_partner_id(self) -> str:
+        if self.paypal_environment_value() == PAYPAL_ENVIRONMENT_LIVE:
+            return self.paypal_live_partner_id
+        return self.paypal_sandbox_partner_id
+
+    def selected_paypal_api_base_url(self) -> str:
+        if self.paypal_environment_value() == PAYPAL_ENVIRONMENT_LIVE:
+            return self.paypal_live_api_base_url
+        return self.paypal_sandbox_api_base_url
+
+    def selected_paypal_webhook_id(self) -> str:
+        if self.paypal_environment_value() == PAYPAL_ENVIRONMENT_LIVE:
+            return self.paypal_live_webhook_id
+        return self.paypal_sandbox_webhook_id
+
     def validate_runtime(self) -> None:
         errors: list[str] = []
         is_local_env = self.is_local_env()
         normalized_email_provider = _cleaned_value(self.magic_link_email_provider).lower()
+        normalized_paypal_environment = _normalized_paypal_environment(self.paypal_environment)
+        if normalized_paypal_environment not in SUPPORTED_PAYPAL_ENVIRONMENTS:
+            errors.append(
+                "paypal_environment must be one of: "
+                + ", ".join(sorted(SUPPORTED_PAYPAL_ENVIRONMENTS))
+            )
         if normalized_email_provider not in SUPPORTED_MAGIC_LINK_EMAIL_PROVIDERS:
             errors.append(
                 "magic_link_email_provider must be one of: "

@@ -34,7 +34,21 @@ def _override_app_state(name, value):
 
 
 class _StubSettings:
-    paypal_sandbox_webhook_id = "WH_story_pp8_configured"
+    def __init__(
+        self,
+        *,
+        paypal_environment: str = "sandbox",
+        paypal_sandbox_webhook_id: str = "WH_story_pp8_sandbox",
+        paypal_live_webhook_id: str = "WH_story_pp8_live",
+    ):
+        self.paypal_environment = paypal_environment
+        self.paypal_sandbox_webhook_id = paypal_sandbox_webhook_id
+        self.paypal_live_webhook_id = paypal_live_webhook_id
+
+    def selected_paypal_webhook_id(self) -> str:
+        if self.paypal_environment == "live":
+            return self.paypal_live_webhook_id
+        return self.paypal_sandbox_webhook_id
 
 
 class _StubPayPalProvider:
@@ -248,7 +262,7 @@ def test_paypal_webhook_invoice_paid_marks_matched_paypal_invoice_paid_and_persi
     assert response.json() == {"status": "ok"}
     assert provider.verify_calls == [
         {
-            "webhook_id": "WH_story_pp8_configured",
+            "webhook_id": "WH_story_pp8_sandbox",
             "auth_algo": "SHA256withRSA",
             "cert_url": "https://api.sandbox.paypal.com/v1/notifications/certs/CERT-story-pp8",
             "transmission_id": "transmission_story_pp8",
@@ -282,6 +296,30 @@ def test_paypal_webhook_invoice_paid_marks_matched_paypal_invoice_paid_and_persi
     assert payment_events[0].unattributed_reason is None
     assert payment_events[0].paid_at == paid_at
     assert payment_events[0].processed_at == paid_at
+
+
+def test_paypal_webhook_uses_live_webhook_id_when_live_environment_selected():
+    provider = _StubPayPalProvider()
+    payload = _paypal_invoice_paid_payload(
+        paypal_event_id="WH_story_pp8_live",
+        provider_invoice_id="INV2_story_pp8_live",
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings(paypal_environment="live")):
+            with _override_app_state("paypal_provider", provider):
+                with _override_app_state(
+                    "paypal_webhook_router",
+                    build_default_paypal_webhook_router(provider=provider),
+                ):
+                    response = client.post(
+                        "/webhooks/paypal",
+                        content=payload,
+                        headers=_paypal_headers(),
+                    )
+
+    assert response.status_code == 200
+    assert provider.verify_calls[0]["webhook_id"] == "WH_story_pp8_live"
 
 
 def test_paypal_webhook_rejects_failed_verification_without_mutating_invoice():

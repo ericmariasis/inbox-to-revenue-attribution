@@ -189,7 +189,7 @@ def _connect_result_page(*, title: str, body: str, status_code: int) -> HTMLResp
 def _browser_connect_failure_response() -> HTMLResponse:
     return _connect_result_page(
         title="PayPal setup could not be completed",
-        body="This PayPal onboarding return could not be verified. Start the setup again if you still need to connect PayPal in sandbox.",
+        body="This PayPal onboarding return could not be verified. Start the setup again if you still need to connect PayPal.",
         status_code=status.HTTP_400_BAD_REQUEST,
     )
 

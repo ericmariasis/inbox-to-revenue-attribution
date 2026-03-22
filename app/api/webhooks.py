@@ -154,7 +154,7 @@ async def paypal_webhook(request: Request) -> GenericOkResponse:
             payload=payload,
             headers=request.headers,
             provider=_paypal_provider(request),
-            webhook_id=settings.paypal_sandbox_webhook_id,
+            webhook_id=settings.selected_paypal_webhook_id(),
         )
     except PayPalWebhookVerificationError as exc:
         raise HTTPException(

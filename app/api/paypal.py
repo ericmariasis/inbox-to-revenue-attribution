@@ -46,6 +46,7 @@ INVALID_PAYPAL_CONNECT_STATE_DETAIL = "invalid paypal connect state"
 INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL = "invalid paypal connect callback"
 PAYPAL_CONNECT_UNAVAILABLE_DETAIL = "paypal connect unavailable"
 PAYPAL_CONNECT_ALREADY_CONNECTED_DETAIL = "billing provider already connected"
+PAYPAL_CONNECT_NOT_FOUND_DETAIL = "paypal connect not found"
 
 
 def _settings(request: Request) -> Settings:
@@ -95,6 +96,10 @@ def _creator_can_start_paypal_onboarding(*, creator: Creator) -> bool:
     if creator.resolved_billing_connect_status != BILLING_CONNECT_STATUS_CONNECTED:
         return True
     return creator.resolved_billing_provider != BILLING_PROVIDER_PAYPAL
+
+
+def _paypal_available_to_current_user(*, request: Request, current_user: AuthUser) -> bool:
+    return _settings(request).paypal_live_available_to_creator(current_user.email)
 
 
 def build_paypal_connect_start_response(
@@ -230,6 +235,14 @@ def paypal_connect_start(
     current_user: AuthUser = Depends(get_current_auth_user),
     db: Session = Depends(get_db),
 ) -> PayPalConnectStartResponse:
+    if not _paypal_available_to_current_user(
+        request=request,
+        current_user=current_user,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=PAYPAL_CONNECT_NOT_FOUND_DETAIL,
+        )
     try:
         response = build_paypal_connect_start_response(
             request=request,

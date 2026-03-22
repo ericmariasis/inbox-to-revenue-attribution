@@ -190,7 +190,11 @@ def _insert_open_invoice_for_creator(*, creator_id: str) -> None:
 def _override_app_state(name, value):
     had_attr = hasattr(app.state, name)
     previous_value = getattr(app.state, name, None)
+    marker_name = f"_{name}_overridden"
+    had_marker = hasattr(app.state, marker_name)
+    previous_marker = getattr(app.state, marker_name, None)
     setattr(app.state, name, value)
+    setattr(app.state, marker_name, True)
     try:
         yield
     finally:
@@ -198,6 +202,10 @@ def _override_app_state(name, value):
             setattr(app.state, name, previous_value)
         else:
             delattr(app.state, name)
+        if had_marker:
+            setattr(app.state, marker_name, previous_marker)
+        else:
+            delattr(app.state, marker_name)
 
 
 class _StubPayPalProvider:
@@ -226,6 +234,17 @@ class _StubPayPalProvider:
 
     def get_verified_seller_status(self, *, tracking_id: str):
         raise AssertionError(f"unexpected seller lookup tracking_id={tracking_id}")
+
+
+def _live_paypal_operator_only_settings(*emails: str):
+    settings = getattr(app.state, "settings", get_settings())
+    return settings.model_copy(
+        update={
+            "paypal_environment": "live",
+            "paypal_live_creator_access": "operator_only",
+            "operator_email_allowlist": ",".join(emails),
+        }
+    )
 
 
 def test_paypal_connect_start_returns_provider_url_and_app_issued_state():
@@ -287,6 +306,56 @@ def test_paypal_connect_start_requires_auth():
 
     assert response.status_code == 401
     assert response.json() == {"detail": "not authenticated"}
+
+
+def test_paypal_connect_start_hides_live_path_for_non_operator_creator():
+    inserted = _insert_creator_user(email=f"paypal_start_live_{uuid.uuid4().hex}@example.com")
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider()
+    settings = _live_paypal_operator_only_settings("ops@creatortrust.co")
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "paypal connect not found"}
+    assert provider.start_calls == []
+
+
+def test_paypal_connect_start_keeps_live_path_for_allowlisted_operator():
+    inserted = _insert_creator_user(email=f"paypal_start_live_ops_{uuid.uuid4().hex}@example.com")
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider()
+    settings = _live_paypal_operator_only_settings(inserted["email"])
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+
+    assert response.status_code == 200
+    assert response.json()["onboarding_url"].startswith(
+        "https://www.sandbox.paypal.com/bizsignup/partner/entry"
+    )
+    assert len(provider.start_calls) == 1
 
 
 def test_paypal_connect_start_creates_pending_switch_attempt_for_clean_connected_stripe_creator():

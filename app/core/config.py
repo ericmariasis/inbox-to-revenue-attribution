@@ -21,6 +21,15 @@ SUPPORTED_PAYPAL_ENVIRONMENTS = frozenset(
 DEFAULT_PAYPAL_SANDBOX_API_BASE_URL = "https://api-m.sandbox.paypal.com"
 DEFAULT_PAYPAL_LIVE_API_BASE_URL = "https://api-m.paypal.com"
 DEFAULT_PAYPAL_CONNECT_REDIRECT_URI = "http://localhost:8000/paypal/connect/callback"
+PAYPAL_LIVE_CREATOR_ACCESS_OPERATOR_ONLY = "operator_only"
+PAYPAL_LIVE_CREATOR_ACCESS_PUBLIC = "public"
+SUPPORTED_PAYPAL_LIVE_CREATOR_ACCESS_MODES = frozenset(
+    {
+        PAYPAL_LIVE_CREATOR_ACCESS_OPERATOR_ONLY,
+        PAYPAL_LIVE_CREATOR_ACCESS_PUBLIC,
+    }
+)
+DEFAULT_PAYPAL_LIVE_CREATOR_ACCESS = PAYPAL_LIVE_CREATOR_ACCESS_OPERATOR_ONLY
 DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY = "whsec_calendly_test_example"
 DEFAULT_FULLSCOPE_WEBHOOK_SHARED_SECRET = "fullscope_webhook_secret_test_example"
 DEFAULT_TRACKED_LINK_BASE_URL = "https://trk.example.com"
@@ -106,6 +115,10 @@ def _email_domain_is_example(value: str) -> bool:
 
 
 def _normalized_paypal_environment(value: str) -> str:
+    return _cleaned_value(value).lower()
+
+
+def _normalized_paypal_live_creator_access(value: str) -> str:
     return _cleaned_value(value).lower()
 
 
@@ -206,6 +219,7 @@ class Settings(BaseSettings):
     paypal_connect_redirect_uri: str = DEFAULT_PAYPAL_CONNECT_REDIRECT_URI
     paypal_sandbox_webhook_id: str = ""
     paypal_live_webhook_id: str = ""
+    paypal_live_creator_access: str = DEFAULT_PAYPAL_LIVE_CREATOR_ACCESS
     stripe_webhook_tolerance_seconds: int = 300
     calendly_webhook_signing_key: str = DEFAULT_CALENDLY_WEBHOOK_SIGNING_KEY
     calendly_webhook_tolerance_seconds: int = 300
@@ -272,15 +286,48 @@ class Settings(BaseSettings):
             return self.paypal_live_webhook_id
         return self.paypal_sandbox_webhook_id
 
+    def paypal_live_creator_access_value(self) -> str:
+        normalized_value = _normalized_paypal_live_creator_access(
+            self.paypal_live_creator_access
+        )
+        if normalized_value not in SUPPORTED_PAYPAL_LIVE_CREATOR_ACCESS_MODES:
+            supported_values = ", ".join(sorted(SUPPORTED_PAYPAL_LIVE_CREATOR_ACCESS_MODES))
+            raise SettingsValidationError(
+                f"paypal_live_creator_access must be one of: {supported_values}"
+            )
+        return normalized_value
+
+    def paypal_live_available_to_creator(self, email: str | None) -> bool:
+        if self.paypal_environment_value() != PAYPAL_ENVIRONMENT_LIVE:
+            return True
+
+        if self.paypal_live_creator_access_value() == PAYPAL_LIVE_CREATOR_ACCESS_PUBLIC:
+            return True
+
+        if not email:
+            return False
+        return self.is_operator_email_allowed(email)
+
     def validate_runtime(self) -> None:
         errors: list[str] = []
         is_local_env = self.is_local_env()
         normalized_email_provider = _cleaned_value(self.magic_link_email_provider).lower()
         normalized_paypal_environment = _normalized_paypal_environment(self.paypal_environment)
+        normalized_paypal_live_creator_access = _normalized_paypal_live_creator_access(
+            self.paypal_live_creator_access
+        )
         if normalized_paypal_environment not in SUPPORTED_PAYPAL_ENVIRONMENTS:
             errors.append(
                 "paypal_environment must be one of: "
                 + ", ".join(sorted(SUPPORTED_PAYPAL_ENVIRONMENTS))
+            )
+        if (
+            normalized_paypal_live_creator_access
+            not in SUPPORTED_PAYPAL_LIVE_CREATOR_ACCESS_MODES
+        ):
+            errors.append(
+                "paypal_live_creator_access must be one of: "
+                + ", ".join(sorted(SUPPORTED_PAYPAL_LIVE_CREATOR_ACCESS_MODES))
             )
         if normalized_email_provider not in SUPPORTED_MAGIC_LINK_EMAIL_PROVIDERS:
             errors.append(

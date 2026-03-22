@@ -3640,6 +3640,9 @@ def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():
     assert "Test another Retention Reviews angle" in page_response.text
     assert "Test whether another post about Retention Reviews may lead to more attributed paid bookings." in page_response.text
     assert "Claim snapshot" in page_response.text
+    assert "Run lineage" in page_response.text
+    assert "deterministic_rules" in page_response.text
+    assert "next_content_experiments.helper_config.v1" in page_response.text
     assert f'href="/app/experiments/{run_claim_snapshot_id}/cards/1"' in page_response.text
     assert "<code>" in page_response.text
     assert evidence_response.status_code == 200
@@ -3648,6 +3651,8 @@ def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():
     assert "Settled paid results used" in evidence_response.text
     assert "Parent run snapshot" in evidence_response.text
     assert "Card snapshot" in evidence_response.text
+    assert "Card lineage" in evidence_response.text
+    assert "next_content_experiment_card.rendering_config.v1" in evidence_response.text
     assert "Experiments Ready Artifact" in evidence_response.text
     assert content_tid in evidence_response.text
     assert "USD 195.00" in evidence_response.text
@@ -3728,6 +3733,266 @@ def test_experiments_generate_route_renders_unsupported_state_without_generic_ti
     assert "No settled attributed paid results exist yet for this workspace." in page_response.text
     assert "generic fallback tips" not in page_response.text
     assert "Test whether another post about" not in page_response.text
+
+
+def test_experiments_compare_page_renders_two_stored_runs_with_lineage():
+    inserted = _insert_creator_user(
+        email=f"ui_experiments_compare_{uuid.uuid4().hex}@example.com",
+        name="Compare Experiments Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_experiments_compare",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Compare Experiments Strategy",
+        calendly_url="https://calendly.com/example/experiments-compare",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    content_tid = f"ui_experiments_compare_{uuid.uuid4().hex[:8]}"
+    content_id = _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url=f"https://example.com/posts/{content_tid}",
+        tid=content_tid,
+    )
+    snapshot_id = _insert_fetch_snapshot(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        requested_url=f"https://example.com/posts/{content_tid}",
+        fetched_url=f"https://example.com/posts/{content_tid}",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Compare experiments.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 12, 11, 0, tzinfo=timezone.utc),
+    )
+    artifact_id = _insert_extraction_artifact(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        fetch_snapshot_id=snapshot_id,
+        extraction_status="succeeded",
+        title="Experiments Compare Artifact",
+        extracted_text="Compare experiments content.",
+        created_at=datetime(2026, 3, 12, 11, 5, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        extraction_artifact_id=artifact_id,
+        label="Retention Reviews",
+    )
+    _set_authoritative_extraction_artifact(
+        content_id=content_id,
+        artifact_id=artifact_id,
+    )
+    booking_id = _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=f"BOOK_UI_EXPERIMENTS_COMPARE_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 12, 12, 0, tzinfo=timezone.utc),
+    )
+    stripe_invoice_id = f"in_ui_experiments_compare_{uuid.uuid4().hex[:8]}"
+    invoice_id = _insert_invoice(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        stripe_account_id="acct_ui_experiments_compare",
+        stripe_invoice_id=stripe_invoice_id,
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        invoice_id=invoice_id,
+        stripe_account_id="acct_ui_experiments_compare",
+        stripe_event_id=f"evt_ui_experiments_compare_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=stripe_invoice_id,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        baseline_response = client.post(
+            "/app/experiments",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        candidate_response = client.post(
+            "/app/experiments",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        baseline_run_claim_snapshot_id = parse_qs(
+            urlparse(baseline_response.headers["location"]).query
+        )["claim_snapshot_id"][0]
+        candidate_run_claim_snapshot_id = parse_qs(
+            urlparse(candidate_response.headers["location"]).query
+        )["claim_snapshot_id"][0]
+        compare_response = client.get(
+            "/app/experiments/compare"
+            f"?baseline_claim_snapshot_id={baseline_run_claim_snapshot_id}"
+            f"&candidate_claim_snapshot_id={candidate_run_claim_snapshot_id}",
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert compare_response.status_code == 200
+    assert "Experiment comparison" in compare_response.text
+    assert "Historical vs current helper output" in compare_response.text
+    assert "Baseline snapshot" in compare_response.text
+    assert "Candidate snapshot" in compare_response.text
+    assert baseline_run_claim_snapshot_id in compare_response.text
+    assert candidate_run_claim_snapshot_id in compare_response.text
+    assert "Run lineage" in compare_response.text
+    assert "Card lineage" in compare_response.text
+    assert "deterministic_rules" in compare_response.text
+    assert "next_content_experiments.helper_config.v1" in compare_response.text
+    assert "next_content_experiment_card.rendering_config.v1" in compare_response.text
+
+
+def test_experiments_pages_render_legacy_null_lineage_as_not_recorded():
+    inserted = _insert_creator_user(
+        email=f"ui_experiments_legacy_{uuid.uuid4().hex}@example.com",
+        name="Legacy Experiments Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_experiments_legacy",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Legacy Experiments Strategy",
+        calendly_url="https://calendly.com/example/experiments-legacy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    content_tid = f"ui_experiments_legacy_{uuid.uuid4().hex[:8]}"
+    content_id = _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url=f"https://example.com/posts/{content_tid}",
+        tid=content_tid,
+    )
+    snapshot_id = _insert_fetch_snapshot(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        requested_url=f"https://example.com/posts/{content_tid}",
+        fetched_url=f"https://example.com/posts/{content_tid}",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Legacy experiments.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 12, 11, 0, tzinfo=timezone.utc),
+    )
+    artifact_id = _insert_extraction_artifact(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        fetch_snapshot_id=snapshot_id,
+        extraction_status="succeeded",
+        title="Experiments Legacy Artifact",
+        extracted_text="Legacy experiments content.",
+        created_at=datetime(2026, 3, 12, 11, 5, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        extraction_artifact_id=artifact_id,
+        label="Retention Reviews",
+    )
+    _set_authoritative_extraction_artifact(
+        content_id=content_id,
+        artifact_id=artifact_id,
+    )
+    booking_id = _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=f"BOOK_UI_EXPERIMENTS_LEGACY_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 12, 12, 0, tzinfo=timezone.utc),
+    )
+    stripe_invoice_id = f"in_ui_experiments_legacy_{uuid.uuid4().hex[:8]}"
+    invoice_id = _insert_invoice(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        stripe_account_id="acct_ui_experiments_legacy",
+        stripe_invoice_id=stripe_invoice_id,
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        invoice_id=invoice_id,
+        stripe_account_id="acct_ui_experiments_legacy",
+        stripe_event_id=f"evt_ui_experiments_legacy_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=stripe_invoice_id,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        create_response = client.post(
+            "/app/experiments",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+        run_claim_snapshot_id = parse_qs(urlparse(create_response.headers["location"]).query)[
+            "claim_snapshot_id"
+        ][0]
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE creator_experiment_runs "
+                "SET run_generator_type = NULL, run_model_name = NULL, run_config_version = NULL "
+                "WHERE id = :run_id"
+            ),
+            {"run_id": run_claim_snapshot_id},
+        )
+        conn.execute(
+            text(
+                "UPDATE creator_claim_snapshots "
+                "SET claim_generator_type = NULL, claim_model_name = NULL, claim_config_version = NULL "
+                "WHERE id IN ("
+                "  SELECT claim_snapshot_id "
+                "  FROM creator_experiment_run_cards "
+                "  WHERE run_id = :run_id"
+                ")"
+            ),
+            {"run_id": run_claim_snapshot_id},
+        )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        page_response = client.get(
+            f"/app/experiments?claim_snapshot_id={run_claim_snapshot_id}",
+            headers=HTML_ACCEPT_HEADERS,
+        )
+        evidence_response = client.get(
+            f"/app/experiments/{run_claim_snapshot_id}/cards/1",
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert page_response.status_code == 200
+    assert "Run lineage" in page_response.text
+    assert "Not recorded" in page_response.text
+    assert evidence_response.status_code == 200
+    assert "Run lineage" in evidence_response.text
+    assert "Card lineage" in evidence_response.text
+    assert "Not recorded" in evidence_response.text
 
 
 def test_setup_home_disconnected_stripe_state_shows_reconnect_cta():

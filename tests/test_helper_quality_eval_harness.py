@@ -55,6 +55,8 @@ def test_story96_helper_eval_runner_compares_named_candidates_and_writes_json(
     assert result["comparison"]["ranked_candidates"][0]["candidate_id"] == (
         "current_evidence_backed_rules_v1"
     )
+    assert winning_candidate["candidate"]["config_version"] == "next_content_experiments.helper_config.v1"
+    assert generic_candidate["candidate"]["config_version"] == "story96.generic_revenue_first.config.v1"
 
     assert winning_candidate["summary"]["case_count"] == 6
     assert winning_candidate["summary"]["cases_passed"] == 6

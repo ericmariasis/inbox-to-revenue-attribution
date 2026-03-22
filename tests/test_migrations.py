@@ -147,6 +147,75 @@ def test_migrations_upgrade_and_downgrade():
             inspector = inspect(conn)
             table_names = inspector.get_table_names(schema="public")
             creator_columns = {column["name"] for column in inspector.get_columns("creators")}
+            experiment_run_columns = {
+                column["name"] for column in inspector.get_columns("creator_experiment_runs")
+            }
+            claim_snapshot_columns = {
+                column["name"] for column in inspector.get_columns("creator_claim_snapshots")
+            }
+            booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
+            content_columns = {column["name"] for column in inspector.get_columns("content")}
+            invoice_columns = {column["name"] for column in inspector.get_columns("invoices")}
+            payment_event_columns = {
+                column["name"] for column in inspector.get_columns("invoice_payment_events")
+            }
+            calendly_columns = {
+                column["name"] for column in inspector.get_columns("calendly_webhook_events")
+            }
+            assert "support_requests" in table_names
+            assert "shared_rate_limit_events" in table_names
+            assert "pending_magic_link_issuances" in table_names
+            assert "creator_experiment_run_cards" in table_names
+            assert "creator_experiment_runs" in table_names
+            assert "creator_claim_paid_evidence_refs" in table_names
+            assert "creator_claim_snapshots" in table_names
+            assert "calendly_webhook_events" in table_names
+            assert "fullscope_webhook_events" in table_names
+            assert "content_topic_candidates" in table_names
+            assert "content_confirmed_topics" in table_names
+            assert "content_extraction_artifacts" in table_names
+            assert "content_fetch_snapshots" in table_names
+            assert "blocked_billing_cases" in table_names
+            assert "invoice_payment_events" in table_names
+            assert "invoices" in table_names
+            assert "bookings" in table_names
+            assert "content" in table_names
+            assert "booking_links" in table_names
+            assert "billing_provider" in creator_columns
+            assert "billing_connect_status" in creator_columns
+            assert "billing_connected_at" in creator_columns
+            assert "billing_account_id" in creator_columns
+            assert "billing_provider_correlation_id" in creator_columns
+            assert "payment_provider" in invoice_columns
+            assert "provider_account_id" in invoice_columns
+            assert "provider_invoice_id" in invoice_columns
+            assert "payment_provider" in payment_event_columns
+            assert "provider_event_id" in payment_event_columns
+            assert "provider_event_type" in payment_event_columns
+            assert "provider_account_id" in payment_event_columns
+            assert "provider_invoice_id" in payment_event_columns
+            assert "authoritative_extraction_artifact_id" in content_columns
+            assert "attribution_status" in booking_columns
+            assert "unattributed_reason" in booking_columns
+            assert "reducer_key" in calendly_columns
+            assert "reducer_attempt_count" in calendly_columns
+            assert "frozen_billing_amount_cents" in booking_columns
+            assert "frozen_billing_currency" in booking_columns
+            assert "provider" in booking_columns
+            assert "provider_booking_id" in booking_columns
+            booking_link_columns = {
+                column["name"] for column in inspector.get_columns("booking_links")
+            }
+            assert "billing_amount_cents" in booking_link_columns
+            assert "billing_currency" in booking_link_columns
+            assert "provider" in booking_link_columns
+            assert "destination_url" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
+            creator_columns = {column["name"] for column in inspector.get_columns("creators")}
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
             invoice_columns = {column["name"] for column in inspector.get_columns("invoices")}
@@ -180,6 +249,12 @@ def test_migrations_upgrade_and_downgrade():
             assert "billing_connected_at" in creator_columns
             assert "billing_account_id" in creator_columns
             assert "billing_provider_correlation_id" not in creator_columns
+            assert "run_generator_type" not in experiment_run_columns
+            assert "run_model_name" not in experiment_run_columns
+            assert "run_config_version" not in experiment_run_columns
+            assert "claim_generator_type" not in claim_snapshot_columns
+            assert "claim_model_name" not in claim_snapshot_columns
+            assert "claim_config_version" not in claim_snapshot_columns
             assert "payment_provider" in invoice_columns
             assert "provider_account_id" in invoice_columns
             assert "provider_invoice_id" in invoice_columns
@@ -1058,6 +1133,9 @@ def test_creator_experiment_runs_table_has_expected_columns_fk_and_indexes():
             "creator_id",
             "status",
             "summary_text",
+            "run_generator_type",
+            "run_model_name",
+            "run_config_version",
             "run_contract_version",
             "run_reducer_version",
             "run_prompt_version",
@@ -1358,6 +1436,9 @@ def test_creator_claim_snapshots_table_has_expected_columns_fk_and_indexes():
             "authoritative_extraction_artifact_id",
             "authoritative_fetch_snapshot_id",
             "claim_kind",
+            "claim_generator_type",
+            "claim_model_name",
+            "claim_config_version",
             "claim_contract_version",
             "claim_reducer_version",
             "claim_prompt_version",

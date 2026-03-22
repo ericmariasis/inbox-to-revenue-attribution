@@ -280,6 +280,9 @@ def test_create_creator_claim_snapshot_persists_versions_and_exact_paid_evidence
         ).scalar_one()
 
     assert snapshot_record.claim_kind == "reports_paid_content_summary"
+    assert snapshot_record.claim_generator_type is None
+    assert snapshot_record.claim_model_name is None
+    assert snapshot_record.claim_config_version is None
     assert snapshot_record.claim_contract_version == "reports_paid_content_summary.v1"
     assert snapshot_record.claim_reducer_version is None
     assert snapshot_record.claim_prompt_version is None
@@ -370,6 +373,9 @@ def test_resolve_creator_claim_snapshot_uses_stored_ids_instead_of_current_autho
 
     assert resolved is not None
     assert resolved.snapshot.id == seeded["snapshot_id"]
+    assert resolved.snapshot.claim_generator_type is None
+    assert resolved.snapshot.claim_model_name is None
+    assert resolved.snapshot.claim_config_version is None
     assert resolved.snapshot.claim_contract_version == "reports_paid_content_summary.v1"
     assert resolved.authoritative_content_evidence.artifact.id == seeded["original_artifact_id"]
     assert resolved.authoritative_content_evidence.fetch_snapshot.id == seeded["original_fetch_snapshot_id"]

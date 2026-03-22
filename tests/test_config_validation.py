@@ -15,12 +15,12 @@ from app.core.config import (
     DEFAULT_STRIPE_WEBHOOK_SECRET,
     PAYPAL_ENVIRONMENT_LIVE,
     PAYPAL_ENVIRONMENT_SANDBOX,
+    PAYPAL_CREATOR_ACCESS_OPERATOR_ONLY,
+    PAYPAL_CREATOR_ACCESS_PUBLIC,
     DEFAULT_TRACKED_LINK_BASE_URL,
     Settings,
     SettingsValidationError,
     get_settings,
-    PAYPAL_LIVE_CREATOR_ACCESS_OPERATOR_ONLY,
-    PAYPAL_LIVE_CREATOR_ACCESS_PUBLIC,
 )
 from app.main import app
 
@@ -179,10 +179,10 @@ def test_invalid_paypal_environment_fails_runtime_validation():
         settings.validate_runtime()
 
 
-def test_invalid_paypal_live_creator_access_fails_runtime_validation():
-    settings = _safe_non_local_settings(paypal_live_creator_access="bogus")
+def test_invalid_paypal_creator_access_fails_runtime_validation():
+    settings = _safe_non_local_settings(paypal_creator_access="bogus")
 
-    with pytest.raises(SettingsValidationError, match="paypal_live_creator_access"):
+    with pytest.raises(SettingsValidationError, match="paypal_creator_access"):
         settings.validate_runtime()
 
 
@@ -236,7 +236,7 @@ def test_selected_paypal_settings_follow_explicit_environment():
     assert sandbox_settings.selected_paypal_webhook_id() == "WH_sandbox"
 
 
-def test_paypal_live_creator_access_defaults_to_operator_only():
+def test_paypal_creator_access_defaults_to_operator_only():
     settings = Settings.model_validate(
         {
             "app_env": "local",
@@ -244,43 +244,55 @@ def test_paypal_live_creator_access_defaults_to_operator_only():
         }
     )
 
-    assert settings.paypal_live_creator_access_value() == PAYPAL_LIVE_CREATOR_ACCESS_OPERATOR_ONLY
+    assert settings.paypal_creator_access_value() == PAYPAL_CREATOR_ACCESS_OPERATOR_ONLY
 
 
-def test_paypal_live_available_to_creator_follows_live_access_mode():
+def test_paypal_available_to_creator_follows_creator_access_mode():
     operator_only_settings = Settings.model_validate(
         {
             "app_env": "local",
             "paypal_environment": PAYPAL_ENVIRONMENT_LIVE,
-            "paypal_live_creator_access": PAYPAL_LIVE_CREATOR_ACCESS_OPERATOR_ONLY,
+            "paypal_creator_access": PAYPAL_CREATOR_ACCESS_OPERATOR_ONLY,
             "operator_email_allowlist": "ops1@creatortrust.co",
         }
     )
 
-    assert operator_only_settings.paypal_live_available_to_creator("ops1@creatortrust.co")
-    assert not operator_only_settings.paypal_live_available_to_creator("creator@example.com")
-    assert not operator_only_settings.paypal_live_available_to_creator(None)
+    assert operator_only_settings.paypal_available_to_creator("ops1@creatortrust.co")
+    assert not operator_only_settings.paypal_available_to_creator("creator@example.com")
+    assert not operator_only_settings.paypal_available_to_creator(None)
 
     public_settings = Settings.model_validate(
         {
             "app_env": "local",
             "paypal_environment": PAYPAL_ENVIRONMENT_LIVE,
-            "paypal_live_creator_access": PAYPAL_LIVE_CREATOR_ACCESS_PUBLIC,
+            "paypal_creator_access": PAYPAL_CREATOR_ACCESS_PUBLIC,
             "operator_email_allowlist": "ops1@creatortrust.co",
         }
     )
 
-    assert public_settings.paypal_live_available_to_creator("creator@example.com")
+    assert public_settings.paypal_available_to_creator("creator@example.com")
 
     sandbox_settings = Settings.model_validate(
         {
             "app_env": "local",
             "paypal_environment": PAYPAL_ENVIRONMENT_SANDBOX,
-            "paypal_live_creator_access": PAYPAL_LIVE_CREATOR_ACCESS_OPERATOR_ONLY,
+            "paypal_creator_access": PAYPAL_CREATOR_ACCESS_OPERATOR_ONLY,
         }
     )
 
-    assert sandbox_settings.paypal_live_available_to_creator("creator@example.com")
+    assert not sandbox_settings.paypal_available_to_creator("creator@example.com")
+
+
+def test_paypal_creator_access_uses_legacy_live_setting_as_fallback_alias():
+    settings = Settings.model_validate(
+        {
+            "app_env": "local",
+            "paypal_live_creator_access": PAYPAL_CREATOR_ACCESS_PUBLIC,
+        }
+    )
+
+    assert settings.paypal_creator_access_value() == PAYPAL_CREATOR_ACCESS_PUBLIC
+    assert settings.paypal_available_to_creator("creator@example.com")
 
 
 def test_operator_email_allowlist_parses_comma_separated_values():

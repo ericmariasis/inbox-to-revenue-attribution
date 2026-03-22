@@ -236,12 +236,13 @@ class _StubPayPalProvider:
         raise AssertionError(f"unexpected seller lookup tracking_id={tracking_id}")
 
 
-def _live_paypal_operator_only_settings(*emails: str):
-    settings = getattr(app.state, "settings", get_settings())
+def _paypal_operator_only_settings(*emails: str, environment: str = "sandbox"):
+    settings = get_settings()
     return settings.model_copy(
         update={
-            "paypal_environment": "live",
-            "paypal_live_creator_access": "operator_only",
+            "app_env": "test",
+            "paypal_environment": environment,
+            "paypal_creator_access": "operator_only",
             "operator_email_allowlist": ",".join(emails),
         }
     )
@@ -256,13 +257,15 @@ def test_paypal_connect_start_returns_provider_url_and_app_issued_state():
         expires_delta=timedelta(hours=24),
     )
     provider = _StubPayPalProvider()
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            response = client.post(
-                "/paypal/connect/start",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
 
     assert response.status_code == 200
     assert response.headers.get("X-Request-Id")
@@ -308,6 +311,30 @@ def test_paypal_connect_start_requires_auth():
     assert response.json() == {"detail": "not authenticated"}
 
 
+def test_paypal_connect_start_hides_sandbox_path_for_non_operator_creator():
+    inserted = _insert_creator_user(email=f"paypal_start_sandbox_{uuid.uuid4().hex}@example.com")
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider()
+    settings = _paypal_operator_only_settings("ops@creatortrust.co", environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "paypal connect not found"}
+    assert provider.start_calls == []
+
+
 def test_paypal_connect_start_hides_live_path_for_non_operator_creator():
     inserted = _insert_creator_user(email=f"paypal_start_live_{uuid.uuid4().hex}@example.com")
     access_token = _access_token(
@@ -317,7 +344,7 @@ def test_paypal_connect_start_hides_live_path_for_non_operator_creator():
         expires_delta=timedelta(hours=24),
     )
     provider = _StubPayPalProvider()
-    settings = _live_paypal_operator_only_settings("ops@creatortrust.co")
+    settings = _paypal_operator_only_settings("ops@creatortrust.co", environment="live")
 
     with _override_app_state("settings", settings):
         with _override_app_state("paypal_provider", provider):
@@ -341,7 +368,7 @@ def test_paypal_connect_start_keeps_live_path_for_allowlisted_operator():
         expires_delta=timedelta(hours=24),
     )
     provider = _StubPayPalProvider()
-    settings = _live_paypal_operator_only_settings(inserted["email"])
+    settings = _paypal_operator_only_settings(inserted["email"], environment="live")
 
     with _override_app_state("settings", settings):
         with _override_app_state("paypal_provider", provider):
@@ -373,17 +400,19 @@ def test_paypal_connect_start_creates_pending_switch_attempt_for_clean_connected
         expires_delta=timedelta(hours=24),
     )
     provider = _StubPayPalProvider()
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            first_response = client.post(
-                "/paypal/connect/start",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-            second_response = client.post(
-                "/paypal/connect/start",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                first_response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                second_response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
@@ -434,13 +463,15 @@ def test_paypal_connect_start_blocks_connected_switch_when_current_provider_is_n
         expires_delta=timedelta(hours=24),
     )
     provider = _StubPayPalProvider()
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            response = client.post(
-                "/paypal/connect/start",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
 
     assert response.status_code == 409
     assert response.json() == {"detail": "switch_not_clean"}

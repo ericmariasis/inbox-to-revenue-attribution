@@ -108,7 +108,11 @@ def _switch_attempt_rows():
 def _override_app_state(name, value):
     had_attr = hasattr(app.state, name)
     previous_value = getattr(app.state, name, None)
+    marker_name = f"_{name}_overridden"
+    had_marker = hasattr(app.state, marker_name)
+    previous_marker = getattr(app.state, marker_name, None)
     setattr(app.state, name, value)
+    setattr(app.state, marker_name, True)
     try:
         yield
     finally:
@@ -116,6 +120,22 @@ def _override_app_state(name, value):
             setattr(app.state, name, previous_value)
         else:
             delattr(app.state, name)
+        if had_marker:
+            setattr(app.state, marker_name, previous_marker)
+        else:
+            delattr(app.state, marker_name)
+
+
+def _paypal_operator_only_settings(*emails: str, environment: str = "sandbox"):
+    settings = get_settings()
+    return settings.model_copy(
+        update={
+            "app_env": "test",
+            "paypal_environment": environment,
+            "paypal_creator_access": "operator_only",
+            "operator_email_allowlist": ",".join(emails),
+        }
+    )
 
 
 class _StubPayPalProvider:
@@ -176,33 +196,35 @@ def test_paypal_connect_callback_persists_connected_fields_and_returns_browser_s
             primary_email_confirmed=True,
         )
     )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            start_response = client.post(
-                "/paypal/connect/start",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-            state = start_response.json()["state"]
-            tracking_id = decode_paypal_connect_state(state)["tracking_id"]
-            provider.seller_status = PayPalSellerStatus(
-                merchant_id="merchant_pp6_connected",
-                tracking_id=tracking_id,
-                payments_receivable=True,
-                primary_email_confirmed=True,
-            )
-            callback_response = client.get(
-                "/paypal/connect/callback",
-                params={
-                    "state": state,
-                    "merchantId": tracking_id,
-                    "merchantIdInPayPal": "merchant_pp6_connected",
-                    "permissionsGranted": "true",
-                    "consentStatus": "true",
-                },
-                headers=HTML_ACCEPT_HEADERS,
-            )
-            me_response = client.get("/me", headers={"Authorization": f"Bearer {access_token}"})
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                start_response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                state = start_response.json()["state"]
+                tracking_id = decode_paypal_connect_state(state)["tracking_id"]
+                provider.seller_status = PayPalSellerStatus(
+                    merchant_id="merchant_pp6_connected",
+                    tracking_id=tracking_id,
+                    payments_receivable=True,
+                    primary_email_confirmed=True,
+                )
+                callback_response = client.get(
+                    "/paypal/connect/callback",
+                    params={
+                        "state": state,
+                        "merchantId": tracking_id,
+                        "merchantIdInPayPal": "merchant_pp6_connected",
+                        "permissionsGranted": "true",
+                        "consentStatus": "true",
+                    },
+                    headers=HTML_ACCEPT_HEADERS,
+                )
+                me_response = client.get("/me", headers={"Authorization": f"Bearer {access_token}"})
 
     assert start_response.status_code == 200
     assert callback_response.status_code == 200
@@ -254,33 +276,35 @@ def test_paypal_connect_callback_stores_pending_switch_attempt_without_mutating_
         expires_delta=timedelta(hours=24),
     )
     provider = _StubPayPalProvider()
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            start_response = client.post(
-                "/paypal/connect/start",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-            state = start_response.json()["state"]
-            tracking_id = decode_paypal_connect_state(state)["tracking_id"]
-            provider.seller_status = PayPalSellerStatus(
-                merchant_id="merchant_pp11b_target",
-                tracking_id=tracking_id,
-                payments_receivable=True,
-                primary_email_confirmed=True,
-            )
-            callback_response = client.get(
-                "/paypal/connect/callback",
-                params={
-                    "state": state,
-                    "merchantId": tracking_id,
-                    "merchantIdInPayPal": "merchant_pp11b_target",
-                    "permissionsGranted": "true",
-                    "consentStatus": "true",
-                },
-                headers=HTML_ACCEPT_HEADERS,
-            )
-            me_response = client.get("/me", headers={"Authorization": f"Bearer {access_token}"})
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                start_response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                state = start_response.json()["state"]
+                tracking_id = decode_paypal_connect_state(state)["tracking_id"]
+                provider.seller_status = PayPalSellerStatus(
+                    merchant_id="merchant_pp11b_target",
+                    tracking_id=tracking_id,
+                    payments_receivable=True,
+                    primary_email_confirmed=True,
+                )
+                callback_response = client.get(
+                    "/paypal/connect/callback",
+                    params={
+                        "state": state,
+                        "merchantId": tracking_id,
+                        "merchantIdInPayPal": "merchant_pp11b_target",
+                        "permissionsGranted": "true",
+                        "consentStatus": "true",
+                    },
+                    headers=HTML_ACCEPT_HEADERS,
+                )
+                me_response = client.get("/me", headers={"Authorization": f"Bearer {access_token}"})
 
     assert start_response.status_code == 200
     assert callback_response.status_code == 200
@@ -334,23 +358,25 @@ def test_paypal_connect_callback_rejects_invalid_state_without_mutating_creator(
             primary_email_confirmed=True,
         )
     )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            start_response = client.post(
-                "/paypal/connect/start",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-            invalid_state = f"{start_response.json()['state']}tampered"
-            callback_response = client.get(
-                "/paypal/connect/callback",
-                params={
-                    "state": invalid_state,
-                    "merchantId": "tracking_invalid",
-                    "merchantIdInPayPal": "merchant_invalid",
-                },
-            )
-            me_response = client.get("/me", headers={"Authorization": f"Bearer {access_token}"})
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                start_response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                invalid_state = f"{start_response.json()['state']}tampered"
+                callback_response = client.get(
+                    "/paypal/connect/callback",
+                    params={
+                        "state": invalid_state,
+                        "merchantId": "tracking_invalid",
+                        "merchantIdInPayPal": "merchant_invalid",
+                    },
+                )
+                me_response = client.get("/me", headers={"Authorization": f"Bearer {access_token}"})
 
     assert start_response.status_code == 200
     assert callback_response.status_code == 400
@@ -378,29 +404,31 @@ def test_paypal_connect_callback_rejects_tracking_id_mismatch_without_mutation()
             primary_email_confirmed=True,
         )
     )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            start_response = client.post(
-                "/paypal/connect/start",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-            state = start_response.json()["state"]
-            tracking_id = decode_paypal_connect_state(state)["tracking_id"]
-            provider.seller_status = PayPalSellerStatus(
-                merchant_id="merchant_pp6_mismatch",
-                tracking_id=tracking_id,
-                payments_receivable=True,
-                primary_email_confirmed=True,
-            )
-            callback_response = client.get(
-                "/paypal/connect/callback",
-                params={
-                    "state": state,
-                    "merchantId": "wrong-tracking-id",
-                    "merchantIdInPayPal": "merchant_pp6_mismatch",
-                },
-            )
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                start_response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                state = start_response.json()["state"]
+                tracking_id = decode_paypal_connect_state(state)["tracking_id"]
+                provider.seller_status = PayPalSellerStatus(
+                    merchant_id="merchant_pp6_mismatch",
+                    tracking_id=tracking_id,
+                    payments_receivable=True,
+                    primary_email_confirmed=True,
+                )
+                callback_response = client.get(
+                    "/paypal/connect/callback",
+                    params={
+                        "state": state,
+                        "merchantId": "wrong-tracking-id",
+                        "merchantIdInPayPal": "merchant_pp6_mismatch",
+                    },
+                )
 
     assert start_response.status_code == 200
     assert callback_response.status_code == 400
@@ -424,23 +452,25 @@ def test_paypal_connect_callback_rejects_provider_verification_failure():
             error_code="INTERNAL_SERVER_ERROR",
         )
     )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            start_response = client.post(
-                "/paypal/connect/start",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-            state = start_response.json()["state"]
-            tracking_id = decode_paypal_connect_state(state)["tracking_id"]
-            callback_response = client.get(
-                "/paypal/connect/callback",
-                params={
-                    "state": state,
-                    "merchantId": tracking_id,
-                    "merchantIdInPayPal": "merchant_pp6_failure",
-                },
-            )
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                start_response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                state = start_response.json()["state"]
+                tracking_id = decode_paypal_connect_state(state)["tracking_id"]
+                callback_response = client.get(
+                    "/paypal/connect/callback",
+                    params={
+                        "state": state,
+                        "merchantId": tracking_id,
+                        "merchantIdInPayPal": "merchant_pp6_failure",
+                    },
+                )
 
     assert start_response.status_code == 200
     assert callback_response.status_code == 400

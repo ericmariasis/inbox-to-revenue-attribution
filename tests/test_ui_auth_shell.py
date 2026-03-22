@@ -108,17 +108,26 @@ def _support_requests_for_creator(*, creator_id: str, request_type: str | None =
 
 
 def _operator_allowlist_settings(*emails: str):
-    settings = getattr(app.state, "settings", get_settings())
-    return settings.model_copy(update={"operator_email_allowlist": ",".join(emails)})
+    settings = get_settings()
+    return settings.model_copy(
+        update={
+            "app_env": "test",
+            "operator_email_allowlist": ",".join(emails),
+        }
+    )
+
+
+def _paypal_operator_only_settings(*emails: str, environment: str = "sandbox"):
+    return _operator_allowlist_settings(*emails).model_copy(
+        update={
+            "paypal_environment": environment,
+            "paypal_creator_access": "operator_only",
+        }
+    )
 
 
 def _live_paypal_operator_only_settings(*emails: str):
-    return _operator_allowlist_settings(*emails).model_copy(
-        update={
-            "paypal_environment": "live",
-            "paypal_live_creator_access": "operator_only",
-        }
-    )
+    return _paypal_operator_only_settings(*emails, environment="live")
 
 
 def _insert_creator_user(
@@ -1294,7 +1303,7 @@ def test_browser_magic_link_verify_failure_redirects_without_echoing_token():
     assert "different device or browser than the one where sign-in started" in invalid_link_page.text
 
 
-def test_setup_home_pending_billing_state_shows_provider_choice_and_checklist():
+def test_setup_home_pending_billing_state_keeps_provider_choice_for_allowlisted_operator():
     inserted = _insert_creator_user(
         email=f"ui_pending_{uuid.uuid4().hex}@example.com",
         name="Pending Creator",
@@ -1307,9 +1316,12 @@ def test_setup_home_pending_billing_state_shows_provider_choice_and_checklist():
         expires_delta=timedelta(hours=24),
     )
 
-    with TestClient(app) as client:
-        client.cookies.set(SESSION_COOKIE_NAME, access_token)
-        response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
     assert "Setup Home" in response.text
@@ -1330,6 +1342,35 @@ def test_setup_home_pending_billing_state_shows_provider_choice_and_checklist():
     assert 'href="/app/reports"' in response.text
     assert 'class="wrap-anywhere"' in response.text
     assert "Blocked billing and unresolved payments will appear on" in response.text
+
+
+def test_setup_home_pending_billing_state_hides_paypal_choice_for_non_operator_creator():
+    inserted = _insert_creator_user(
+        email=f"ui_pending_hidden_{uuid.uuid4().hex}@example.com",
+        name="Pending Hidden Creator",
+        stripe_connect_status="pending",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    settings = _paypal_operator_only_settings("ops@creatortrust.co", environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Choose billing provider" in response.text
+    assert "Choose Stripe to start billing setup." in response.text
+    assert "Start Stripe setup" in response.text
+    assert 'action="/app/stripe/connect/start"' in response.text
+    assert "Start PayPal setup" not in response.text
+    assert 'action="/app/paypal/connect/start"' not in response.text
+    assert "Choose Stripe or PayPal to start billing setup." not in response.text
 
 
 def test_setup_home_pending_billing_state_hides_paypal_choice_for_non_operator_live_creator():
@@ -1418,7 +1459,7 @@ def test_setup_home_missing_billing_defaults_state_shows_blocked_next_action():
     assert 'href="/app/booking-links"' in response.text
 
 
-def test_account_page_pending_billing_state_shows_provider_choice_without_default():
+def test_account_page_pending_billing_state_keeps_provider_choice_for_allowlisted_operator():
     inserted = _insert_creator_user(
         email=f"ui_account_pending_{uuid.uuid4().hex}@example.com",
         name="Pending Account Creator",
@@ -1431,9 +1472,12 @@ def test_account_page_pending_billing_state_shows_provider_choice_without_defaul
         expires_delta=timedelta(hours=24),
     )
 
-    with TestClient(app) as client:
-        client.cookies.set(SESSION_COOKIE_NAME, access_token)
-        response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
     assert "Billing connection" in response.text
@@ -1443,6 +1487,34 @@ def test_account_page_pending_billing_state_shows_provider_choice_without_defaul
     assert 'action="/app/stripe/connect/start"' in response.text
     assert "Start PayPal setup" in response.text
     assert 'action="/app/paypal/connect/start"' in response.text
+
+
+def test_account_page_pending_billing_state_hides_paypal_choice_for_non_operator_creator():
+    inserted = _insert_creator_user(
+        email=f"ui_account_pending_hidden_{uuid.uuid4().hex}@example.com",
+        name="Pending Hidden Account Creator",
+        stripe_connect_status="pending",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    settings = _paypal_operator_only_settings("ops@creatortrust.co", environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Billing connection" in response.text
+    assert "Choose Stripe here when you are ready." in response.text
+    assert "Start Stripe setup" in response.text
+    assert 'action="/app/stripe/connect/start"' in response.text
+    assert "Start PayPal setup" not in response.text
+    assert 'action="/app/paypal/connect/start"' not in response.text
 
 
 def test_setup_and_account_pages_reuse_connected_but_not_billable_now_vocabulary():
@@ -3682,7 +3754,7 @@ def test_setup_home_disconnected_stripe_state_shows_reconnect_cta():
     assert 'action="/app/stripe/connect/start"' in response.text
 
 
-def test_setup_home_disconnected_paypal_state_shows_reconnect_cta():
+def test_setup_home_disconnected_paypal_state_keeps_reconnect_for_allowlisted_operator():
     inserted = _insert_creator_user(
         email=f"ui_paypal_disconnected_{uuid.uuid4().hex}@example.com",
         name="Disconnected PayPal Creator",
@@ -3698,9 +3770,12 @@ def test_setup_home_disconnected_paypal_state_shows_reconnect_cta():
         expires_delta=timedelta(hours=24),
     )
 
-    with TestClient(app) as client:
-        client.cookies.set(SESSION_COOKIE_NAME, access_token)
-        response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
     assert "Billing connection is disconnected" in response.text
@@ -3733,7 +3808,7 @@ def test_setup_home_disconnected_paypal_state_hides_reconnect_for_non_operator_l
 
     assert response.status_code == 200
     assert "Billing connection is disconnected" in response.text
-    assert "PayPal setup is not yet available for general live creators." in response.text
+    assert "PayPal setup is not yet available for general creators." in response.text
     assert "Reconnect PayPal" not in response.text
     assert 'action="/app/paypal/connect/start"' not in response.text
 
@@ -3765,7 +3840,7 @@ def test_setup_home_connected_stripe_state_shows_connected_details():
     assert "Billing account" in response.text
 
 
-def test_account_page_connected_state_renders_switch_entry_point_and_policy_copy():
+def test_account_page_connected_state_keeps_switch_entry_point_for_allowlisted_operator():
     connected_at = datetime.now(timezone.utc).replace(microsecond=0)
     inserted = _insert_creator_user(
         email=f"ui_account_connected_{uuid.uuid4().hex}@example.com",
@@ -3788,9 +3863,12 @@ def test_account_page_connected_state_renders_switch_entry_point_and_policy_copy
         billing_currency="USD",
     )
 
-    with TestClient(app) as client:
-        client.cookies.set(SESSION_COOKIE_NAME, access_token)
-        response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
     assert "Account settings" in response.text
@@ -3847,7 +3925,7 @@ def test_account_page_connected_state_hides_paypal_switch_for_non_operator_live_
             response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "PayPal setup is not yet available for general live creators." in response.text
+    assert "PayPal setup is not yet available for general creators." in response.text
     assert "Start PayPal switch" not in response.text
     assert 'action="/app/paypal/connect/start"' not in response.text
 
@@ -3911,7 +3989,7 @@ def test_account_page_connected_state_blocks_switch_when_open_invoice_exists():
     assert 'action="/app/paypal/connect/start"' not in response.text
 
 
-def test_account_page_pending_paypal_switch_shows_resume_restart_and_cancel_actions():
+def test_account_page_pending_paypal_switch_keeps_resume_restart_and_cancel_for_allowlisted_operator():
     connected_at = datetime.now(timezone.utc).replace(microsecond=0)
     inserted = _insert_creator_user(
         email=f"ui_account_switch_pending_{uuid.uuid4().hex}@example.com",
@@ -3934,9 +4012,12 @@ def test_account_page_pending_paypal_switch_shows_resume_restart_and_cancel_acti
         target_billing_provider_correlation_id="tracking_ui_account_switch_pending",
     )
 
-    with TestClient(app) as client:
-        client.cookies.set(SESSION_COOKIE_NAME, access_token)
-        response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
     assert "Pending switch target" in response.text
@@ -3978,7 +4059,7 @@ def test_account_page_pending_paypal_switch_hides_resume_and_restart_for_non_ope
 
     assert response.status_code == 200
     assert "Pending switch target" in response.text
-    assert "PayPal setup is not yet available for general live creators." in response.text
+    assert "PayPal setup is not yet available for general creators." in response.text
     assert "Resume PayPal setup" not in response.text
     assert "Restart switch" not in response.text
     assert 'action="/app/account/billing-switch/cancel"' in response.text
@@ -4027,7 +4108,7 @@ def test_account_page_restart_switch_route_redirects_non_operator_live_creator_t
     assert provider.start_calls == []
 
 
-def test_account_page_ready_pending_paypal_switch_shows_commit_action():
+def test_account_page_ready_pending_paypal_switch_keeps_commit_action_for_allowlisted_operator():
     connected_at = datetime.now(timezone.utc).replace(microsecond=0)
     inserted = _insert_creator_user(
         email=f"ui_account_switch_ready_{uuid.uuid4().hex}@example.com",
@@ -4055,10 +4136,13 @@ def test_account_page_ready_pending_paypal_switch_shows_commit_action():
         readiness=BillingAccountReadiness(can_create_invoices=True)
     )
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            client.cookies.set(SESSION_COOKIE_NAME, access_token)
-            response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
     assert "Pending target account" in response.text
@@ -4105,7 +4189,7 @@ def test_account_page_ready_pending_paypal_switch_hides_commit_for_non_operator_
 
     assert response.status_code == 200
     assert "Pending target account" in response.text
-    assert "PayPal setup is not yet available for general live creators." in response.text
+    assert "PayPal setup is not yet available for general creators." in response.text
     assert "Switch to PayPal" not in response.text
     assert "Restart switch" not in response.text
     assert 'action="/app/account/billing-switch/cancel"' in response.text
@@ -4198,11 +4282,13 @@ def test_account_page_pending_paypal_switch_shows_actionable_not_ready_steps():
             ),
         )
     )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            client.cookies.set(SESSION_COOKIE_NAME, access_token)
-            response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
     assert (
@@ -4248,11 +4334,13 @@ def test_account_page_pending_paypal_switch_collapses_provider_failure_into_bloc
             error_code="INTERNAL_SERVER_ERROR",
         ),
     )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            client.cookies.set(SESSION_COOKIE_NAME, access_token)
-            response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
     assert (
@@ -4343,15 +4431,17 @@ def test_account_page_commit_switch_route_promotes_ready_target_provider():
     provider = _StubPayPalProvider(
         readiness=BillingAccountReadiness(can_create_invoices=True)
     )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            client.cookies.set(SESSION_COOKIE_NAME, access_token)
-            response = client.post(
-                "/app/account/billing-switch/commit",
-                headers=HTML_ACCEPT_HEADERS,
-                follow_redirects=False,
-            )
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.post(
+                    "/app/account/billing-switch/commit",
+                    headers=HTML_ACCEPT_HEADERS,
+                    follow_redirects=False,
+                )
 
     assert response.status_code == 303
     assert response.headers["location"] == "/app/account?status=billing-provider-switch-committed"
@@ -5001,7 +5091,7 @@ def test_setup_home_connect_cta_redirects_to_stripe_and_callback_returns_to_app(
     assert creator_row["billing_connected_at"] is not None
 
 
-def test_setup_home_paypal_connect_cta_redirects_to_paypal_onboarding():
+def test_setup_home_paypal_connect_cta_keeps_operator_path_in_sandbox():
     inserted = _insert_creator_user(
         email=f"ui_paypal_cta_{uuid.uuid4().hex}@example.com",
         name="PayPal CTA Creator",
@@ -5016,16 +5106,18 @@ def test_setup_home_paypal_connect_cta_redirects_to_paypal_onboarding():
     provider = _StubPayPalProvider(
         readiness=BillingAccountReadiness(can_create_invoices=True)
     )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
 
-    with _override_app_state("paypal_provider", provider):
-        with TestClient(app) as client:
-            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
 
-            start_response = client.post(
-                "/app/paypal/connect/start",
-                headers=HTML_ACCEPT_HEADERS,
-                follow_redirects=False,
-            )
+                start_response = client.post(
+                    "/app/paypal/connect/start",
+                    headers=HTML_ACCEPT_HEADERS,
+                    follow_redirects=False,
+                )
 
     assert start_response.status_code == 303
     assert start_response.headers["location"].startswith(
@@ -5034,6 +5126,38 @@ def test_setup_home_paypal_connect_cta_redirects_to_paypal_onboarding():
     assert len(provider.start_calls) == 1
     assert provider.start_calls[0]["tracking_id"].startswith("ccp-paypal-")
     assert "state=" in provider.start_calls[0]["return_url"]
+
+
+def test_setup_home_paypal_connect_cta_redirects_non_operator_creator_to_unavailable_notice():
+    inserted = _insert_creator_user(
+        email=f"ui_paypal_cta_hidden_{uuid.uuid4().hex}@example.com",
+        name="PayPal CTA Hidden Creator",
+        stripe_connect_status="pending",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=True)
+    )
+    settings = _paypal_operator_only_settings("ops@creatortrust.co", environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                start_response = client.post(
+                    "/app/paypal/connect/start",
+                    headers=HTML_ACCEPT_HEADERS,
+                    follow_redirects=False,
+                )
+
+    assert start_response.status_code == 303
+    assert start_response.headers["location"] == "/app/account?status=paypal-unavailable"
+    assert provider.start_calls == []
 
 
 def test_setup_home_paypal_connect_cta_redirects_non_operator_live_creator_to_unavailable_notice():

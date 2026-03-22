@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.core.config import Settings
 from app.services.billing_provider import (
     BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
     BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
@@ -12,7 +13,9 @@ from app.services.paypal_provider import (
     PayPalApiRequestError,
     PayPalInvoicePaidSnapshot,
     PayPalProviderError,
+    PayPalSellerOnboardingProvider,
     PayPalSandboxSellerOnboardingProvider,
+    build_default_paypal_provider,
 )
 
 
@@ -79,6 +82,32 @@ def _provider(
             else None
         ),
     )
+
+
+def test_build_default_paypal_provider_uses_selected_live_settings():
+    settings = Settings.model_validate(
+        {
+            "app_env": "local",
+            "paypal_environment": "live",
+            "paypal_live_client_id": "live-client",
+            "paypal_live_client_secret": "live-secret",
+            "paypal_live_partner_id": "live-partner",
+            "paypal_live_api_base_url": "https://api-m.paypal.com",
+            "paypal_sandbox_client_id": "sandbox-client",
+            "paypal_sandbox_client_secret": "sandbox-secret",
+            "paypal_sandbox_partner_id": "sandbox-partner",
+            "paypal_sandbox_api_base_url": "https://api-m.sandbox.paypal.com",
+        }
+    )
+
+    provider = build_default_paypal_provider(settings=settings)
+
+    assert isinstance(provider, PayPalSellerOnboardingProvider)
+    assert provider._environment == "live"
+    assert provider._client_id == "live-client"
+    assert provider._client_secret == "live-secret"
+    assert provider._partner_id == "live-partner"
+    assert provider._api_base_url == "https://api-m.paypal.com"
 
 
 def test_get_billing_account_readiness_maps_paypal_seller_status_to_can_create_invoices():

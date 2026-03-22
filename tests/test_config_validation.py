@@ -13,6 +13,8 @@ from app.core.config import (
     DEFAULT_STRIPE_CONNECT_REDIRECT_URI,
     DEFAULT_STRIPE_SECRET_KEY,
     DEFAULT_STRIPE_WEBHOOK_SECRET,
+    PAYPAL_ENVIRONMENT_LIVE,
+    PAYPAL_ENVIRONMENT_SANDBOX,
     DEFAULT_TRACKED_LINK_BASE_URL,
     Settings,
     SettingsValidationError,
@@ -166,6 +168,63 @@ def test_non_local_missing_operator_allowlist_fails_runtime_validation():
 
     with pytest.raises(SettingsValidationError, match="operator_email_allowlist"):
         settings.validate_runtime()
+
+
+def test_invalid_paypal_environment_fails_runtime_validation():
+    settings = _safe_non_local_settings(paypal_environment="bogus")
+
+    with pytest.raises(SettingsValidationError, match="paypal_environment"):
+        settings.validate_runtime()
+
+
+def test_selected_paypal_settings_follow_explicit_environment():
+    settings = Settings.model_validate(
+        {
+            "app_env": "local",
+            "paypal_environment": PAYPAL_ENVIRONMENT_LIVE,
+            "paypal_sandbox_client_id": "sandbox-client",
+            "paypal_sandbox_client_secret": "sandbox-secret",
+            "paypal_sandbox_partner_id": "sandbox-partner",
+            "paypal_sandbox_api_base_url": "https://api-m.sandbox.paypal.com",
+            "paypal_sandbox_webhook_id": "WH_sandbox",
+            "paypal_live_client_id": "live-client",
+            "paypal_live_client_secret": "live-secret",
+            "paypal_live_partner_id": "live-partner",
+            "paypal_live_api_base_url": "https://api-m.paypal.com",
+            "paypal_live_webhook_id": "WH_live",
+        }
+    )
+
+    assert settings.paypal_environment_value() == PAYPAL_ENVIRONMENT_LIVE
+    assert settings.selected_paypal_client_id() == "live-client"
+    assert settings.selected_paypal_client_secret() == "live-secret"
+    assert settings.selected_paypal_partner_id() == "live-partner"
+    assert settings.selected_paypal_api_base_url() == "https://api-m.paypal.com"
+    assert settings.selected_paypal_webhook_id() == "WH_live"
+
+    sandbox_settings = Settings.model_validate(
+        {
+            "app_env": "local",
+            "paypal_environment": PAYPAL_ENVIRONMENT_SANDBOX,
+            "paypal_sandbox_client_id": "sandbox-client",
+            "paypal_sandbox_client_secret": "sandbox-secret",
+            "paypal_sandbox_partner_id": "sandbox-partner",
+            "paypal_sandbox_api_base_url": "https://api-m.sandbox.paypal.com",
+            "paypal_sandbox_webhook_id": "WH_sandbox",
+            "paypal_live_client_id": "live-client",
+            "paypal_live_client_secret": "live-secret",
+            "paypal_live_partner_id": "live-partner",
+            "paypal_live_api_base_url": "https://api-m.paypal.com",
+            "paypal_live_webhook_id": "WH_live",
+        }
+    )
+
+    assert sandbox_settings.paypal_environment_value() == PAYPAL_ENVIRONMENT_SANDBOX
+    assert sandbox_settings.selected_paypal_client_id() == "sandbox-client"
+    assert sandbox_settings.selected_paypal_client_secret() == "sandbox-secret"
+    assert sandbox_settings.selected_paypal_partner_id() == "sandbox-partner"
+    assert sandbox_settings.selected_paypal_api_base_url() == "https://api-m.sandbox.paypal.com"
+    assert sandbox_settings.selected_paypal_webhook_id() == "WH_sandbox"
 
 
 def test_operator_email_allowlist_parses_comma_separated_values():

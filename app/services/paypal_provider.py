@@ -197,12 +197,13 @@ class UrllibPayPalHttpTransport:
         return parsed_payload
 
 
-class PayPalSandboxSellerOnboardingProvider:
+class PayPalSellerOnboardingProvider:
     billing_provider_name = BILLING_PROVIDER_PAYPAL
 
     def __init__(
         self,
         *,
+        environment: str = "sandbox",
         client_id: str,
         client_secret: str,
         partner_id: str,
@@ -211,6 +212,7 @@ class PayPalSandboxSellerOnboardingProvider:
         transport: UrllibPayPalHttpTransport | None = None,
         booking_email_lookup: Callable[[str | None, str], str | None] | None = None,
     ):
+        self._environment = environment.strip().lower() or "sandbox"
         self._client_id = client_id.strip()
         self._client_secret = client_secret.strip()
         self._partner_id = partner_id.strip()
@@ -282,7 +284,7 @@ class PayPalSandboxSellerOnboardingProvider:
     ) -> PayPalSellerStatus:
         if not self._partner_id:
             raise PayPalProviderError(
-                "paypal sandbox partner id is not configured",
+                f"paypal {self._environment} partner id is not configured",
                 operation="paypal_configuration",
             )
 
@@ -335,7 +337,7 @@ class PayPalSandboxSellerOnboardingProvider:
     ) -> BillingAccountReadiness:
         if not self._partner_id:
             raise PayPalProviderError(
-                "paypal sandbox partner id is not configured",
+                f"paypal {self._environment} partner id is not configured",
                 operation="paypal_configuration",
             )
 
@@ -619,9 +621,14 @@ class PayPalSandboxSellerOnboardingProvider:
         )
 
     def _oauth_access_token(self) -> str:
+        if not self._api_base_url:
+            raise PayPalProviderError(
+                f"paypal {self._environment} api base url is not configured",
+                operation="paypal_configuration",
+            )
         if not self._client_id or not self._client_secret:
             raise PayPalProviderError(
-                "paypal sandbox credentials are not configured",
+                f"paypal {self._environment} credentials are not configured",
                 operation="paypal_configuration",
             )
 
@@ -729,13 +736,17 @@ class PayPalSandboxSellerOnboardingProvider:
         )
 
 
+PayPalSandboxSellerOnboardingProvider = PayPalSellerOnboardingProvider
+
+
 def build_default_paypal_provider(*, settings: Settings | None = None) -> PayPalProvider:
     resolved_settings = settings or get_settings()
-    return PayPalSandboxSellerOnboardingProvider(
-        client_id=resolved_settings.paypal_sandbox_client_id,
-        client_secret=resolved_settings.paypal_sandbox_client_secret,
-        partner_id=resolved_settings.paypal_sandbox_partner_id,
-        api_base_url=resolved_settings.paypal_sandbox_api_base_url,
+    return PayPalSellerOnboardingProvider(
+        environment=resolved_settings.paypal_environment_value(),
+        client_id=resolved_settings.selected_paypal_client_id(),
+        client_secret=resolved_settings.selected_paypal_client_secret(),
+        partner_id=resolved_settings.selected_paypal_partner_id(),
+        api_base_url=resolved_settings.selected_paypal_api_base_url(),
         partner_attribution_id=resolved_settings.paypal_partner_attribution_id,
     )
 

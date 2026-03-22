@@ -23,7 +23,10 @@ from app.services.next_content_experiments import (
     EXPERIMENT_CARD_CLAIM_CONFIG_VERSION,
     EXPERIMENT_CARD_CLAIM_CONTRACT_VERSION,
     EXPERIMENT_CARD_CLAIM_KIND,
+    EXPERIMENT_EVIDENCE_INPUT_VERSION,
+    EXPERIMENT_FRESHNESS_POLICY_VERSION,
     EXPERIMENT_GENERATOR_TYPE,
+    EXPERIMENT_RESULT_SCHEMA_VERSION,
     EXPERIMENT_RUN_CONFIG_VERSION,
     EXPERIMENT_RUN_CONTRACT_VERSION,
     EXPERIMENT_RUN_REDUCER_VERSION,
@@ -35,6 +38,7 @@ from app.services.next_content_experiments import (
     compare_creator_next_content_experiments_runs,
     create_creator_next_content_experiments_run,
     get_creator_next_content_experiment_card_drilldown,
+    get_creator_next_content_experiment_card_drilldown_by_card_id,
     get_creator_next_content_experiments_run,
     get_current_creator_next_content_experiments_unsupported_explanation,
     get_latest_creator_next_content_experiments_run,
@@ -425,8 +429,13 @@ def test_create_creator_next_content_experiments_run_persists_ranked_cards_and_c
     assert latest.lineage.config_version == EXPERIMENT_RUN_CONFIG_VERSION
     assert latest.lineage.contract_version == EXPERIMENT_RUN_CONTRACT_VERSION
     assert latest.lineage.reducer_version == EXPERIMENT_RUN_REDUCER_VERSION
+    assert latest.version_semantics.schema_version == EXPERIMENT_RESULT_SCHEMA_VERSION
+    assert latest.version_semantics.evidence_input_version == EXPERIMENT_EVIDENCE_INPUT_VERSION
+    assert latest.version_semantics.generation_config_version == EXPERIMENT_RUN_CONFIG_VERSION
+    assert latest.freshness_policy.policy_version == EXPERIMENT_FRESHNESS_POLICY_VERSION
     assert specific is not None
     assert specific.claim_snapshot_id == created.claim_snapshot_id
+    assert specific.experiments[0].card_id is not None
     assert specific.experiments[0].card_claim_snapshot_id == stored_run.cards[0].claim_snapshot_id
     assert specific.experiments[0].card_order == 1
     assert specific.experiments[0].lineage is not None
@@ -434,6 +443,7 @@ def test_create_creator_next_content_experiments_run_persists_ranked_cards_and_c
     assert specific.experiments[0].lineage.model_name is None
     assert specific.experiments[0].lineage.prompt_version is None
     assert specific.experiments[0].lineage.config_version == EXPERIMENT_CARD_CLAIM_CONFIG_VERSION
+    assert stored_run.cards[0].card_id == specific.experiments[0].card_id
     assert stored_run.run_contract_version == EXPERIMENT_RUN_CONTRACT_VERSION
     assert stored_run.run_reducer_version == EXPERIMENT_RUN_REDUCER_VERSION
     assert stored_run.run_generator_type == EXPERIMENT_GENERATOR_TYPE
@@ -589,13 +599,25 @@ def test_get_creator_next_content_experiment_card_drilldown_returns_snapshot_bac
             card_order=1,
             db=session,
         )
+        drilldown_by_card_id = get_creator_next_content_experiment_card_drilldown_by_card_id(
+            creator_id=creator.id,
+            run_claim_snapshot_id=created.claim_snapshot_id,
+            card_id=created.experiments[0].card_id,
+            db=session,
+        )
 
     assert drilldown is not None
+    assert drilldown_by_card_id is not None
     assert drilldown.run_claim_snapshot_id == created.claim_snapshot_id
+    assert drilldown.card_id == created.experiments[0].card_id
     assert drilldown.run_lineage.generator_type == EXPERIMENT_GENERATOR_TYPE
     assert drilldown.run_lineage.config_version == EXPERIMENT_RUN_CONFIG_VERSION
     assert drilldown.card_lineage.generator_type == EXPERIMENT_GENERATOR_TYPE
     assert drilldown.card_lineage.config_version == EXPERIMENT_CARD_CLAIM_CONFIG_VERSION
+    assert drilldown.version_semantics.schema_version == EXPERIMENT_RESULT_SCHEMA_VERSION
+    assert drilldown.version_semantics.evidence_input_version == EXPERIMENT_EVIDENCE_INPUT_VERSION
+    assert drilldown.version_semantics.generation_config_version == EXPERIMENT_RUN_CONFIG_VERSION
+    assert drilldown.freshness_policy.policy_version == EXPERIMENT_FRESHNESS_POLICY_VERSION
     assert drilldown.card_order == 1
     assert drilldown.authoritative_source_url == "https://example.com/posts/experiments-drilldown"
     assert drilldown.authoritative_content_tid == "experiments_drilldown"
@@ -605,6 +627,7 @@ def test_get_creator_next_content_experiment_card_drilldown_returns_snapshot_bac
     assert drilldown.settled_paid_results[0].amount_cents == 19500
     assert drilldown.settled_paid_results[0].currency == "USD"
     assert drilldown.settled_paid_results[0].content_tid == "experiments_drilldown"
+    assert drilldown_by_card_id.card_claim_snapshot_id == drilldown.card_claim_snapshot_id
 
 
 def test_get_current_creator_next_content_experiments_unsupported_explanation_reports_missing_authority_and_paid_results():
@@ -720,40 +743,102 @@ def test_get_current_creator_next_content_experiments_unsupported_explanation_re
     assert explanation.has_excluded_current_activity is True
 
 
-def test_compare_creator_next_content_experiments_runs_returns_positionally_compared_stored_runs():
+def test_compare_creator_next_content_experiments_runs_matches_stable_card_ids_across_reordering():
     engine = _engine()
 
     with Session(engine) as session:
         creator, booking_link = _create_creator_fixture(session, suffix="compare")
         creator_id = creator.id
-        content = _create_content(
+        content_a = _create_content(
             session,
             creator=creator,
             booking_link=booking_link,
-            tid="experiments_compare",
-            source_url="https://example.com/posts/experiments-compare",
+            tid="experiments_compare_a",
+            source_url="https://example.com/posts/experiments-compare-a",
+        )
+        content_b = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            tid="experiments_compare_b",
+            source_url="https://example.com/posts/experiments-compare-b",
         )
         _create_authoritative_artifact(
             session,
-            content=content,
+            content=content_a,
             topic_labels=["Retention Reviews"],
             fetched_at=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+        )
+        _create_authoritative_artifact(
+            session,
+            content=content_b,
+            topic_labels=["Pricing Angles"],
+            fetched_at=datetime(2026, 3, 12, 11, 0, tzinfo=timezone.utc),
         )
         _create_paid_booking(
             session,
             creator=creator,
             booking_link=booking_link,
-            content=content,
-            booking_uuid="BOOK_EXPERIMENTS_COMPARE",
+            content=content_a,
+            booking_uuid="BOOK_EXPERIMENTS_COMPARE_A_1",
             paid_at=datetime(2026, 3, 12, 14, 0, tzinfo=timezone.utc),
             amount_cents=19500,
-            stripe_invoice_id="in_experiments_compare",
-            stripe_event_id="evt_experiments_compare",
+            stripe_invoice_id="in_experiments_compare_a_1",
+            stripe_event_id="evt_experiments_compare_a_1",
+        )
+        _create_paid_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content_a,
+            booking_uuid="BOOK_EXPERIMENTS_COMPARE_A_2",
+            paid_at=datetime(2026, 3, 12, 15, 0, tzinfo=timezone.utc),
+            amount_cents=19500,
+            stripe_invoice_id="in_experiments_compare_a_2",
+            stripe_event_id="evt_experiments_compare_a_2",
+        )
+        _create_paid_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content_b,
+            booking_uuid="BOOK_EXPERIMENTS_COMPARE_B_1",
+            paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+            amount_cents=19500,
+            stripe_invoice_id="in_experiments_compare_b_1",
+            stripe_event_id="evt_experiments_compare_b_1",
         )
 
         baseline = create_creator_next_content_experiments_run(
             creator_id=creator_id,
             db=session,
+        )
+        assert [card.content_tids for card in baseline.experiments] == [
+            ["experiments_compare_a"],
+            ["experiments_compare_b"],
+        ]
+
+        _create_paid_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content_b,
+            booking_uuid="BOOK_EXPERIMENTS_COMPARE_B_2",
+            paid_at=datetime(2026, 3, 13, 13, 0, tzinfo=timezone.utc),
+            amount_cents=19500,
+            stripe_invoice_id="in_experiments_compare_b_2",
+            stripe_event_id="evt_experiments_compare_b_2",
+        )
+        _create_paid_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content_b,
+            booking_uuid="BOOK_EXPERIMENTS_COMPARE_B_3",
+            paid_at=datetime(2026, 3, 13, 14, 0, tzinfo=timezone.utc),
+            amount_cents=19500,
+            stripe_invoice_id="in_experiments_compare_b_3",
+            stripe_event_id="evt_experiments_compare_b_3",
         )
         current_candidate_spec = NextContentExperimentsGenerationSpec(
             run_lineage=HelperGenerationLineage(
@@ -778,6 +863,10 @@ def test_compare_creator_next_content_experiments_runs_returns_positionally_comp
             db=session,
             generation_spec=current_candidate_spec,
         )
+        assert [card.content_tids for card in candidate.experiments] == [
+            ["experiments_compare_b"],
+            ["experiments_compare_a"],
+        ]
 
         comparison = compare_creator_next_content_experiments_runs(
             creator_id=creator_id,
@@ -794,10 +883,15 @@ def test_compare_creator_next_content_experiments_runs_returns_positionally_comp
     assert comparison.candidate_run.lineage.model_name == "gpt-5.4-mini"
     assert comparison.candidate_run.lineage.prompt_version == "next_content_experiments.prompt.v2"
     assert comparison.candidate_run.lineage.config_version == "next_content_experiments.helper_config.v2"
-    assert len(comparison.card_comparisons) == 1
+    assert len(comparison.card_comparisons) == 2
+    assert comparison.card_comparisons[0].stable_card_id == baseline.experiments[0].card_id
+    assert comparison.card_comparisons[1].stable_card_id == baseline.experiments[1].card_id
     assert comparison.card_comparisons[0].baseline_card is not None
     assert comparison.card_comparisons[0].candidate_card is not None
-    assert comparison.card_comparisons[0].baseline_card.title == comparison.card_comparisons[0].candidate_card.title
+    assert comparison.card_comparisons[0].baseline_card.card_id == comparison.card_comparisons[0].candidate_card.card_id
+    assert comparison.card_comparisons[0].baseline_card.content_tids == ["experiments_compare_a"]
+    assert comparison.card_comparisons[0].candidate_card.content_tids == ["experiments_compare_a"]
+    assert comparison.card_comparisons[0].candidate_card.card_order == 2
     assert comparison.card_comparisons[0].baseline_card.lineage is not None
     assert comparison.card_comparisons[0].candidate_card.lineage is not None
     assert comparison.card_comparisons[0].baseline_card.lineage.config_version == (
@@ -806,6 +900,12 @@ def test_compare_creator_next_content_experiments_runs_returns_positionally_comp
     assert comparison.card_comparisons[0].candidate_card.lineage.config_version == (
         "next_content_experiment_card.rendering_config.v2"
     )
+    assert comparison.card_comparisons[1].baseline_card is not None
+    assert comparison.card_comparisons[1].candidate_card is not None
+    assert comparison.card_comparisons[1].baseline_card.card_id == comparison.card_comparisons[1].candidate_card.card_id
+    assert comparison.card_comparisons[1].baseline_card.content_tids == ["experiments_compare_b"]
+    assert comparison.card_comparisons[1].candidate_card.content_tids == ["experiments_compare_b"]
+    assert comparison.card_comparisons[1].candidate_card.card_order == 1
 
 
 def test_get_creator_next_content_experiments_run_reads_legacy_null_lineage_without_error():
@@ -854,6 +954,14 @@ def test_get_creator_next_content_experiments_run_reads_legacy_null_lineage_with
         )
         session.execute(
             text(
+                "UPDATE creator_experiment_run_cards "
+                "SET card_id = NULL "
+                "WHERE run_id = :run_id"
+            ),
+            {"run_id": str(created.claim_snapshot_id)},
+        )
+        session.execute(
+            text(
                 "UPDATE creator_claim_snapshots "
                 "SET claim_generator_type = NULL, claim_model_name = NULL, claim_config_version = NULL "
                 "WHERE id IN ("
@@ -884,13 +992,20 @@ def test_get_creator_next_content_experiments_run_reads_legacy_null_lineage_with
     assert loaded.lineage.model_name is None
     assert loaded.lineage.config_version is None
     assert loaded.lineage.contract_version == EXPERIMENT_RUN_CONTRACT_VERSION
+    assert loaded.version_semantics.schema_version == EXPERIMENT_RESULT_SCHEMA_VERSION
+    assert loaded.version_semantics.evidence_input_version == EXPERIMENT_EVIDENCE_INPUT_VERSION
+    assert loaded.version_semantics.generation_config_version is None
+    assert loaded.freshness_policy.policy_version == EXPERIMENT_FRESHNESS_POLICY_VERSION
+    assert loaded.experiments[0].card_id is None
     assert loaded.experiments[0].lineage is not None
     assert loaded.experiments[0].lineage.generator_type is None
     assert loaded.experiments[0].lineage.model_name is None
     assert loaded.experiments[0].lineage.config_version is None
     assert loaded.experiments[0].lineage.contract_version == EXPERIMENT_CARD_CLAIM_CONTRACT_VERSION
     assert drilldown is not None
+    assert drilldown.card_id is None
     assert drilldown.run_lineage.generator_type is None
     assert drilldown.run_lineage.config_version is None
     assert drilldown.card_lineage.generator_type is None
     assert drilldown.card_lineage.config_version is None
+    assert drilldown.version_semantics.generation_config_version is None

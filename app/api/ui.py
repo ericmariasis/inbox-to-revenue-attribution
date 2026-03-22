@@ -136,12 +136,15 @@ from app.services.next_content_experiments import (
     CreatorNextContentExperimentCardDrilldown,
     CreatorNextContentExperimentsResult,
     CreatorNextContentExperimentsRunComparison,
+    HelperFreshnessPolicy,
     HelperGenerationLineage,
+    HelperVersionSemantics,
     NextContentExperimentCard,
     NextContentExperimentUnsupportedExplanation,
     compare_creator_next_content_experiments_runs,
     create_creator_next_content_experiments_run,
     get_creator_next_content_experiment_card_drilldown,
+    get_creator_next_content_experiment_card_drilldown_by_card_id,
     get_creator_next_content_experiments_run,
     get_current_creator_next_content_experiments_unsupported_explanation,
     get_latest_creator_next_content_experiments_run,
@@ -1486,6 +1489,38 @@ def creator_experiment_card_page(
         creator_id=current_user.creator_id,
         run_claim_snapshot_id=run_claim_snapshot_id,
         card_order=card_order,
+        db=db,
+    )
+    if drilldown is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="experiment card not found",
+        )
+
+    return _html_response(
+        _render_experiment_card_drilldown_page(
+            current_user=current_user,
+            drilldown=drilldown,
+        )
+    )
+
+
+@router.get("/app/experiments/{run_claim_snapshot_id}/cards/by-id/{card_id}")
+def creator_experiment_card_by_id_page(
+    request: Request,
+    run_claim_snapshot_id: uuid.UUID,
+    card_id: str,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    drilldown = get_creator_next_content_experiment_card_drilldown_by_card_id(
+        creator_id=current_user.creator_id,
+        run_claim_snapshot_id=run_claim_snapshot_id,
+        card_id=card_id,
         db=db,
     )
     if drilldown is None:
@@ -4540,6 +4575,14 @@ def _render_experiment_results(
       </div>
       <p><strong>Claim snapshot</strong>: <code>{html.escape(str(experiment_run.claim_snapshot_id))}</code></p>
       {_render_experiment_lineage_block(label="Run lineage", lineage=experiment_run.lineage)}
+      {_render_experiment_version_semantics_block(
+          label="Version semantics",
+          version_semantics=experiment_run.version_semantics,
+      )}
+      {_render_experiment_freshness_policy_block(
+          label="Freshness policy",
+          freshness_policy=experiment_run.freshness_policy,
+      )}
       <div class="content-list">{items}</div>
     </section>
     """
@@ -4577,6 +4620,14 @@ def _render_experiment_unsupported_state(
       <p>{html.escape(experiment_run.summary)}</p>
       <p><strong>Claim snapshot</strong>: <code>{html.escape(str(experiment_run.claim_snapshot_id))}</code></p>
       {_render_experiment_lineage_block(label="Run lineage", lineage=experiment_run.lineage)}
+      {_render_experiment_version_semantics_block(
+          label="Version semantics",
+          version_semantics=experiment_run.version_semantics,
+      )}
+      {_render_experiment_freshness_policy_block(
+          label="Freshness policy",
+          freshness_policy=experiment_run.freshness_policy,
+      )}
       {reasons_html}
       {current_activity_note}
     </section>
@@ -4593,6 +4644,16 @@ def _render_experiment_card(
         f"<code>{html.escape(content_tid)}</code>"
         for content_tid in experiment.content_tids
     )
+    card_id_html = (
+        f"<p><strong>Card ID</strong>: <code>{html.escape(experiment.card_id)}</code></p>"
+        if experiment.card_id is not None
+        else ""
+    )
+    card_link = _experiment_card_link(
+        run_claim_snapshot_id=run_claim_snapshot_id,
+        experiment=experiment,
+        index=index,
+    )
     return f"""
     <article class="content-card stack">
       <div class="content-card-header">
@@ -4602,12 +4663,13 @@ def _render_experiment_card(
         </div>
         <span class="status-pill confirmed">Hypothesis</span>
       </div>
+      {card_id_html}
       <p><strong>Hypothesis</strong>: {html.escape(experiment.hypothesis)}</p>
       <p><strong>Why this might work</strong>: {html.escape(experiment.why_this_might_work)}</p>
       <p><strong>Evidence summary</strong>: {html.escape(experiment.evidence_summary)}</p>
       <p><strong>Content tracking ID</strong>: {content_tids}</p>
       <p><strong>Caution</strong>: {html.escape(experiment.caution)}</p>
-      <p><a href="/app/experiments/{html.escape(str(run_claim_snapshot_id))}/cards/{index}" class="inline-link">View evidence</a></p>
+      <p><a href="{html.escape(card_link)}" class="inline-link">View evidence</a></p>
     </article>
     """
 
@@ -4663,9 +4725,18 @@ def _render_experiment_card_drilldown_page(
       <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
       <p><strong>Parent run snapshot</strong>: <code>{html.escape(str(drilldown.run_claim_snapshot_id))}</code></p>
       <p><strong>Card snapshot</strong>: <code>{html.escape(str(drilldown.card_claim_snapshot_id))}</code></p>
+      <p><strong>Card ID</strong>: <code>{html.escape(_lineage_copy(drilldown.card_id))}</code></p>
       <p><strong>Generated</strong>: {_format_timestamp_in_utc(drilldown.created_at)}</p>
       {_render_experiment_lineage_block(label="Run lineage", lineage=drilldown.run_lineage)}
       {_render_experiment_lineage_block(label="Card lineage", lineage=drilldown.card_lineage)}
+      {_render_experiment_version_semantics_block(
+          label="Version semantics",
+          version_semantics=drilldown.version_semantics,
+      )}
+      {_render_experiment_freshness_policy_block(
+          label="Freshness policy",
+          freshness_policy=drilldown.freshness_policy,
+      )}
       <p><strong>Hypothesis</strong>: {html.escape(drilldown.hypothesis)}</p>
       <p><strong>Why this might work</strong>: {html.escape(drilldown.why_this_might_work)}</p>
       <p><strong>Caution</strong>: {html.escape(drilldown.caution)}</p>
@@ -4716,17 +4787,18 @@ def _render_experiment_compare_page(
     candidate = comparison.candidate_run
     card_sections = "".join(
         _render_experiment_card_comparison(
-            card_order=card_comparison.card_order,
+            index=index,
+            stable_card_id=card_comparison.stable_card_id,
             baseline_card=card_comparison.baseline_card,
             candidate_card=card_comparison.candidate_card,
         )
-        for card_comparison in comparison.card_comparisons
+        for index, card_comparison in enumerate(comparison.card_comparisons, start=1)
     )
     if not card_sections:
         card_sections = """
         <section class="empty-state">
           <p class="eyebrow">No cards to compare</p>
-          <p>Both runs are unsupported, so there are no ready cards to compare positionally.</p>
+          <p>Both runs are unsupported, so there are no ready cards to compare by stable card identity.</p>
         </section>
         """
 
@@ -4748,7 +4820,7 @@ def _render_experiment_compare_page(
           <p class="eyebrow">Stored run comparison</p>
           <h2>Historical vs current helper output</h2>
         </div>
-        <p>{html.escape(_count_copy(len(comparison.card_comparisons), "card position"))}</p>
+        <p>{html.escape(_count_copy(len(comparison.card_comparisons), "card comparison"))}</p>
       </div>
       <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
       <p><strong>Baseline snapshot</strong>: <code>{html.escape(str(baseline.claim_snapshot_id))}</code></p>
@@ -4762,7 +4834,7 @@ def _render_experiment_compare_page(
       <div class="section-heading">
         <div>
           <p class="eyebrow">Card comparison</p>
-          <h2>Positionally compared stored output</h2>
+          <h2>Stable-card compared stored output</h2>
         </div>
       </div>
       {card_sections}
@@ -4787,6 +4859,14 @@ def _render_experiment_run_comparison_card(
       <p><strong>Claim snapshot</strong>: <code>{html.escape(str(experiment_run.claim_snapshot_id))}</code></p>
       <p><strong>Generated</strong>: {_format_timestamp_in_utc(experiment_run.created_at)}</p>
       {_render_experiment_lineage_block(label="Run lineage", lineage=experiment_run.lineage)}
+      {_render_experiment_version_semantics_block(
+          label="Version semantics",
+          version_semantics=experiment_run.version_semantics,
+      )}
+      {_render_experiment_freshness_policy_block(
+          label="Freshness policy",
+          freshness_policy=experiment_run.freshness_policy,
+      )}
       <p><a href="/app/experiments?claim_snapshot_id={html.escape(str(experiment_run.claim_snapshot_id))}" class="inline-link">Open this snapshot</a></p>
     </article>
     """
@@ -4794,14 +4874,27 @@ def _render_experiment_run_comparison_card(
 
 def _render_experiment_card_comparison(
     *,
-    card_order: int,
+    index: int,
+    stable_card_id: str | None,
     baseline_card: NextContentExperimentCard | None,
     candidate_card: NextContentExperimentCard | None,
 ) -> str:
+    stable_card_id_html = (
+        f"<p><strong>Stable card ID</strong>: <code>{html.escape(stable_card_id)}</code></p>"
+        if stable_card_id is not None
+        else "<p><strong>Stable card ID</strong>: <code>Not recorded</code></p>"
+    )
     return f"""
-    <section class="grid">
-      {_render_experiment_card_comparison_side(label=f"Baseline card {card_order}", experiment=baseline_card)}
-      {_render_experiment_card_comparison_side(label=f"Candidate card {card_order}", experiment=candidate_card)}
+    <section class="card stack">
+      <div>
+        <p class="eyebrow">Comparison group {index}</p>
+        <h2>Stored helper output</h2>
+      </div>
+      {stable_card_id_html}
+      <div class="grid">
+        {_render_experiment_card_comparison_side(label=f"Baseline card {index}", experiment=baseline_card)}
+        {_render_experiment_card_comparison_side(label=f"Candidate card {index}", experiment=candidate_card)}
+      </div>
     </section>
     """
 
@@ -4838,6 +4931,11 @@ def _render_experiment_card_comparison_side(
         if experiment.card_claim_snapshot_id is not None
         else ""
     )
+    card_id_html = (
+        f"<p><strong>Card ID</strong>: <code>{html.escape(experiment.card_id)}</code></p>"
+        if experiment.card_id is not None
+        else "<p><strong>Card ID</strong>: <code>Not recorded</code></p>"
+    )
     return f"""
     <article class="card stack">
       <div>
@@ -4845,6 +4943,7 @@ def _render_experiment_card_comparison_side(
         <h2>{html.escape(experiment.title)}</h2>
       </div>
       {claim_snapshot_html}
+      {card_id_html}
       <p><strong>Hypothesis</strong>: {html.escape(experiment.hypothesis)}</p>
       <p><strong>Why this might work</strong>: {html.escape(experiment.why_this_might_work)}</p>
       <p><strong>Evidence summary</strong>: {html.escape(experiment.evidence_summary)}</p>
@@ -4875,10 +4974,56 @@ def _render_experiment_lineage_block(
     """
 
 
+def _render_experiment_version_semantics_block(
+    *,
+    label: str,
+    version_semantics: HelperVersionSemantics,
+) -> str:
+    return f"""
+    <div class="stack">
+      <p class="eyebrow">{html.escape(label)}</p>
+      <ul class="reason-list">
+        <li><strong>Schema version</strong>: <code>{html.escape(version_semantics.schema_version)}</code></li>
+        <li><strong>Evidence input version</strong>: <code>{html.escape(version_semantics.evidence_input_version)}</code></li>
+        <li><strong>Generation config version</strong>: <code>{html.escape(_lineage_copy(version_semantics.generation_config_version))}</code></li>
+      </ul>
+    </div>
+    """
+
+
+def _render_experiment_freshness_policy_block(
+    *,
+    label: str,
+    freshness_policy: HelperFreshnessPolicy,
+) -> str:
+    return f"""
+    <div class="stack">
+      <p class="eyebrow">{html.escape(label)}</p>
+      <ul class="reason-list">
+        <li><strong>Policy version</strong>: <code>{html.escape(freshness_policy.policy_version)}</code></li>
+        <li><strong>Authoritative content window</strong>: {html.escape(freshness_policy.authoritative_content_window)}</li>
+        <li><strong>Settled paid window</strong>: {html.escape(freshness_policy.settled_paid_window)}</li>
+        <li><strong>Rerun behavior</strong>: {html.escape(freshness_policy.rerun_behavior)}</li>
+      </ul>
+    </div>
+    """
+
+
 def _lineage_copy(value: str | None) -> str:
     if value is None:
         return "Not recorded"
     return value
+
+
+def _experiment_card_link(
+    *,
+    run_claim_snapshot_id: uuid.UUID,
+    experiment: NextContentExperimentCard,
+    index: int,
+) -> str:
+    if experiment.card_id is not None:
+        return f"/app/experiments/{run_claim_snapshot_id}/cards/by-id/{experiment.card_id}"
+    return f"/app/experiments/{run_claim_snapshot_id}/cards/{index}"
 
 
 def _experiments_snapshot_meta(

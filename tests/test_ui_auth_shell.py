@@ -3619,16 +3619,26 @@ def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():
         page_response = client.get(create_response.headers["location"], headers=HTML_ACCEPT_HEADERS)
         parsed_location = urlparse(create_response.headers["location"])
         run_claim_snapshot_id = parse_qs(parsed_location.query)["claim_snapshot_id"][0]
-        evidence_response = client.get(
-            f"/app/experiments/{run_claim_snapshot_id}/cards/1",
-            headers=HTML_ACCEPT_HEADERS,
-        )
 
     with _engine().connect() as conn:
         run_count = conn.execute(
             text("SELECT COUNT(*) FROM creator_experiment_runs WHERE creator_id = :creator_id"),
             {"creator_id": inserted["creator_id"]},
         ).scalar_one()
+        card_id = conn.execute(
+            text(
+                "SELECT card_id FROM creator_experiment_run_cards "
+                "WHERE run_id = :run_id AND card_order = 1"
+            ),
+            {"run_id": run_claim_snapshot_id},
+        ).scalar_one()
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        evidence_response = client.get(
+            f"/app/experiments/{run_claim_snapshot_id}/cards/by-id/{card_id}",
+            headers=HTML_ACCEPT_HEADERS,
+        )
 
     assert create_response.status_code == 303
     assert create_response.headers["location"].startswith(
@@ -3641,9 +3651,14 @@ def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():
     assert "Test whether another post about Retention Reviews may lead to more attributed paid bookings." in page_response.text
     assert "Claim snapshot" in page_response.text
     assert "Run lineage" in page_response.text
+    assert "Version semantics" in page_response.text
+    assert "Freshness policy" in page_response.text
     assert "deterministic_rules" in page_response.text
     assert "next_content_experiments.helper_config.v1" in page_response.text
-    assert f'href="/app/experiments/{run_claim_snapshot_id}/cards/1"' in page_response.text
+    assert "next_content_experiments.result.v1" in page_response.text
+    assert "next_content_experiments.snapshot_inputs.v1" in page_response.text
+    assert "next_content_experiments.freshness_policy.v1" in page_response.text
+    assert f'href="/app/experiments/{run_claim_snapshot_id}/cards/by-id/{card_id}"' in page_response.text
     assert "<code>" in page_response.text
     assert evidence_response.status_code == 200
     assert "Experiment evidence" in evidence_response.text
@@ -3651,7 +3666,10 @@ def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():
     assert "Settled paid results used" in evidence_response.text
     assert "Parent run snapshot" in evidence_response.text
     assert "Card snapshot" in evidence_response.text
+    assert "Card ID" in evidence_response.text
     assert "Card lineage" in evidence_response.text
+    assert "Version semantics" in evidence_response.text
+    assert "Freshness policy" in evidence_response.text
     assert "next_content_experiment_card.rendering_config.v1" in evidence_response.text
     assert "Experiments Ready Artifact" in evidence_response.text
     assert content_tid in evidence_response.text
@@ -3852,9 +3870,15 @@ def test_experiments_compare_page_renders_two_stored_runs_with_lineage():
     assert baseline_run_claim_snapshot_id in compare_response.text
     assert candidate_run_claim_snapshot_id in compare_response.text
     assert "Run lineage" in compare_response.text
+    assert "Version semantics" in compare_response.text
+    assert "Freshness policy" in compare_response.text
     assert "Card lineage" in compare_response.text
+    assert "Stable card ID" in compare_response.text
     assert "deterministic_rules" in compare_response.text
     assert "next_content_experiments.helper_config.v1" in compare_response.text
+    assert "next_content_experiments.result.v1" in compare_response.text
+    assert "next_content_experiments.snapshot_inputs.v1" in compare_response.text
+    assert "next_content_experiments.freshness_policy.v1" in compare_response.text
     assert "next_content_experiment_card.rendering_config.v1" in compare_response.text
 
 
@@ -3964,6 +3988,14 @@ def test_experiments_pages_render_legacy_null_lineage_as_not_recorded():
         )
         conn.execute(
             text(
+                "UPDATE creator_experiment_run_cards "
+                "SET card_id = NULL "
+                "WHERE run_id = :run_id"
+            ),
+            {"run_id": run_claim_snapshot_id},
+        )
+        conn.execute(
+            text(
                 "UPDATE creator_claim_snapshots "
                 "SET claim_generator_type = NULL, claim_model_name = NULL, claim_config_version = NULL "
                 "WHERE id IN ("
@@ -3988,10 +4020,15 @@ def test_experiments_pages_render_legacy_null_lineage_as_not_recorded():
 
     assert page_response.status_code == 200
     assert "Run lineage" in page_response.text
+    assert "Version semantics" in page_response.text
+    assert "Freshness policy" in page_response.text
     assert "Not recorded" in page_response.text
+    assert f'href="/app/experiments/{run_claim_snapshot_id}/cards/1"' in page_response.text
     assert evidence_response.status_code == 200
     assert "Run lineage" in evidence_response.text
     assert "Card lineage" in evidence_response.text
+    assert "Version semantics" in evidence_response.text
+    assert "Freshness policy" in evidence_response.text
     assert "Not recorded" in evidence_response.text
 
 

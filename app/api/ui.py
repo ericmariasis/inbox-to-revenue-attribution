@@ -315,7 +315,7 @@ ACCOUNT_REQUEST_STATUS_MESSAGES = {
     },
     "paypal-unavailable": {
         "title": "PayPal setup is not available yet",
-        "body": "PayPal setup is not yet available for general live creators. Stripe remains the supported self-serve billing path for now.",
+        "body": "PayPal setup is not yet available for general creators. Stripe remains the supported self-serve billing path for now.",
         "notice_class": "notice error",
     },
 }
@@ -338,8 +338,8 @@ _BILLING_PROVIDER_SETUP_STATE_PENDING_CONNECTION = "pending_connection"
 _BILLING_PROVIDER_SETUP_STATE_READY = "ready"
 _BILLING_PROVIDER_SETUP_STATE_NOT_READY = "not_ready"
 _BILLING_PROVIDER_SETUP_STATE_BLOCKED = "blocked"
-_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY = (
-    "PayPal setup is not yet available for general live creators. "
+_PAYPAL_UNAVAILABLE_CREATOR_COPY = (
+    "PayPal setup is not yet available for general creators. "
     "Stripe remains the supported self-serve billing path for now."
 )
 
@@ -3031,11 +3031,11 @@ def _build_setup_home_progress(
             billing_step_copy_html = (
                 f"{html.escape(_billing_provider_label(readiness.billing_provider))} was connected before, "
                 "but it is disconnected now. "
-                f"{_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY}"
+                f"{_PAYPAL_UNAVAILABLE_CREATOR_COPY}"
             )
             next_action = {
                 "title": "Review billing connection",
-                "copy_html": _PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY,
+                "copy_html": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
                 "action_label": "Open account",
                 "action_href": "/app/account",
                 "action_method": "get",
@@ -3065,7 +3065,7 @@ def _build_setup_home_progress(
                 "Choose Stripe or PayPal to start billing setup. No billing provider is preselected "
                 "for this workspace."
                 if paypal_available_to_creator
-                else "Choose Stripe to start billing setup. PayPal setup is not yet available for general live creators."
+                else "Choose Stripe to start billing setup. PayPal setup is not yet available for general creators."
             )
             next_action = {
                 "title": "Choose billing provider",
@@ -3073,7 +3073,7 @@ def _build_setup_home_progress(
                     "Choose Stripe or PayPal to start billing setup. This release still keeps one "
                     "active billing provider per creator."
                     if paypal_available_to_creator
-                    else "Choose Stripe to start billing setup. PayPal setup is not yet available for general live creators."
+                    else "Choose Stripe to start billing setup. PayPal setup is not yet available for general creators."
                 ),
                 "action_label": "",
                 "action_href": "",
@@ -3089,10 +3089,10 @@ def _build_setup_home_progress(
                 paypal_available_to_creator=paypal_available_to_creator,
             )
             if provider_action is None:
-                billing_step_copy_html = _PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY
+                billing_step_copy_html = _PAYPAL_UNAVAILABLE_CREATOR_COPY
                 next_action = {
                     "title": "Review billing setup",
-                    "copy_html": _PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY,
+                    "copy_html": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
                     "action_label": "Open account",
                     "action_href": "/app/account",
                     "action_method": "get",
@@ -5922,7 +5922,7 @@ def _billing_setup_home_state(
             description = (
                 f"This workspace was connected to {html.escape(_billing_provider_label(readiness.billing_provider))} "
                 "before, but it is disconnected now. "
-                f"{_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY}"
+                f"{_PAYPAL_UNAVAILABLE_CREATOR_COPY}"
             )
         return {
             "label": "Disconnected",
@@ -5942,7 +5942,7 @@ def _billing_setup_home_state(
             "Choose Stripe or PayPal to continue. No billing provider is preselected for this workspace."
             if paypal_available_to_creator
             else "A billing provider is required before this workspace can turn new bookings into invoices. "
-            "Choose Stripe to continue. PayPal setup is not yet available for general live creators."
+            "Choose Stripe to continue. PayPal setup is not yet available for general creators."
         )
         button_label = ""
         button_href = ""
@@ -5953,7 +5953,7 @@ def _billing_setup_home_state(
             paypal_available_to_creator=paypal_available_to_creator,
         )
         if provider_action is None:
-            description = _PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY
+            description = _PAYPAL_UNAVAILABLE_CREATOR_COPY
             button_label = ""
             button_href = ""
         else:
@@ -6013,7 +6013,7 @@ def _account_billing_management_state(
                 and not paypal_available_to_creator
             ):
                 body = (
-                    f"{body} {_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY} "
+                f"{body} {_PAYPAL_UNAVAILABLE_CREATOR_COPY} "
                     "Cancel the pending switch if you need to stay on the current provider."
                 )
         elif switch_clean_state.is_clean:
@@ -6024,7 +6024,7 @@ def _account_billing_management_state(
             )
             if target_provider_action is None:
                 body = (
-                    f"{body} {_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY}"
+                    f"{body} {_PAYPAL_UNAVAILABLE_CREATOR_COPY}"
                 )
             else:
                 body = (
@@ -6063,7 +6063,7 @@ def _account_billing_management_state(
         if provider_action is None:
             body = (
                 f"This workspace is not currently connected to {html.escape(_billing_provider_label(readiness.billing_provider))} "
-                f"for invoicing. {_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY}"
+                f"for invoicing. {_PAYPAL_UNAVAILABLE_CREATOR_COPY}"
             )
         return {
             "label": "Disconnected",
@@ -6079,7 +6079,7 @@ def _account_billing_management_state(
             "for this workspace."
             if paypal_available_to_creator
             else "This workspace is not currently connected to a billing provider for invoicing. "
-            "Choose Stripe here when you are ready. PayPal setup is not yet available for general live creators."
+            "Choose Stripe here when you are ready. PayPal setup is not yet available for general creators."
         )
         actions_html = _render_billing_provider_choice_actions(
             paypal_available_to_creator=paypal_available_to_creator
@@ -6093,7 +6093,7 @@ def _account_billing_management_state(
         if provider_action is None:
             body = (
                 "This workspace is not currently connected to a billing provider for invoicing. "
-                f"{_PAYPAL_UNAVAILABLE_LIVE_CREATOR_COPY}"
+                f"{_PAYPAL_UNAVAILABLE_CREATOR_COPY}"
             )
             actions_html = ""
         else:
@@ -6564,7 +6564,7 @@ def _paypal_available_to_creator(
 ) -> bool:
     if current_user is None:
         return False
-    return _request_settings(request).paypal_live_available_to_creator(current_user.email)
+    return _request_settings(request).paypal_available_to_creator(current_user.email)
 
 
 def _allowlisted_operator_from_browser_request(

@@ -99,7 +99,7 @@ def _creator_can_start_paypal_onboarding(*, creator: Creator) -> bool:
 
 
 def _paypal_available_to_current_user(*, request: Request, current_user: AuthUser) -> bool:
-    return _settings(request).paypal_live_available_to_creator(current_user.email)
+    return _settings(request).paypal_available_to_creator(current_user.email)
 
 
 def build_paypal_connect_start_response(

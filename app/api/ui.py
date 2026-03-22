@@ -135,7 +135,11 @@ from app.services.next_content_experiments import (
     EXPERIMENT_RUN_STATUS_UNSUPPORTED,
     CreatorNextContentExperimentCardDrilldown,
     CreatorNextContentExperimentsResult,
+    CreatorNextContentExperimentsRunComparison,
+    HelperGenerationLineage,
+    NextContentExperimentCard,
     NextContentExperimentUnsupportedExplanation,
+    compare_creator_next_content_experiments_runs,
     create_creator_next_content_experiments_run,
     get_creator_next_content_experiment_card_drilldown,
     get_creator_next_content_experiments_run,
@@ -1431,6 +1435,38 @@ def creator_experiments_generate(
     db.commit()
     return _redirect(
         f"/app/experiments?status=generated&claim_snapshot_id={experiment_run.claim_snapshot_id}"
+    )
+
+
+@router.get("/app/experiments/compare")
+def creator_experiments_compare_page(
+    request: Request,
+    baseline_claim_snapshot_id: uuid.UUID = Query(..., alias="baseline_claim_snapshot_id"),
+    candidate_claim_snapshot_id: uuid.UUID = Query(..., alias="candidate_claim_snapshot_id"),
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    comparison = compare_creator_next_content_experiments_runs(
+        creator_id=current_user.creator_id,
+        baseline_claim_snapshot_id=baseline_claim_snapshot_id,
+        candidate_claim_snapshot_id=candidate_claim_snapshot_id,
+        db=db,
+    )
+    if comparison is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="experiment comparison not found",
+        )
+
+    return _html_response(
+        _render_experiment_compare_page(
+            current_user=current_user,
+            comparison=comparison,
+        )
     )
 
 
@@ -4436,7 +4472,7 @@ def _render_experiments_page(
           <h2>Keep unsupported and diagnostics separate</h2>
         </div>
         <p>Each card shown here must clear one authoritative content pattern plus one settled paid pattern. If that bar is not met, the page stays `unsupported` instead of guessing.</p>
-        <p>Deeper evidence drilldown stays for the next story. This page shows only the top-level snapshot id, inline evidence summary, and the tracked content id behind each card.</p>
+        <p>Each stored snapshot now preserves explicit helper lineage plus drilldown links to the exact card evidence it used.</p>
       </article>
     </section>
     <section class="card stack">
@@ -4503,6 +4539,7 @@ def _render_experiment_results(
         <span class="status-pill confirmed">Ready</span>
       </div>
       <p><strong>Claim snapshot</strong>: <code>{html.escape(str(experiment_run.claim_snapshot_id))}</code></p>
+      {_render_experiment_lineage_block(label="Run lineage", lineage=experiment_run.lineage)}
       <div class="content-list">{items}</div>
     </section>
     """
@@ -4539,6 +4576,7 @@ def _render_experiment_unsupported_state(
       <h2>Not enough trusted evidence yet</h2>
       <p>{html.escape(experiment_run.summary)}</p>
       <p><strong>Claim snapshot</strong>: <code>{html.escape(str(experiment_run.claim_snapshot_id))}</code></p>
+      {_render_experiment_lineage_block(label="Run lineage", lineage=experiment_run.lineage)}
       {reasons_html}
       {current_activity_note}
     </section>
@@ -4626,6 +4664,8 @@ def _render_experiment_card_drilldown_page(
       <p><strong>Parent run snapshot</strong>: <code>{html.escape(str(drilldown.run_claim_snapshot_id))}</code></p>
       <p><strong>Card snapshot</strong>: <code>{html.escape(str(drilldown.card_claim_snapshot_id))}</code></p>
       <p><strong>Generated</strong>: {_format_timestamp_in_utc(drilldown.created_at)}</p>
+      {_render_experiment_lineage_block(label="Run lineage", lineage=drilldown.run_lineage)}
+      {_render_experiment_lineage_block(label="Card lineage", lineage=drilldown.card_lineage)}
       <p><strong>Hypothesis</strong>: {html.escape(drilldown.hypothesis)}</p>
       <p><strong>Why this might work</strong>: {html.escape(drilldown.why_this_might_work)}</p>
       <p><strong>Caution</strong>: {html.escape(drilldown.caution)}</p>
@@ -4663,6 +4703,182 @@ def _render_experiment_card_drilldown_page(
     </section>
     """
     return _page_layout(title="Experiment Evidence", body=body)
+
+
+def _render_experiment_compare_page(
+    *,
+    current_user: AuthUser,
+    comparison: CreatorNextContentExperimentsRunComparison,
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    baseline = comparison.baseline_run
+    candidate = comparison.candidate_run
+    card_sections = "".join(
+        _render_experiment_card_comparison(
+            card_order=card_comparison.card_order,
+            baseline_card=card_comparison.baseline_card,
+            candidate_card=card_comparison.candidate_card,
+        )
+        for card_comparison in comparison.card_comparisons
+    )
+    if not card_sections:
+        card_sections = """
+        <section class="empty-state">
+          <p class="eyebrow">No cards to compare</p>
+          <p>Both runs are unsupported, so there are no ready cards to compare positionally.</p>
+        </section>
+        """
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Experiment comparison</h1>
+        <p class="lede">Compare two stored experiment snapshots without changing the underlying evidence contract.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/experiments")}
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Stored run comparison</p>
+          <h2>Historical vs current helper output</h2>
+        </div>
+        <p>{html.escape(_count_copy(len(comparison.card_comparisons), "card position"))}</p>
+      </div>
+      <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+      <p><strong>Baseline snapshot</strong>: <code>{html.escape(str(baseline.claim_snapshot_id))}</code></p>
+      <p><strong>Candidate snapshot</strong>: <code>{html.escape(str(candidate.claim_snapshot_id))}</code></p>
+    </section>
+    <section class="grid">
+      {_render_experiment_run_comparison_card(label="Baseline run", experiment_run=baseline)}
+      {_render_experiment_run_comparison_card(label="Candidate run", experiment_run=candidate)}
+    </section>
+    <section class="stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Card comparison</p>
+          <h2>Positionally compared stored output</h2>
+        </div>
+      </div>
+      {card_sections}
+    </section>
+    """
+    return _page_layout(title="Experiment Comparison", body=body)
+
+
+def _render_experiment_run_comparison_card(
+    *,
+    label: str,
+    experiment_run: CreatorNextContentExperimentsResult,
+) -> str:
+    status_copy = "Ready" if experiment_run.status == EXPERIMENT_RUN_STATUS_READY else "Unsupported"
+    return f"""
+    <article class="card stack">
+      <div>
+        <p class="eyebrow">{html.escape(label)}</p>
+        <h2>{html.escape(experiment_run.summary)}</h2>
+      </div>
+      <p><strong>Status</strong>: {html.escape(status_copy)}</p>
+      <p><strong>Claim snapshot</strong>: <code>{html.escape(str(experiment_run.claim_snapshot_id))}</code></p>
+      <p><strong>Generated</strong>: {_format_timestamp_in_utc(experiment_run.created_at)}</p>
+      {_render_experiment_lineage_block(label="Run lineage", lineage=experiment_run.lineage)}
+      <p><a href="/app/experiments?claim_snapshot_id={html.escape(str(experiment_run.claim_snapshot_id))}" class="inline-link">Open this snapshot</a></p>
+    </article>
+    """
+
+
+def _render_experiment_card_comparison(
+    *,
+    card_order: int,
+    baseline_card: NextContentExperimentCard | None,
+    candidate_card: NextContentExperimentCard | None,
+) -> str:
+    return f"""
+    <section class="grid">
+      {_render_experiment_card_comparison_side(label=f"Baseline card {card_order}", experiment=baseline_card)}
+      {_render_experiment_card_comparison_side(label=f"Candidate card {card_order}", experiment=candidate_card)}
+    </section>
+    """
+
+
+def _render_experiment_card_comparison_side(
+    *,
+    label: str,
+    experiment: NextContentExperimentCard | None,
+) -> str:
+    if experiment is None:
+        return f"""
+        <article class="card stack">
+          <div>
+            <p class="eyebrow">{html.escape(label)}</p>
+            <h2>No card in this run</h2>
+          </div>
+        </article>
+        """
+
+    content_tids = " ".join(
+        f"<code>{html.escape(content_tid)}</code>"
+        for content_tid in experiment.content_tids
+    )
+    lineage_html = (
+        _render_experiment_lineage_block(
+            label="Card lineage",
+            lineage=experiment.lineage,
+        )
+        if experiment.lineage is not None
+        else ""
+    )
+    claim_snapshot_html = (
+        f"<p><strong>Card snapshot</strong>: <code>{html.escape(str(experiment.card_claim_snapshot_id))}</code></p>"
+        if experiment.card_claim_snapshot_id is not None
+        else ""
+    )
+    return f"""
+    <article class="card stack">
+      <div>
+        <p class="eyebrow">{html.escape(label)}</p>
+        <h2>{html.escape(experiment.title)}</h2>
+      </div>
+      {claim_snapshot_html}
+      <p><strong>Hypothesis</strong>: {html.escape(experiment.hypothesis)}</p>
+      <p><strong>Why this might work</strong>: {html.escape(experiment.why_this_might_work)}</p>
+      <p><strong>Evidence summary</strong>: {html.escape(experiment.evidence_summary)}</p>
+      <p><strong>Content tracking ID</strong>: {content_tids}</p>
+      <p><strong>Caution</strong>: {html.escape(experiment.caution)}</p>
+      {lineage_html}
+    </article>
+    """
+
+
+def _render_experiment_lineage_block(
+    *,
+    label: str,
+    lineage: HelperGenerationLineage,
+) -> str:
+    return f"""
+    <div class="stack">
+      <p class="eyebrow">{html.escape(label)}</p>
+      <ul class="reason-list">
+        <li><strong>Generator type</strong>: <code>{html.escape(_lineage_copy(lineage.generator_type))}</code></li>
+        <li><strong>Model</strong>: <code>{html.escape(_lineage_copy(lineage.model_name))}</code></li>
+        <li><strong>Prompt version</strong>: <code>{html.escape(_lineage_copy(lineage.prompt_version))}</code></li>
+        <li><strong>Config version</strong>: <code>{html.escape(_lineage_copy(lineage.config_version))}</code></li>
+        <li><strong>Contract version</strong>: <code>{html.escape(_lineage_copy(lineage.contract_version))}</code></li>
+        <li><strong>Reducer version</strong>: <code>{html.escape(_lineage_copy(lineage.reducer_version))}</code></li>
+      </ul>
+    </div>
+    """
+
+
+def _lineage_copy(value: str | None) -> str:
+    if value is None:
+        return "Not recorded"
+    return value
 
 
 def _experiments_snapshot_meta(

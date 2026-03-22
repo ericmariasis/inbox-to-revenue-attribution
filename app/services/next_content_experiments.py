@@ -32,11 +32,14 @@ from app.services.settled_paid_evidence import (
 
 EXPERIMENT_RUN_STATUS_READY = "ready"
 EXPERIMENT_RUN_STATUS_UNSUPPORTED = "unsupported"
+EXPERIMENT_GENERATOR_TYPE = "deterministic_rules"
 EXPERIMENT_RUN_CONTRACT_VERSION = "next_content_experiments_helper.v1"
 EXPERIMENT_RUN_REDUCER_VERSION = "next_content_experiments.rules.v1"
+EXPERIMENT_RUN_CONFIG_VERSION = "next_content_experiments.helper_config.v1"
 EXPERIMENT_CARD_CLAIM_KIND = "next_content_experiment_card"
 EXPERIMENT_CARD_CLAIM_CONTRACT_VERSION = "next_content_experiment_card.v1"
 EXPERIMENT_CARD_CLAIM_REDUCER_VERSION = EXPERIMENT_RUN_REDUCER_VERSION
+EXPERIMENT_CARD_CLAIM_CONFIG_VERSION = "next_content_experiment_card.rendering_config.v1"
 MAX_EXPERIMENT_CARDS = 3
 UNSUPPORTED_EXPERIMENTS_SUMMARY = (
     "Not enough trusted evidence yet to suggest next content experiments. "
@@ -47,6 +50,42 @@ ExperimentRunStatus = Literal["ready", "unsupported"]
 
 
 @dataclass(frozen=True)
+class HelperGenerationLineage:
+    generator_type: str | None
+    model_name: str | None
+    prompt_version: str | None
+    config_version: str | None
+    contract_version: str
+    reducer_version: str | None
+
+
+@dataclass(frozen=True)
+class NextContentExperimentsGenerationSpec:
+    run_lineage: HelperGenerationLineage
+    card_lineage: HelperGenerationLineage
+
+
+CURRENT_NEXT_CONTENT_EXPERIMENTS_GENERATION_SPEC = NextContentExperimentsGenerationSpec(
+    run_lineage=HelperGenerationLineage(
+        generator_type=EXPERIMENT_GENERATOR_TYPE,
+        model_name=None,
+        prompt_version=None,
+        config_version=EXPERIMENT_RUN_CONFIG_VERSION,
+        contract_version=EXPERIMENT_RUN_CONTRACT_VERSION,
+        reducer_version=EXPERIMENT_RUN_REDUCER_VERSION,
+    ),
+    card_lineage=HelperGenerationLineage(
+        generator_type=EXPERIMENT_GENERATOR_TYPE,
+        model_name=None,
+        prompt_version=None,
+        config_version=EXPERIMENT_CARD_CLAIM_CONFIG_VERSION,
+        contract_version=EXPERIMENT_CARD_CLAIM_CONTRACT_VERSION,
+        reducer_version=EXPERIMENT_CARD_CLAIM_REDUCER_VERSION,
+    ),
+)
+
+
+@dataclass(frozen=True)
 class NextContentExperimentCard:
     title: str
     hypothesis: str
@@ -54,6 +93,9 @@ class NextContentExperimentCard:
     evidence_summary: str
     content_tids: list[str]
     caution: str
+    card_claim_snapshot_id: UUID | None = None
+    card_order: int | None = None
+    lineage: HelperGenerationLineage | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +103,7 @@ class CreatorNextContentExperimentsResult:
     claim_snapshot_id: UUID
     status: ExperimentRunStatus
     summary: str
+    lineage: HelperGenerationLineage
     experiments: list[NextContentExperimentCard]
     created_at: datetime
 
@@ -85,6 +128,8 @@ class CreatorNextContentExperimentCardDrilldown:
     run_claim_snapshot_id: UUID
     card_claim_snapshot_id: UUID
     created_at: datetime
+    run_lineage: HelperGenerationLineage
+    card_lineage: HelperGenerationLineage
     card_order: int
     title: str
     hypothesis: str
@@ -109,10 +154,25 @@ class _ExperimentCandidate:
     last_paid_at: datetime
 
 
+@dataclass(frozen=True)
+class CreatorNextContentExperimentCardComparison:
+    card_order: int
+    baseline_card: NextContentExperimentCard | None
+    candidate_card: NextContentExperimentCard | None
+
+
+@dataclass(frozen=True)
+class CreatorNextContentExperimentsRunComparison:
+    baseline_run: CreatorNextContentExperimentsResult
+    candidate_run: CreatorNextContentExperimentsResult
+    card_comparisons: list[CreatorNextContentExperimentCardComparison]
+
+
 def create_creator_next_content_experiments_run(
     *,
     creator_id: UUID,
     db: Session,
+    generation_spec: NextContentExperimentsGenerationSpec = CURRENT_NEXT_CONTENT_EXPERIMENTS_GENERATION_SPEC,
 ) -> CreatorNextContentExperimentsResult:
     settled_snapshot = get_creator_settled_paid_evidence(
         creator_id=creator_id,
@@ -128,9 +188,12 @@ def create_creator_next_content_experiments_run(
         creator_id=creator_id,
         status=EXPERIMENT_RUN_STATUS_UNSUPPORTED,
         summary_text=UNSUPPORTED_EXPERIMENTS_SUMMARY,
-        run_contract_version=EXPERIMENT_RUN_CONTRACT_VERSION,
-        run_reducer_version=EXPERIMENT_RUN_REDUCER_VERSION,
-        run_prompt_version=None,
+        run_generator_type=generation_spec.run_lineage.generator_type,
+        run_model_name=generation_spec.run_lineage.model_name,
+        run_config_version=generation_spec.run_lineage.config_version,
+        run_contract_version=generation_spec.run_lineage.contract_version,
+        run_reducer_version=generation_spec.run_lineage.reducer_version,
+        run_prompt_version=generation_spec.run_lineage.prompt_version,
     )
     db.add(run_record)
     db.flush()
@@ -151,8 +214,12 @@ def create_creator_next_content_experiments_run(
                     authoritative_extraction_artifact_id=candidate.authoritative_evidence.artifact.id,
                     authoritative_fetch_snapshot_id=candidate.authoritative_evidence.fetch_snapshot.id,
                     settled_paid_evidence_rows=candidate.settled_paid_rows,
-                    claim_contract_version=EXPERIMENT_CARD_CLAIM_CONTRACT_VERSION,
-                    claim_reducer_version=EXPERIMENT_CARD_CLAIM_REDUCER_VERSION,
+                    claim_generator_type=generation_spec.card_lineage.generator_type,
+                    claim_model_name=generation_spec.card_lineage.model_name,
+                    claim_config_version=generation_spec.card_lineage.config_version,
+                    claim_contract_version=generation_spec.card_lineage.contract_version,
+                    claim_reducer_version=generation_spec.card_lineage.reducer_version,
+                    claim_prompt_version=generation_spec.card_lineage.prompt_version,
                     rendered_claim_text=_rendered_claim_text(card=card),
                 ),
                 db=db,
@@ -185,7 +252,12 @@ def create_creator_next_content_experiments_run(
 
     db.flush()
     db.refresh(run_record)
-    return _build_experiment_result(run_record)
+    hydrated_run_record = db.execute(
+        _creator_experiment_run_query(creator_id=creator_id).where(
+            CreatorExperimentRunRecord.id == run_record.id
+        )
+    ).scalar_one()
+    return _build_experiment_result(hydrated_run_record)
 
 
 def get_latest_creator_next_content_experiments_run(
@@ -257,6 +329,8 @@ def get_creator_next_content_experiment_card_drilldown(
         run_claim_snapshot_id=run_record.id,
         card_claim_snapshot_id=card_record.claim_snapshot_id,
         created_at=run_record.created_at,
+        run_lineage=_build_run_lineage(run_record),
+        card_lineage=_build_claim_lineage(resolved_snapshot.snapshot),
         card_order=card_record.card_order,
         title=card_record.title,
         hypothesis=card_record.hypothesis,
@@ -277,6 +351,52 @@ def get_creator_next_content_experiment_card_drilldown(
                 currency=row.invoice_currency,
             )
             for row in resolved_snapshot.settled_paid_evidence_rows
+        ],
+    )
+
+
+def compare_creator_next_content_experiments_runs(
+    *,
+    creator_id: UUID,
+    baseline_claim_snapshot_id: UUID,
+    candidate_claim_snapshot_id: UUID,
+    db: Session,
+) -> CreatorNextContentExperimentsRunComparison | None:
+    baseline_run = get_creator_next_content_experiments_run(
+        creator_id=creator_id,
+        claim_snapshot_id=baseline_claim_snapshot_id,
+        db=db,
+    )
+    if baseline_run is None:
+        return None
+
+    candidate_run = get_creator_next_content_experiments_run(
+        creator_id=creator_id,
+        claim_snapshot_id=candidate_claim_snapshot_id,
+        db=db,
+    )
+    if candidate_run is None:
+        return None
+
+    max_cards = max(len(baseline_run.experiments), len(candidate_run.experiments))
+    return CreatorNextContentExperimentsRunComparison(
+        baseline_run=baseline_run,
+        candidate_run=candidate_run,
+        card_comparisons=[
+            CreatorNextContentExperimentCardComparison(
+                card_order=index,
+                baseline_card=(
+                    baseline_run.experiments[index - 1]
+                    if index - 1 < len(baseline_run.experiments)
+                    else None
+                ),
+                candidate_card=(
+                    candidate_run.experiments[index - 1]
+                    if index - 1 < len(candidate_run.experiments)
+                    else None
+                ),
+            )
+            for index in range(1, max_cards + 1)
         ],
     )
 
@@ -321,7 +441,11 @@ def get_current_creator_next_content_experiments_unsupported_explanation(
 def _creator_experiment_run_query(*, creator_id: UUID):
     return (
         select(CreatorExperimentRunRecord)
-        .options(selectinload(CreatorExperimentRunRecord.cards))
+        .options(
+            selectinload(CreatorExperimentRunRecord.cards).selectinload(
+                CreatorExperimentRunCardRecord.claim_snapshot
+            )
+        )
         .where(CreatorExperimentRunRecord.creator_id == creator_id)
     )
 
@@ -440,6 +564,9 @@ def _build_experiment_result(
 ) -> CreatorNextContentExperimentsResult:
     experiments = [
         NextContentExperimentCard(
+            card_claim_snapshot_id=card.claim_snapshot_id,
+            card_order=card.card_order,
+            lineage=_build_card_record_lineage(card),
             title=card.title,
             hypothesis=card.hypothesis,
             why_this_might_work=card.why_this_might_work,
@@ -458,6 +585,7 @@ def _build_experiment_result(
         claim_snapshot_id=run_record.id,
         status=run_record.status,
         summary=run_record.summary_text,
+        lineage=_build_run_lineage(run_record),
         experiments=experiments,
         created_at=run_record.created_at,
     )
@@ -498,6 +626,37 @@ def _build_experiment_card(
         evidence_summary=evidence_summary,
         content_tids=[tid],
         caution=caution,
+    )
+
+
+def _build_run_lineage(run_record: CreatorExperimentRunRecord) -> HelperGenerationLineage:
+    return HelperGenerationLineage(
+        generator_type=run_record.run_generator_type,
+        model_name=run_record.run_model_name,
+        prompt_version=run_record.run_prompt_version,
+        config_version=run_record.run_config_version,
+        contract_version=run_record.run_contract_version,
+        reducer_version=run_record.run_reducer_version,
+    )
+
+
+def _build_card_record_lineage(
+    card_record: CreatorExperimentRunCardRecord,
+) -> HelperGenerationLineage | None:
+    claim_snapshot = card_record.claim_snapshot
+    if claim_snapshot is None:
+        return None
+    return _build_claim_lineage(claim_snapshot)
+
+
+def _build_claim_lineage(claim_snapshot) -> HelperGenerationLineage:
+    return HelperGenerationLineage(
+        generator_type=claim_snapshot.claim_generator_type,
+        model_name=claim_snapshot.claim_model_name,
+        prompt_version=claim_snapshot.claim_prompt_version,
+        config_version=claim_snapshot.claim_config_version,
+        contract_version=claim_snapshot.claim_contract_version,
+        reducer_version=claim_snapshot.claim_reducer_version,
     )
 
 

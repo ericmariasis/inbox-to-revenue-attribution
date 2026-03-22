@@ -28,6 +28,9 @@ class CreateCreatorClaimSnapshotInput:
     authoritative_fetch_snapshot_id: UUID
     settled_paid_evidence_rows: list[SettledPaidEvidenceRow]
     claim_contract_version: str
+    claim_generator_type: str | None = None
+    claim_model_name: str | None = None
+    claim_config_version: str | None = None
     claim_reducer_version: str | None = None
     claim_prompt_version: str | None = None
     rendered_claim_text: str | None = None
@@ -41,6 +44,9 @@ class CreatorClaimSnapshot:
     authoritative_extraction_artifact_id: UUID
     authoritative_fetch_snapshot_id: UUID
     claim_kind: str
+    claim_generator_type: str | None
+    claim_model_name: str | None
+    claim_config_version: str | None
     claim_contract_version: str
     claim_reducer_version: str | None
     claim_prompt_version: str | None
@@ -101,6 +107,9 @@ def create_creator_claim_snapshot(
         authoritative_extraction_artifact_id=input.authoritative_extraction_artifact_id,
         authoritative_fetch_snapshot_id=input.authoritative_fetch_snapshot_id,
         claim_kind=input.claim_kind,
+        claim_generator_type=input.claim_generator_type,
+        claim_model_name=input.claim_model_name,
+        claim_config_version=input.claim_config_version,
         claim_contract_version=input.claim_contract_version,
         claim_reducer_version=input.claim_reducer_version,
         claim_prompt_version=input.claim_prompt_version,
@@ -200,6 +209,9 @@ def _build_snapshot(snapshot_record: CreatorClaimSnapshotRecord) -> CreatorClaim
         authoritative_extraction_artifact_id=snapshot_record.authoritative_extraction_artifact_id,
         authoritative_fetch_snapshot_id=snapshot_record.authoritative_fetch_snapshot_id,
         claim_kind=snapshot_record.claim_kind,
+        claim_generator_type=snapshot_record.claim_generator_type,
+        claim_model_name=snapshot_record.claim_model_name,
+        claim_config_version=snapshot_record.claim_config_version,
         claim_contract_version=snapshot_record.claim_contract_version,
         claim_reducer_version=snapshot_record.claim_reducer_version,
         claim_prompt_version=snapshot_record.claim_prompt_version,

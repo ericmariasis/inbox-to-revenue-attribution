@@ -38,6 +38,9 @@ class CreatorClaimSnapshotRecord(Base):
         nullable=False,
     )
     claim_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    claim_generator_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claim_model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    claim_config_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     claim_contract_version: Mapped[str] = mapped_column(String(128), nullable=False)
     claim_reducer_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     claim_prompt_version: Mapped[str | None] = mapped_column(String(128), nullable=True)

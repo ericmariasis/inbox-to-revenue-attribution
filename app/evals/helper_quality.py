@@ -9,6 +9,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from app.services.next_content_experiments import (
+    EXPERIMENT_RUN_CONFIG_VERSION,
     EXPERIMENT_RUN_CONTRACT_VERSION,
     EXPERIMENT_RUN_REDUCER_VERSION,
     UNSUPPORTED_EXPERIMENTS_SUMMARY,
@@ -236,6 +237,7 @@ class Story96HelperCandidateIdentity(BaseModel):
     generator_type: str
     model_name: str | None = None
     prompt_version: str | None = None
+    config_version: str | None = None
     contract_version: str | None = None
     reducer_version: str | None = None
     notes: str | None = None
@@ -814,6 +816,7 @@ def _story96_candidate_registry() -> dict[
                 generator_type="deterministic_rules",
                 model_name=None,
                 prompt_version=None,
+                config_version=EXPERIMENT_RUN_CONFIG_VERSION,
                 contract_version=EXPERIMENT_RUN_CONTRACT_VERSION,
                 reducer_version=EXPERIMENT_RUN_REDUCER_VERSION,
                 notes=(
@@ -830,6 +833,7 @@ def _story96_candidate_registry() -> dict[
                 generator_type="deterministic_rules",
                 model_name=None,
                 prompt_version=None,
+                config_version="story96.generic_revenue_first.config.v1",
                 contract_version="story96.generic_revenue_first.v1",
                 reducer_version="story96.generic_revenue_first.rules.v1",
                 notes=(

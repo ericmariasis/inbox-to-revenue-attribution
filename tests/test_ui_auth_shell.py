@@ -3653,9 +3653,11 @@ def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():
     assert "Run lineage" in page_response.text
     assert "Version semantics" in page_response.text
     assert "Freshness policy" in page_response.text
+    assert "Why this is ranked here" in page_response.text
+    assert "only supported pattern in your current snapshot" in page_response.text
     assert "deterministic_rules" in page_response.text
-    assert "next_content_experiments.helper_config.v1" in page_response.text
-    assert "next_content_experiments.result.v1" in page_response.text
+    assert "next_content_experiments.helper_config.v2" in page_response.text
+    assert "next_content_experiments.result.v2" in page_response.text
     assert "next_content_experiments.snapshot_inputs.v1" in page_response.text
     assert "next_content_experiments.freshness_policy.v1" in page_response.text
     assert f'href="/app/experiments/{run_claim_snapshot_id}/cards/by-id/{card_id}"' in page_response.text
@@ -3670,7 +3672,9 @@ def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():
     assert "Card lineage" in evidence_response.text
     assert "Version semantics" in evidence_response.text
     assert "Freshness policy" in evidence_response.text
-    assert "next_content_experiment_card.rendering_config.v1" in evidence_response.text
+    assert "Why this is ranked here" in evidence_response.text
+    assert "only supported pattern in your current snapshot" in evidence_response.text
+    assert "next_content_experiment_card.rendering_config.v2" in evidence_response.text
     assert "Experiments Ready Artifact" in evidence_response.text
     assert content_tid in evidence_response.text
     assert "USD 195.00" in evidence_response.text
@@ -3874,12 +3878,14 @@ def test_experiments_compare_page_renders_two_stored_runs_with_lineage():
     assert "Freshness policy" in compare_response.text
     assert "Card lineage" in compare_response.text
     assert "Stable card ID" in compare_response.text
+    assert "Why this is ranked here" in compare_response.text
+    assert "only supported pattern in your current snapshot" in compare_response.text
     assert "deterministic_rules" in compare_response.text
-    assert "next_content_experiments.helper_config.v1" in compare_response.text
-    assert "next_content_experiments.result.v1" in compare_response.text
+    assert "next_content_experiments.helper_config.v2" in compare_response.text
+    assert "next_content_experiments.result.v2" in compare_response.text
     assert "next_content_experiments.snapshot_inputs.v1" in compare_response.text
     assert "next_content_experiments.freshness_policy.v1" in compare_response.text
-    assert "next_content_experiment_card.rendering_config.v1" in compare_response.text
+    assert "next_content_experiment_card.rendering_config.v2" in compare_response.text
 
 
 def test_experiments_pages_render_legacy_null_lineage_as_not_recorded():
@@ -3989,7 +3995,7 @@ def test_experiments_pages_render_legacy_null_lineage_as_not_recorded():
         conn.execute(
             text(
                 "UPDATE creator_experiment_run_cards "
-                "SET card_id = NULL "
+                "SET card_id = NULL, ranking_rationale = NULL "
                 "WHERE run_id = :run_id"
             ),
             {"run_id": run_claim_snapshot_id},
@@ -4029,6 +4035,7 @@ def test_experiments_pages_render_legacy_null_lineage_as_not_recorded():
     assert "Card lineage" in evidence_response.text
     assert "Version semantics" in evidence_response.text
     assert "Freshness policy" in evidence_response.text
+    assert "Why this is ranked here" in evidence_response.text
     assert "Not recorded" in evidence_response.text
 
 

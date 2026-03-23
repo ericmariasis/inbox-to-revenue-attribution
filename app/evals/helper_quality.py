@@ -13,6 +13,7 @@ from app.services.next_content_experiments import (
     EXPERIMENT_RUN_CONTRACT_VERSION,
     EXPERIMENT_RUN_REDUCER_VERSION,
     UNSUPPORTED_EXPERIMENTS_SUMMARY,
+    build_next_content_experiment_ranking_rationale,
 )
 
 DEFAULT_STORY96_DATASET_PATH = (
@@ -23,13 +24,15 @@ HELPER_EVAL_DIMENSION_PASS_THRESHOLD = 0.75
 HELPER_EVAL_CASE_PASS_THRESHOLD = 0.8
 MAX_HELPER_EVAL_CARDS = 3
 
+STORY96_BASELINE_RUN_CONFIG_VERSION = "next_content_experiments.helper_config.v1"
+
 DEFAULT_STORY96_CANDIDATE_IDS = [
     "current_evidence_backed_rules_v1",
-    "generic_revenue_first_v1",
+    "ready_ranking_clarity_v1",
 ]
 
 HELPER_QUALITY_EVAL_RUBRIC = {
-    "version": "story96-v1",
+    "version": "story96-v2",
     "case_pass_threshold": HELPER_EVAL_CASE_PASS_THRESHOLD,
     "candidate_ranking": {
         "primary_metric": "average_overall_score",
@@ -75,6 +78,7 @@ HELPER_QUALITY_EVAL_RUBRIC = {
                 "topic-specific titles or hypotheses should stay actionable rather than generic",
                 "modest framing should stay explicit",
                 "evidence summaries should include concrete counts or totals when support exists",
+                "ready outputs should explain why each card is ranked where it is",
                 "unsupported outputs should still explain why the helper is blocked",
             ],
         },
@@ -220,6 +224,7 @@ class Story96HelperCardOutput(BaseModel):
     why_this_might_work: str
     evidence_summary: str
     caution: str
+    ranking_rationale: str | None = None
     content_tids: list[str] = Field(default_factory=list)
     evidence_citations: list[Story96HelperEvidenceCitation] = Field(default_factory=list)
 
@@ -677,6 +682,9 @@ def _evaluate_usefulness(
         hypothesis_style_cards = 0
         modest_caution_cards = 0
         evidence_specific_cards = 0
+        ranking_rationale_cards = 0
+        ranking_rationale_grounded_cards = 0
+        ranking_rationale_order_cards = 0
 
         for index, card in enumerate(output.cards):
             expected_topic = expected_topics[index] if index < len(expected_topics) else None
@@ -692,6 +700,12 @@ def _evaluate_usefulness(
                 modest_caution_cards += 1
             if any(character.isdigit() for character in card.evidence_summary):
                 evidence_specific_cards += 1
+            if card.ranking_rationale and card.ranking_rationale.strip():
+                ranking_rationale_cards += 1
+                if _ranking_rationale_has_evidence_signal(card.ranking_rationale):
+                    ranking_rationale_grounded_cards += 1
+                if _ranking_rationale_has_order_signal(card.ranking_rationale):
+                    ranking_rationale_order_cards += 1
 
         ready_card_count = len(output.cards)
         denominator = ready_card_count if ready_card_count else 1
@@ -743,6 +757,35 @@ def _evaluate_usefulness(
                     detail=(
                         f"{evidence_specific_cards} of {ready_card_count} cards include "
                         "concrete evidence numbers in the evidence summary"
+                    ),
+                ),
+                _check_result(
+                    name="ranking_rationale_present",
+                    passed=ready_card_count > 0 and ranking_rationale_cards == ready_card_count,
+                    score=ranking_rationale_cards / denominator,
+                    detail=(
+                        f"{ranking_rationale_cards} of {ready_card_count} cards include "
+                        "ranking-rationale copy"
+                    ),
+                ),
+                _check_result(
+                    name="ranking_rationale_grounded",
+                    passed=ready_card_count > 0
+                    and ranking_rationale_grounded_cards == ready_card_count,
+                    score=ranking_rationale_grounded_cards / denominator,
+                    detail=(
+                        f"{ranking_rationale_grounded_cards} of {ready_card_count} cards include "
+                        "concrete evidence signals in the ranking rationale"
+                    ),
+                ),
+                _check_result(
+                    name="ranking_rationale_order_signal",
+                    passed=ready_card_count > 0
+                    and ranking_rationale_order_cards == ready_card_count,
+                    score=ranking_rationale_order_cards / denominator,
+                    detail=(
+                        f"{ranking_rationale_order_cards} of {ready_card_count} cards explain "
+                        "placement in the current ordering"
                     ),
                 ),
             ]
@@ -816,7 +859,7 @@ def _story96_candidate_registry() -> dict[
                 generator_type="deterministic_rules",
                 model_name=None,
                 prompt_version=None,
-                config_version=EXPERIMENT_RUN_CONFIG_VERSION,
+                config_version=STORY96_BASELINE_RUN_CONFIG_VERSION,
                 contract_version=EXPERIMENT_RUN_CONTRACT_VERSION,
                 reducer_version=EXPERIMENT_RUN_REDUCER_VERSION,
                 notes=(
@@ -825,6 +868,23 @@ def _story96_candidate_registry() -> dict[
                 ),
             ),
             _generate_current_evidence_backed_rules,
+        ),
+        "ready_ranking_clarity_v1": (
+            Story96HelperCandidateIdentity(
+                candidate_id="ready_ranking_clarity_v1",
+                display_name="Ready Ranking Clarity",
+                generator_type="deterministic_rules",
+                model_name=None,
+                prompt_version=None,
+                config_version=EXPERIMENT_RUN_CONFIG_VERSION,
+                contract_version=EXPERIMENT_RUN_CONTRACT_VERSION,
+                reducer_version=EXPERIMENT_RUN_REDUCER_VERSION,
+                notes=(
+                    "Comparison candidate that keeps the current evidence-backed helper logic "
+                    "but adds creator-visible ranking rationale for ready cards."
+                ),
+            ),
+            _generate_ready_ranking_clarity_rules,
         ),
         "generic_revenue_first_v1": (
             Story96HelperCandidateIdentity(
@@ -862,6 +922,45 @@ def _generate_current_evidence_backed_rules(
         :MAX_HELPER_EVAL_CARDS
     ]
     cards = [_build_baseline_card(pattern=pattern) for pattern in selected_patterns]
+    return Story96HelperCandidateOutput(
+        status="ready",
+        summary=_ready_summary(card_count=len(cards)),
+        cards=cards,
+        unsupported_reasons=[],
+    )
+
+
+def _generate_ready_ranking_clarity_rules(
+    case: Story96HelperEvalCase,
+) -> Story96HelperCandidateOutput:
+    supported_patterns = _supported_patterns(case)
+    if not supported_patterns:
+        return Story96HelperCandidateOutput(
+            status="unsupported",
+            summary=UNSUPPORTED_EXPERIMENTS_SUMMARY,
+            cards=[],
+            unsupported_reasons=_expected_unsupported_reasons(case),
+        )
+
+    selected_patterns = sorted(supported_patterns, key=_baseline_pattern_sort_key)[
+        :MAX_HELPER_EVAL_CARDS
+    ]
+    cards = [
+        _build_baseline_card(
+            pattern=pattern,
+            ranking_rationale=build_next_content_experiment_ranking_rationale(
+                rank=index,
+                paid_booking_count=pattern.paid_booking_count,
+                paid_invoice_count=pattern.paid_invoice_count,
+                revenue_summary=_format_revenue_summary(pattern),
+                reason=_baseline_ranking_reason(
+                    selected_patterns=selected_patterns,
+                    rank=index,
+                ),
+            ),
+        )
+        for index, pattern in enumerate(selected_patterns, start=1)
+    ]
     return Story96HelperCandidateOutput(
         status="ready",
         summary=_ready_summary(card_count=len(cards)),
@@ -936,6 +1035,7 @@ def _expected_unsupported_reasons(case: Story96HelperEvalCase) -> list[str]:
 def _build_baseline_card(
     *,
     pattern: Story96ContentPatternSeed,
+    ranking_rationale: str | None = None,
 ) -> Story96HelperCardOutput:
     topic_label = pattern.primary_topic or "Supported Pattern"
     title = _truncate_title(f"Test another {topic_label} angle")
@@ -965,6 +1065,7 @@ def _build_baseline_card(
         why_this_might_work=why_this_might_work,
         evidence_summary=evidence_summary,
         caution=caution,
+        ranking_rationale=ranking_rationale,
         content_tids=[pattern.content_tid],
         evidence_citations=[
             Story96HelperEvidenceCitation(
@@ -1014,6 +1115,37 @@ def _baseline_pattern_sort_key(
         -int(last_paid_at.timestamp()),
         pattern.content_tid,
     )
+
+
+def _baseline_ranking_reason(
+    *,
+    selected_patterns: list[Story96ContentPatternSeed],
+    rank: int,
+) -> Literal[
+    "only_supported_pattern",
+    "paid_bookings",
+    "paid_revenue",
+    "recency",
+    "deterministic_tie_breaker",
+]:
+    if len(selected_patterns) == 1:
+        return "only_supported_pattern"
+
+    current_index = rank - 1
+    current_pattern = selected_patterns[current_index]
+    reference_pattern = (
+        selected_patterns[1]
+        if current_index == 0
+        else selected_patterns[current_index - 1]
+    )
+
+    if current_pattern.paid_booking_count != reference_pattern.paid_booking_count:
+        return "paid_bookings"
+    if current_pattern.paid_revenue_cents != reference_pattern.paid_revenue_cents:
+        return "paid_revenue"
+    if current_pattern.last_paid_at != reference_pattern.last_paid_at:
+        return "recency"
+    return "deterministic_tie_breaker"
 
 
 def _generic_pattern_sort_key(
@@ -1120,10 +1252,30 @@ def _combined_output_text(output: Story96HelperCandidateOutput) -> str:
                 card.hypothesis,
                 card.why_this_might_work,
                 card.evidence_summary,
+                card.ranking_rationale,
                 card.caution,
             ]
         )
     return " ".join(part for part in parts if part)
+
+
+def _ranking_rationale_has_evidence_signal(value: str) -> bool:
+    return any(character.isdigit() for character in value) and (
+        _contains_normalized_fragment(value, "booking")
+        or _contains_normalized_fragment(value, "invoice")
+        or _contains_normalized_fragment(value, "revenue")
+        or _contains_normalized_fragment(value, "recent")
+    )
+
+
+def _ranking_rationale_has_order_signal(value: str) -> bool:
+    return (
+        _contains_normalized_fragment(value, "lead")
+        or _contains_normalized_fragment(value, "first")
+        or _contains_normalized_fragment(value, "only supported pattern")
+        or _contains_normalized_fragment(value, "ranks below")
+        or _contains_normalized_fragment(value, "tie-breaker")
+    )
 
 
 def _cited_content_tids(output: Story96HelperCandidateOutput) -> list[str]:

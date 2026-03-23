@@ -4667,6 +4667,11 @@ def _render_experiment_card(
       <p><strong>Hypothesis</strong>: {html.escape(experiment.hypothesis)}</p>
       <p><strong>Why this might work</strong>: {html.escape(experiment.why_this_might_work)}</p>
       <p><strong>Evidence summary</strong>: {html.escape(experiment.evidence_summary)}</p>
+      {_render_experiment_ranking_rationale(
+          label="Why this is ranked here",
+          ranking_rationale=experiment.ranking_rationale,
+          include_not_recorded=False,
+      )}
       <p><strong>Content tracking ID</strong>: {content_tids}</p>
       <p><strong>Caution</strong>: {html.escape(experiment.caution)}</p>
       <p><a href="{html.escape(card_link)}" class="inline-link">View evidence</a></p>
@@ -4739,6 +4744,11 @@ def _render_experiment_card_drilldown_page(
       )}
       <p><strong>Hypothesis</strong>: {html.escape(drilldown.hypothesis)}</p>
       <p><strong>Why this might work</strong>: {html.escape(drilldown.why_this_might_work)}</p>
+      {_render_experiment_ranking_rationale(
+          label="Why this is ranked here",
+          ranking_rationale=drilldown.ranking_rationale,
+          include_not_recorded=True,
+      )}
       <p><strong>Caution</strong>: {html.escape(drilldown.caution)}</p>
     </section>
     <section class="grid">
@@ -4947,6 +4957,11 @@ def _render_experiment_card_comparison_side(
       <p><strong>Hypothesis</strong>: {html.escape(experiment.hypothesis)}</p>
       <p><strong>Why this might work</strong>: {html.escape(experiment.why_this_might_work)}</p>
       <p><strong>Evidence summary</strong>: {html.escape(experiment.evidence_summary)}</p>
+      {_render_experiment_ranking_rationale(
+          label="Why this is ranked here",
+          ranking_rationale=experiment.ranking_rationale,
+          include_not_recorded=True,
+      )}
       <p><strong>Content tracking ID</strong>: {content_tids}</p>
       <p><strong>Caution</strong>: {html.escape(experiment.caution)}</p>
       {lineage_html}
@@ -5007,6 +5022,20 @@ def _render_experiment_freshness_policy_block(
       </ul>
     </div>
     """
+
+
+def _render_experiment_ranking_rationale(
+    *,
+    label: str,
+    ranking_rationale: str | None,
+    include_not_recorded: bool,
+) -> str:
+    if ranking_rationale is None and not include_not_recorded:
+        return ""
+    return (
+        f"<p><strong>{html.escape(label)}</strong>: "
+        f"{html.escape(_lineage_copy(ranking_rationale) if include_not_recorded else ranking_rationale or '')}</p>"
+    )
 
 
 def _lineage_copy(value: str | None) -> str:

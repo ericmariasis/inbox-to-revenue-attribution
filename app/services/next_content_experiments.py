@@ -36,8 +36,8 @@ EXPERIMENT_RUN_STATUS_UNSUPPORTED = "unsupported"
 EXPERIMENT_GENERATOR_TYPE = "deterministic_rules"
 EXPERIMENT_RUN_CONTRACT_VERSION = "next_content_experiments_helper.v1"
 EXPERIMENT_RUN_REDUCER_VERSION = "next_content_experiments.rules.v1"
-EXPERIMENT_RUN_CONFIG_VERSION = "next_content_experiments.helper_config.v1"
-EXPERIMENT_RESULT_SCHEMA_VERSION = "next_content_experiments.result.v1"
+EXPERIMENT_RUN_CONFIG_VERSION = "next_content_experiments.helper_config.v2"
+EXPERIMENT_RESULT_SCHEMA_VERSION = "next_content_experiments.result.v2"
 EXPERIMENT_EVIDENCE_INPUT_VERSION = "next_content_experiments.snapshot_inputs.v1"
 EXPERIMENT_FRESHNESS_POLICY_VERSION = "next_content_experiments.freshness_policy.v1"
 EXPERIMENT_CARD_ID_VERSION = "next_content_experiment_card_id.v1"
@@ -53,7 +53,7 @@ EXPERIMENT_RERUN_BEHAVIOR = (
 EXPERIMENT_CARD_CLAIM_KIND = "next_content_experiment_card"
 EXPERIMENT_CARD_CLAIM_CONTRACT_VERSION = "next_content_experiment_card.v1"
 EXPERIMENT_CARD_CLAIM_REDUCER_VERSION = EXPERIMENT_RUN_REDUCER_VERSION
-EXPERIMENT_CARD_CLAIM_CONFIG_VERSION = "next_content_experiment_card.rendering_config.v1"
+EXPERIMENT_CARD_CLAIM_CONFIG_VERSION = "next_content_experiment_card.rendering_config.v2"
 MAX_EXPERIMENT_CARDS = 3
 UNSUPPORTED_EXPERIMENTS_SUMMARY = (
     "Not enough trusted evidence yet to suggest next content experiments. "
@@ -129,6 +129,7 @@ class NextContentExperimentCard:
     evidence_summary: str
     content_tids: list[str]
     caution: str
+    ranking_rationale: str | None = None
     card_id: str | None = None
     card_claim_snapshot_id: UUID | None = None
     card_order: int | None = None
@@ -176,6 +177,7 @@ class CreatorNextContentExperimentCardDrilldown:
     title: str
     hypothesis: str
     why_this_might_work: str
+    ranking_rationale: str | None
     caution: str
     authoritative_source_url: str
     authoritative_content_tid: str
@@ -247,7 +249,11 @@ def create_creator_next_content_experiments_run(
         run_record.summary_text = _ready_summary(card_count=len(selected_candidates))
 
         for index, candidate in enumerate(selected_candidates, start=1):
-            card = _build_experiment_card(candidate=candidate)
+            card = _build_experiment_card(
+                candidate=candidate,
+                selected_candidates=selected_candidates,
+                rank=index,
+            )
             claim_snapshot = create_creator_claim_snapshot(
                 creator_id=creator_id,
                 input=CreateCreatorClaimSnapshotInput(
@@ -275,6 +281,7 @@ def create_creator_next_content_experiments_run(
                     hypothesis=card.hypothesis,
                     why_this_might_work=card.why_this_might_work,
                     evidence_summary=card.evidence_summary,
+                    ranking_rationale=card.ranking_rationale,
                     caution=card.caution,
                     card_order=index,
                 )
@@ -427,6 +434,7 @@ def _build_experiment_card_drilldown(
         title=card_record.title,
         hypothesis=card_record.hypothesis,
         why_this_might_work=card_record.why_this_might_work,
+        ranking_rationale=card_record.ranking_rationale,
         caution=card_record.caution,
         authoritative_source_url=content.source_url,
         authoritative_content_tid=content.tid,
@@ -675,6 +683,7 @@ def _build_experiment_result(
             evidence_summary=card.evidence_summary,
             content_tids=[card.content_tid],
             caution=card.caution,
+            ranking_rationale=card.ranking_rationale,
         )
         for card in run_record.cards
     ]
@@ -699,6 +708,8 @@ def _build_experiment_result(
 def _build_experiment_card(
     *,
     candidate: _ExperimentCandidate,
+    selected_candidates: list[_ExperimentCandidate],
+    rank: int,
 ) -> NextContentExperimentCard:
     revenue_summary = _format_revenue_summary(candidate.settled_paid_rows)
     topic_label = candidate.primary_topic_label
@@ -720,6 +731,16 @@ def _build_experiment_card(
         f"{candidate.paid_invoice_count} paid "
         f'invoice{"s" if candidate.paid_invoice_count != 1 else ""} totaling {revenue_summary}.'
     )
+    ranking_rationale = build_next_content_experiment_ranking_rationale(
+        rank=rank,
+        paid_booking_count=candidate.paid_booking_count,
+        paid_invoice_count=candidate.paid_invoice_count,
+        revenue_summary=revenue_summary,
+        reason=_experiment_card_ranking_reason(
+            selected_candidates=selected_candidates,
+            rank=rank,
+        ),
+    )
     caution = (
         "Treat this as a hypothesis, not a guarantee. This card is grounded in one "
         "authoritative content pattern and this creator's settled paid results for one tracked post."
@@ -731,8 +752,108 @@ def _build_experiment_card(
         evidence_summary=evidence_summary,
         content_tids=[tid],
         caution=caution,
+        ranking_rationale=ranking_rationale,
         card_id=_build_experiment_card_id(candidate=candidate),
     )
+
+
+def build_next_content_experiment_ranking_rationale(
+    *,
+    rank: int,
+    paid_booking_count: int,
+    paid_invoice_count: int,
+    revenue_summary: str,
+    reason: Literal[
+        "only_supported_pattern",
+        "paid_bookings",
+        "paid_revenue",
+        "recency",
+        "deterministic_tie_breaker",
+    ],
+) -> str:
+    booking_copy = (
+        f"{paid_booking_count} paid booking"
+        f'{"s" if paid_booking_count != 1 else ""}'
+    )
+    invoice_copy = (
+        f"{paid_invoice_count} paid invoice"
+        f'{"s" if paid_invoice_count != 1 else ""}'
+    )
+    evidence_copy = f"{booking_copy} across {invoice_copy} totaling {revenue_summary}"
+
+    if rank == 1:
+        if reason == "only_supported_pattern":
+            return (
+                "It is the only supported pattern in your current snapshot, with "
+                f"{evidence_copy}."
+            )
+        if reason == "paid_bookings":
+            return f"It leads your current snapshot on paid bookings, with {evidence_copy}."
+        if reason == "paid_revenue":
+            return (
+                "It is tied on paid bookings but leads on attributed revenue, with "
+                f"{evidence_copy}."
+            )
+        if reason == "recency":
+            return (
+                "It is tied on paid bookings and attributed revenue but is the most recent "
+                f"supported paid pattern, with {evidence_copy}."
+            )
+        return (
+            "It remains first after the current deterministic tie-breakers, with "
+            f"{evidence_copy}."
+        )
+
+    if reason == "paid_bookings":
+        return (
+            f"It is still supported by {evidence_copy}, but it ranks below the card above "
+            "because that pattern has more paid bookings."
+        )
+    if reason == "paid_revenue":
+        return (
+            f"It is still supported by {evidence_copy}, but it ranks below the card above "
+            "because that pattern is tied on paid bookings and leads on attributed revenue."
+        )
+    if reason == "recency":
+        return (
+            f"It is still supported by {evidence_copy}, but it ranks below the card above "
+            "because that pattern is tied on paid bookings and attributed revenue and is more recent."
+        )
+    return (
+        f"It is still supported by {evidence_copy}, but it ranks below the card above after "
+        "the current deterministic tie-breakers."
+    )
+
+
+def _experiment_card_ranking_reason(
+    *,
+    selected_candidates: list[_ExperimentCandidate],
+    rank: int,
+) -> Literal[
+    "only_supported_pattern",
+    "paid_bookings",
+    "paid_revenue",
+    "recency",
+    "deterministic_tie_breaker",
+]:
+    if len(selected_candidates) == 1:
+        return "only_supported_pattern"
+
+    current_index = rank - 1
+    current_candidate = selected_candidates[current_index]
+    reference_candidate = (
+        selected_candidates[1]
+        if current_index == 0
+        else selected_candidates[current_index - 1]
+    )
+
+    if current_candidate.paid_booking_count != reference_candidate.paid_booking_count:
+        return "paid_bookings"
+    if current_candidate.paid_revenue_cents != reference_candidate.paid_revenue_cents:
+        return "paid_revenue"
+    if current_candidate.last_paid_at != reference_candidate.last_paid_at:
+        return "recency"
+    return "deterministic_tie_breaker"
 
 
 def _build_run_lineage(run_record: CreatorExperimentRunRecord) -> HelperGenerationLineage:
@@ -867,6 +988,8 @@ def _validate_experiment_result(
 def _validate_experiment_card(experiment: NextContentExperimentCard) -> None:
     if experiment.card_id is not None and not experiment.card_id.strip():
         raise ValueError("experiment card ids must be non-empty when recorded")
+    if experiment.ranking_rationale is not None and not experiment.ranking_rationale.strip():
+        raise ValueError("experiment ranking rationale must be non-empty when recorded")
     if not experiment.title.strip():
         raise ValueError("experiment title is required")
     if not experiment.hypothesis.startswith("Test whether "):

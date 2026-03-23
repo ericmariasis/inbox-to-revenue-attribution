@@ -40,6 +40,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
             assert "card_id" in experiment_run_card_columns
+            assert "ranking_rationale" in experiment_run_card_columns
             assert "calendly_webhook_events" in table_names
             assert "fullscope_webhook_events" in table_names
             assert "content_topic_candidates" in table_names
@@ -107,7 +108,8 @@ def test_migrations_upgrade_and_downgrade():
             assert "creator_experiment_runs" in table_names
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
-            assert "card_id" not in experiment_run_card_columns
+            assert "card_id" in experiment_run_card_columns
+            assert "ranking_rationale" not in experiment_run_card_columns
             assert "calendly_webhook_events" in table_names
             assert "fullscope_webhook_events" in table_names
             assert "content_topic_candidates" in table_names
@@ -154,6 +156,9 @@ def test_migrations_upgrade_and_downgrade():
         with engine.connect() as conn:
             inspector = inspect(conn)
             table_names = inspector.get_table_names(schema="public")
+            experiment_run_card_columns = {
+                column["name"] for column in inspector.get_columns("creator_experiment_run_cards")
+            }
             creator_columns = {column["name"] for column in inspector.get_columns("creators")}
             experiment_run_columns = {
                 column["name"] for column in inspector.get_columns("creator_experiment_runs")
@@ -177,6 +182,8 @@ def test_migrations_upgrade_and_downgrade():
             assert "creator_experiment_runs" in table_names
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
+            assert "card_id" not in experiment_run_card_columns
+            assert "ranking_rationale" not in experiment_run_card_columns
             assert "calendly_webhook_events" in table_names
             assert "fullscope_webhook_events" in table_names
             assert "content_topic_candidates" in table_names
@@ -223,7 +230,16 @@ def test_migrations_upgrade_and_downgrade():
         with engine.connect() as conn:
             inspector = inspect(conn)
             table_names = inspector.get_table_names(schema="public")
+            experiment_run_card_columns = {
+                column["name"] for column in inspector.get_columns("creator_experiment_run_cards")
+            }
             creator_columns = {column["name"] for column in inspector.get_columns("creators")}
+            experiment_run_columns = {
+                column["name"] for column in inspector.get_columns("creator_experiment_runs")
+            }
+            claim_snapshot_columns = {
+                column["name"] for column in inspector.get_columns("creator_claim_snapshots")
+            }
             booking_columns = {column["name"] for column in inspector.get_columns("bookings")}
             content_columns = {column["name"] for column in inspector.get_columns("content")}
             invoice_columns = {column["name"] for column in inspector.get_columns("invoices")}
@@ -240,6 +256,8 @@ def test_migrations_upgrade_and_downgrade():
             assert "creator_experiment_runs" in table_names
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
+            assert "card_id" not in experiment_run_card_columns
+            assert "ranking_rationale" not in experiment_run_card_columns
             assert "calendly_webhook_events" in table_names
             assert "fullscope_webhook_events" in table_names
             assert "content_topic_candidates" in table_names
@@ -325,7 +343,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "billing_connect_status" in creator_columns
             assert "billing_connected_at" in creator_columns
             assert "billing_account_id" in creator_columns
-            assert "billing_provider_correlation_id" not in creator_columns
+            assert "billing_provider_correlation_id" in creator_columns
             assert "payment_provider" in invoice_columns
             assert "provider_account_id" in invoice_columns
             assert "provider_invoice_id" in invoice_columns
@@ -893,7 +911,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "content" in table_names
             assert "booking_links" in table_names
 
-        command.downgrade(cfg, "-1")
+        command.downgrade(cfg, "a3d2f4b8c9e1")
         with engine.connect() as conn:
             inspector = inspect(conn)
             table_names = inspector.get_table_names(schema="public")
@@ -1201,6 +1219,7 @@ def test_creator_experiment_run_cards_table_has_expected_columns_fk_indexes_and_
             "hypothesis",
             "why_this_might_work",
             "evidence_summary",
+            "ranking_rationale",
             "caution",
             "card_order",
         }

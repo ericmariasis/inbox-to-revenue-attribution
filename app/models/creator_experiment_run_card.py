@@ -46,6 +46,7 @@ class CreatorExperimentRunCardRecord(Base):
     hypothesis: Mapped[str] = mapped_column(Text, nullable=False)
     why_this_might_work: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    ranking_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     caution: Mapped[str] = mapped_column(Text, nullable=False)
     card_order: Mapped[int] = mapped_column(Integer, nullable=False)
 

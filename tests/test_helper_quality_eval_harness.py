@@ -48,50 +48,55 @@ def test_story96_helper_eval_runner_compares_named_candidates_and_writes_json(
         DEFAULT_STORY96_CANDIDATE_IDS
     )
 
-    winning_candidate = result["candidates"][0]
-    generic_candidate = result["candidates"][1]
+    baseline_candidate = result["candidates"][0]
+    ranking_candidate = result["candidates"][1]
 
-    assert result["comparison"]["winner_candidate_id"] == "current_evidence_backed_rules_v1"
-    assert result["comparison"]["ranked_candidates"][0]["candidate_id"] == (
-        "current_evidence_backed_rules_v1"
-    )
-    assert winning_candidate["candidate"]["config_version"] == "next_content_experiments.helper_config.v1"
-    assert generic_candidate["candidate"]["config_version"] == "story96.generic_revenue_first.config.v1"
+    assert result["comparison"]["winner_candidate_id"] == "ready_ranking_clarity_v1"
+    assert result["comparison"]["ranked_candidates"][0]["candidate_id"] == "ready_ranking_clarity_v1"
+    assert baseline_candidate["candidate"]["config_version"] == "next_content_experiments.helper_config.v1"
+    assert ranking_candidate["candidate"]["config_version"] == "next_content_experiments.helper_config.v2"
 
-    assert winning_candidate["summary"]["case_count"] == 6
-    assert winning_candidate["summary"]["cases_passed"] == 6
-    assert winning_candidate["summary"]["all_cases_passed"] is True
-    assert winning_candidate["summary"]["average_overall_score"] == 1.0
-    assert winning_candidate["summary"]["average_groundedness_score"] == 1.0
-    assert winning_candidate["summary"]["average_evidence_citation_correctness_score"] == 1.0
-    assert winning_candidate["summary"]["average_unsupported_case_honesty_score"] == 1.0
-    assert winning_candidate["summary"]["average_usefulness_score"] == 1.0
-    assert generic_candidate["summary"]["cases_passed"] < winning_candidate["summary"]["cases_passed"]
-    assert generic_candidate["summary"]["average_overall_score"] < winning_candidate["summary"][
+    assert ranking_candidate["summary"]["case_count"] == 6
+    assert ranking_candidate["summary"]["cases_passed"] == 6
+    assert ranking_candidate["summary"]["all_cases_passed"] is True
+    assert ranking_candidate["summary"]["average_overall_score"] == 1.0
+    assert ranking_candidate["summary"]["average_groundedness_score"] == 1.0
+    assert ranking_candidate["summary"]["average_evidence_citation_correctness_score"] == 1.0
+    assert ranking_candidate["summary"]["average_unsupported_case_honesty_score"] == 1.0
+    assert ranking_candidate["summary"]["average_usefulness_score"] == 1.0
+    assert baseline_candidate["summary"]["cases_passed"] < ranking_candidate["summary"]["cases_passed"]
+    assert baseline_candidate["summary"]["average_overall_score"] < ranking_candidate["summary"][
         "average_overall_score"
     ]
+    assert baseline_candidate["summary"]["average_usefulness_score"] < ranking_candidate["summary"][
+        "average_usefulness_score"
+    ]
 
-    ranked_case = next(
+    baseline_ranked_case = next(
         case
-        for case in generic_candidate["cases"]
+        for case in baseline_candidate["cases"]
         if case["case_id"] == "ready_ranked_supported_patterns"
     )
-    assert ranked_case["passed"] is False
-    assert ranked_case["dimensions"]["evidence_citation_correctness"]["score"] < 1.0
-    assert ranked_case["output"]["cards"][0]["content_tids"] == ["launch_offer_faq"]
+    assert baseline_ranked_case["passed"] is False
+    assert baseline_ranked_case["dimensions"]["usefulness"]["score"] < 1.0
+    assert baseline_ranked_case["output"]["cards"][0]["ranking_rationale"] is None
 
-    unsupported_case = next(
+    ranking_case = next(
         case
-        for case in generic_candidate["cases"]
-        if case["case_id"] == "unsupported_paid_without_authority"
+        for case in ranking_candidate["cases"]
+        if case["case_id"] == "ready_ranked_supported_patterns"
     )
-    assert unsupported_case["passed"] is False
-    assert unsupported_case["output"]["status"] == "ready"
-    assert unsupported_case["dimensions"]["unsupported_case_honesty"]["score"] < 0.75
+    assert ranking_case["passed"] is True
+    assert "leads your current snapshot on paid bookings" in ranking_case["output"]["cards"][0][
+        "ranking_rationale"
+    ]
+    assert "ranks below the card above because that pattern has more paid bookings" in (
+        ranking_case["output"]["cards"][1]["ranking_rationale"]
+    )
 
     output_path = tmp_path / "story96-helper-eval.json"
     write_story96_helper_eval_output(output_path=output_path, result=result)
 
     written_text = output_path.read_text(encoding="utf-8")
     assert '"run_label": "story96-test-run"' in written_text
-    assert '"winner_candidate_id": "current_evidence_backed_rules_v1"' in written_text
+    assert '"winner_candidate_id": "ready_ranking_clarity_v1"' in written_text

@@ -12,14 +12,15 @@ from app.models.booking import Booking
 from app.models.booking_provider import BOOKING_PROVIDER_CALENDLY
 from app.models.billing_provider import BILLING_PROVIDER_STRIPE
 from app.models.invoice import Invoice
+from app.services.billing_lifecycle import resolve_billing_account_freeze
 from app.services.billing_provider import (
     BillingProvider,
     BillingProviderError,
     BillingProviderRegistry,
     BillingProviderResolutionError,
     create_billing_invoice,
+    get_billing_account_readiness,
     resolve_billing_provider,
-    resolve_billing_provider_name,
     stop_billing_invoice,
 )
 from app.services.booking_attribution import (
@@ -34,7 +35,6 @@ from app.services.blocked_billing import (
     record_blocked_billing_case,
     resolve_blocked_billing_case_for_invoice,
 )
-from app.services.stripe_account_readiness import creator_can_create_invoices
 
 
 logger = logging.getLogger(__name__)
@@ -180,34 +180,38 @@ class BillingOrchestrator:
                 return BillingInvoiceResult(outcome="deferred", reason="booking_not_active")
 
             creator = booking.creator
+            account_freeze = resolve_billing_account_freeze(booking=booking)
+            provider_name = account_freeze.payment_provider
             try:
-                provider = self._provider_for_creator(creator=creator)
+                provider = self._provider_for_name(provider_name=provider_name)
             except BillingProviderResolutionError:
                 logger.warning(
                     "billing_invoice_create_deferred_provider_missing booking_id=%s creator_id=%s billing_provider=%s",
                     booking.id,
                     creator.id,
-                    creator.resolved_billing_provider,
+                    provider_name,
                 )
                 return BillingInvoiceResult(
                     outcome="deferred",
                     reason="provider_error",
                 )
 
-            provider_name = resolve_billing_provider_name(provider=provider)
-            provider_account_id = _resolve_creator_provider_account_id(
-                creator=creator,
-                provider=provider,
-            )
+            provider_account_id = account_freeze.provider_account_id
             try:
-                creator_is_billable = creator_can_create_invoices(
-                    creator=creator,
-                    provider=provider,
+                readiness = (
+                    get_billing_account_readiness(
+                        provider=provider,
+                        provider_account_id=provider_account_id,
+                    )
+                    if provider_account_id is not None
+                    else None
                 )
+                creator_is_billable = readiness is not None and readiness.can_create_invoices
             except BillingProviderError as exc:
                 record_blocked_billing_case(
                     session,
                     booking=booking,
+                    payment_provider=provider_name,
                     frozen_amount_cents=amount_cents,
                     frozen_currency=currency,
                     reason_code=BLOCKED_BILLING_REASON_PROVIDER_ERROR,
@@ -236,6 +240,7 @@ class BillingOrchestrator:
                 record_blocked_billing_case(
                     session,
                     booking=booking,
+                    payment_provider=provider_name,
                     frozen_amount_cents=amount_cents,
                     frozen_currency=currency,
                     reason_code=BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
@@ -258,6 +263,7 @@ class BillingOrchestrator:
                 record_blocked_billing_case(
                     session,
                     booking=booking,
+                    payment_provider=provider_name,
                     frozen_amount_cents=amount_cents,
                     frozen_currency=currency,
                     reason_code=BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
@@ -298,6 +304,7 @@ class BillingOrchestrator:
                 record_blocked_billing_case(
                     session,
                     booking=booking,
+                    payment_provider=provider_name,
                     frozen_amount_cents=amount_cents,
                     frozen_currency=currency,
                     reason_code=BLOCKED_BILLING_REASON_PROVIDER_ERROR,
@@ -492,11 +499,11 @@ class BillingOrchestrator:
             )
             return _billing_invoice_void_result(invoice, outcome="voided")
 
-    def _provider_for_creator(self, *, creator) -> BillingProvider:
+    def _provider_for_name(self, *, provider_name: str | None) -> BillingProvider:
         if self._providers is not None:
             return resolve_billing_provider(
                 providers=self._providers,
-                provider_name=creator.resolved_billing_provider,
+                provider_name=provider_name,
             )
         assert self._provider is not None
         return self._provider
@@ -547,16 +554,6 @@ def _billing_invoice_void_result(
 
 def _resolve_booking_provider_identity(*, booking: Booking) -> tuple[str, str | None]:
     return booking.provider or BOOKING_PROVIDER_CALENDLY, booking.resolved_provider_booking_id
-
-
-def _resolve_creator_provider_account_id(
-    *,
-    creator,
-    provider: BillingProvider,
-) -> str | None:
-    if creator.resolved_billing_provider != resolve_billing_provider_name(provider=provider):
-        return None
-    return creator.resolved_billing_account_id
 
 
 def _legacy_stripe_account_id(

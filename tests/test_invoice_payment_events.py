@@ -17,6 +17,7 @@ from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID,
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
 )
+from app.services.billing_lifecycle import RECONCILE_REASON_MISSING_PROVIDER_ACCOUNT_ID
 
 
 def _engine():
@@ -331,6 +332,43 @@ def test_provider_neutral_service_persists_explicit_unmatched_reason_override():
     assert payment_event.unattributed_reason == UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID
     assert payment_event.provider_account_id is None
     assert payment_event.provider_invoice_id == "INV-PP8-UNMATCHED"
+
+
+def test_reconcile_provider_unmatched_payment_event_stays_pending_without_provider_account_id():
+    engine = _engine()
+    service = InvoicePaymentEventService(session_factory=lambda: Session(engine))
+    paid_at = datetime(2026, 3, 8, 23, 47, tzinfo=timezone.utc)
+
+    result = service.handle_provider_invoice_paid_event(
+        payment_provider="paypal",
+        provider_event_id="WH-PP8-PENDING",
+        provider_event_type="INVOICING.INVOICE.PAID",
+        provider_account_id=None,
+        provider_invoice_id="INV-PP8-PENDING",
+        paid_at=paid_at,
+        received_at=datetime(2026, 3, 8, 23, 48, tzinfo=timezone.utc),
+        unmatched_reason_override=UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID,
+    )
+    reconciliation = service.reconcile_provider_unmatched_payment_event(
+        payment_provider="paypal",
+        provider_event_id="WH-PP8-PENDING",
+    )
+
+    with Session(engine) as session:
+        payment_event = session.scalar(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.payment_provider == "paypal",
+                InvoicePaymentEvent.provider_event_id == "WH-PP8-PENDING",
+            )
+        )
+
+    assert result.outcome == "unmatched"
+    assert reconciliation.outcome == "pending"
+    assert reconciliation.reason == RECONCILE_REASON_MISSING_PROVIDER_ACCOUNT_ID
+    assert payment_event is not None
+    assert payment_event.status == "unmatched"
+    assert payment_event.provider_account_id is None
+    assert payment_event.invoice_id is None
 
 
 def test_summarize_paid_revenue_groups_by_tid_and_unattributed_reasons():

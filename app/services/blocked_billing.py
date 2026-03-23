@@ -41,6 +41,7 @@ class BlockedBillingCaseSummary:
     booking_status: str
     invoice_id: uuid.UUID | None
     invoice_status: str | None
+    payment_provider: str
     provider_invoice_id: str | None
     tid: str
     provider: str
@@ -65,7 +66,9 @@ class BlockedBillingCaseSummary:
 
     @property
     def stripe_account_id(self) -> str | None:
-        return self.provider_account_id
+        if self.payment_provider == BILLING_PROVIDER_STRIPE:
+            return self.provider_account_id
+        return None
 
 
 @dataclass(frozen=True)
@@ -217,6 +220,7 @@ def record_blocked_billing_case(
     session: Session,
     *,
     booking: Booking,
+    payment_provider: str,
     frozen_amount_cents: int,
     frozen_currency: str,
     reason_code: str,
@@ -244,6 +248,11 @@ def record_blocked_billing_case(
             provider=booking.provider,
             provider_booking_id=resolved_provider_booking_id,
             calendly_booking_uuid=booking.calendly_booking_uuid,
+            payment_provider=payment_provider,
+            provider_account_id=provider_account_id,
+            stripe_account_id=(
+                provider_account_id if payment_provider == BILLING_PROVIDER_STRIPE else None
+            ),
             frozen_amount_cents=frozen_amount_cents,
             frozen_currency=frozen_currency.upper(),
             status=BLOCKED_BILLING_CASE_STATUS_OPEN,
@@ -260,11 +269,10 @@ def record_blocked_billing_case(
     blocked_case.provider = booking.provider
     blocked_case.provider_booking_id = resolved_provider_booking_id
     blocked_case.calendly_booking_uuid = booking.calendly_booking_uuid
+    blocked_case.payment_provider = payment_provider
+    blocked_case.provider_account_id = provider_account_id
     blocked_case.stripe_account_id = (
-        provider_account_id
-        if booking.creator is not None
-        and booking.creator.resolved_billing_provider == BILLING_PROVIDER_STRIPE
-        else None
+        provider_account_id if payment_provider == BILLING_PROVIDER_STRIPE else None
     )
     blocked_case.frozen_amount_cents = frozen_amount_cents
     blocked_case.frozen_currency = frozen_currency.upper()
@@ -389,11 +397,12 @@ def list_open_blocked_billing_cases(
             booking_status=booking_status,
             invoice_id=blocked_case.invoice_id,
             invoice_status=invoice_status,
+            payment_provider=blocked_case.resolved_payment_provider,
             provider_invoice_id=provider_invoice_id or stripe_invoice_id,
             tid=blocked_case.tid,
             provider=blocked_case.resolved_provider,
             provider_booking_id=blocked_case.resolved_provider_booking_id or "missing",
-            provider_account_id=blocked_case.stripe_account_id,
+            provider_account_id=blocked_case.resolved_provider_account_id,
             frozen_amount_cents=blocked_case.frozen_amount_cents,
             frozen_currency=blocked_case.frozen_currency,
             status=blocked_case.status,

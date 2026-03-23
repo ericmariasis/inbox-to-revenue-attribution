@@ -683,6 +683,8 @@ def test_billing_orchestrator_defers_when_creator_is_not_billable():
     assert blocked_cases[0].provider == "calendly"
     assert blocked_cases[0].provider_booking_id == "BOOK_story44_not_billable"
     assert blocked_cases[0].calendly_booking_uuid == "BOOK_story44_not_billable"
+    assert blocked_cases[0].payment_provider == "stripe"
+    assert blocked_cases[0].provider_account_id == "acct_story44_not_billable"
     assert blocked_cases[0].reason_code == "creator_not_billable"
     assert blocked_cases[0].frozen_amount_cents == 15000
     assert blocked_cases[0].frozen_currency == "USD"
@@ -879,6 +881,109 @@ def test_blocked_billing_retry_uses_frozen_inputs_and_is_idempotent():
     assert blocked_cases[0].resolution_code == "invoice_created"
     assert blocked_cases[0].resolved_at == recovered_at
     assert blocked_cases[0].last_retry_at == recovered_at
+
+
+def test_blocked_billing_retry_uses_frozen_provider_snapshot_after_creator_switch():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    blocked_at = datetime(2026, 3, 23, 10, 0, tzinfo=UTC)
+    recovered_at = datetime(2026, 3, 23, 10, 15, tzinfo=UTC)
+    initial_stripe_provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=False)
+    )
+
+    with Session(engine) as session:
+        creator, _, _, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story100_frozen_provider",
+            tid="story100_frozen_provider_tid",
+            stripe_account_id="acct_story100_frozen",
+        )
+        creator_id = creator.id
+        booking_id = booking.id
+        session.commit()
+
+    initial_orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        providers={
+            "stripe": initial_stripe_provider,
+            "paypal": _StubPayPalProvider(
+                readiness=BillingAccountReadiness(can_create_invoices=True),
+            ),
+        },
+        now_fn=lambda: blocked_at,
+    )
+
+    initial_result = initial_orchestrator.create_invoice_for_booking(booking_id=booking_id)
+
+    with Session(engine) as session:
+        creator = session.get(Creator, creator_id)
+        blocked_case = session.scalar(
+            select(BlockedBillingCase).where(BlockedBillingCase.booking_id == booking_id)
+        )
+        assert creator is not None
+        assert blocked_case is not None
+        blocked_case_id = blocked_case.id
+        assert blocked_case.payment_provider == "stripe"
+        assert blocked_case.provider_account_id == "acct_story100_frozen"
+        creator.billing_provider = "paypal"
+        creator.billing_account_id = "merchant_story100_switched"
+        creator.billing_connect_status = "connected"
+        session.commit()
+
+    retry_stripe_provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_story100_frozen_provider",
+    )
+    retry_paypal_provider = _StubPayPalProvider(
+        readiness=BillingAccountReadiness(can_create_invoices=True),
+        created_invoice_id="INV2_story100_should_not_be_used",
+    )
+    retry_service = BlockedBillingRetryService(
+        session_factory=lambda: Session(engine),
+        providers={
+            "stripe": retry_stripe_provider,
+            "paypal": retry_paypal_provider,
+        },
+        now_fn=lambda: recovered_at,
+    )
+
+    retry_result = retry_service.retry_case(
+        case_id=blocked_case_id,
+        creator_id=creator_id,
+    )
+    invoices = _invoice_rows()
+    blocked_cases = _blocked_case_rows()
+
+    assert initial_result.outcome == "deferred"
+    assert initial_result.reason == "creator_not_billable"
+    assert retry_result.outcome == "created"
+    assert retry_result.provider_account_id == "acct_story100_frozen"
+    assert retry_result.provider_invoice_id == "in_story100_frozen_provider"
+    assert retry_stripe_provider.readiness_calls == ["acct_story100_frozen"]
+    assert retry_stripe_provider.create_calls == [
+        {
+            "stripe_account_id": "acct_story100_frozen",
+            "amount_cents": 15000,
+            "currency": "USD",
+            "metadata": {
+                "creator_id": str(creator_id),
+                "booking_provider": "calendly",
+                "provider_booking_id": "BOOK_story100_frozen_provider",
+                "booking_uuid": "BOOK_story100_frozen_provider",
+                "tid": "story100_frozen_provider_tid",
+            },
+            "idempotency_key": "billing:create:calendly:BOOK_story100_frozen_provider",
+        }
+    ]
+    assert retry_paypal_provider.readiness_calls == []
+    assert retry_paypal_provider.create_calls == []
+    assert len(invoices) == 1
+    assert invoices[0].payment_provider == "stripe"
+    assert invoices[0].provider_account_id == "acct_story100_frozen"
+    assert len(blocked_cases) == 1
+    assert blocked_cases[0].payment_provider == "stripe"
+    assert blocked_cases[0].provider_account_id == "acct_story100_frozen"
+    assert blocked_cases[0].resolution_code == "invoice_created"
 
 
 def test_blocked_billing_retry_backfills_booking_from_legacy_blocked_case_snapshot():
@@ -1299,6 +1404,8 @@ def test_blocked_billing_retry_dispatches_paypal_case_to_paypal_provider():
         )
         assert blocked_case is not None
         blocked_case_id = blocked_case.id
+        assert blocked_case.payment_provider == "paypal"
+        assert blocked_case.provider_account_id == "merchant_story44_paypal_retry"
 
     retry_paypal_provider = _StubPayPalProvider(
         readiness=BillingAccountReadiness(can_create_invoices=True),

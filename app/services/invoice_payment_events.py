@@ -13,6 +13,7 @@ from app.models.billing_provider import BILLING_PROVIDER_STRIPE
 from app.models.creator import Creator
 from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
+from app.services.billing_lifecycle import RECONCILE_REASON_MISSING_PROVIDER_ACCOUNT_ID
 
 
 UNATTRIBUTED_REASON_MISSING_TID = "MISSING_TID"
@@ -38,7 +39,12 @@ InvoicePaidHandleOutcome = Literal[
     "unmatched",
 ]
 ReconcileOutcome = Literal["already_reconciled", "missing", "pending", "reconciled"]
-ReconcileReason = Literal["invoice_not_found", "invoice_not_open", "missing_stripe_account_id", "payment_event_not_found"]
+ReconcileReason = Literal[
+    "invoice_not_found",
+    "invoice_not_open",
+    "missing_provider_account_id",
+    "payment_event_not_found",
+]
 PaymentProvenanceStatus = Literal["matched", "pending"]
 PaymentProvenanceConflictStatus = Literal["none", "unmatched_provider_signal"]
 PaymentProvenanceState = Literal["matched", "pending", "unmatched", "conflicting"]
@@ -425,7 +431,7 @@ class InvoicePaymentEventService:
             if payment_event.resolved_provider_account_id is None:
                 return InvoicePaymentReconciliationResult(
                     outcome="pending",
-                    reason="missing_stripe_account_id",
+                    reason=RECONCILE_REASON_MISSING_PROVIDER_ACCOUNT_ID,
                     payment_event_id=payment_event.id,
                     creator_id=payment_event.creator_id,
                     booking_id=payment_event.booking_id,

@@ -986,6 +986,81 @@ def test_blocked_billing_retry_uses_frozen_provider_snapshot_after_creator_switc
     assert blocked_cases[0].resolution_code == "invoice_created"
 
 
+def test_blocked_billing_retry_closes_case_when_booking_was_canceled_before_retry():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    blocked_at = datetime(2026, 3, 23, 10, 30, tzinfo=UTC)
+    canceled_at = datetime(2026, 3, 23, 10, 40, tzinfo=UTC)
+    retry_at = datetime(2026, 3, 23, 10, 45, tzinfo=UTC)
+    initial_provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=False)
+    )
+
+    with Session(engine) as session:
+        creator, _, _, booking = _persist_booking_graph(
+            session,
+            booking_uuid="BOOK_story101_cancel_before_retry",
+            tid="story101_cancel_before_retry_tid",
+            stripe_account_id="acct_story101_cancel_before_retry",
+        )
+        creator_id = creator.id
+        booking_id = booking.id
+        session.commit()
+
+    initial_orchestrator = BillingOrchestrator(
+        session_factory=lambda: Session(engine),
+        provider=initial_provider,
+        now_fn=lambda: blocked_at,
+    )
+    initial_result = initial_orchestrator.create_invoice_for_booking(booking_id=booking_id)
+
+    with Session(engine) as session:
+        booking = session.get(Booking, booking_id)
+        blocked_case = session.scalar(
+            select(BlockedBillingCase).where(BlockedBillingCase.booking_id == booking_id)
+        )
+        assert booking is not None
+        assert blocked_case is not None
+        blocked_case_id = blocked_case.id
+        booking.status = "canceled"
+        booking.canceled_at = canceled_at
+        session.commit()
+
+    retry_provider = _StubStripeProvider(
+        readiness=StripeAccountReadiness(charges_enabled=True),
+        created_invoice_id="in_story101_should_not_exist",
+    )
+    retry_service = BlockedBillingRetryService(
+        session_factory=lambda: Session(engine),
+        provider=retry_provider,
+        now_fn=lambda: retry_at,
+    )
+
+    retry_result = retry_service.retry_case(
+        case_id=blocked_case_id,
+        creator_id=creator_id,
+    )
+    invoices = _invoice_rows()
+    blocked_cases = _blocked_case_rows()
+    bookings = _booking_rows()
+
+    assert initial_result.outcome == "deferred"
+    assert initial_result.reason == "creator_not_billable"
+    assert retry_result.outcome == "closed"
+    assert retry_result.reason_code == "creator_not_billable"
+    assert retry_result.resolution_code == "booking_canceled"
+    assert retry_provider.readiness_calls == []
+    assert retry_provider.create_calls == []
+    assert invoices == []
+    assert len(bookings) == 1
+    assert bookings[0].status == "canceled"
+    assert bookings[0].canceled_at == canceled_at
+    assert len(blocked_cases) == 1
+    assert blocked_cases[0].status == "resolved"
+    assert blocked_cases[0].resolution_code == "booking_canceled"
+    assert blocked_cases[0].resolved_at == retry_at
+    assert blocked_cases[0].last_retry_at is None
+
+
 def test_blocked_billing_retry_backfills_booking_from_legacy_blocked_case_snapshot():
     engine = create_engine(os.environ["TEST_DATABASE_URL"])
     blocked_at = datetime(2026, 3, 8, 18, 19, tzinfo=UTC)

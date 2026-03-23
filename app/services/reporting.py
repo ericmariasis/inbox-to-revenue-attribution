@@ -4,9 +4,14 @@ from datetime import UTC, date, datetime
 from io import StringIO
 from uuid import UUID
 
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
+from app.models.blocked_billing_case import BlockedBillingCase
+from app.models.booking import Booking
 from app.models.billing_provider import BILLING_PROVIDER_STRIPE
+from app.models.content import Content
+from app.services.booking_attribution import BOOKING_ATTRIBUTION_STATUS_ATTRIBUTED
 from app.services.invoice_payment_events import PaymentProvenanceSummary
 from app.services.settled_paid_evidence import (
     CURRENT_UNMATCHED_PAYMENT_BACKLOG_SCOPE,
@@ -15,6 +20,10 @@ from app.services.settled_paid_evidence import (
 )
 
 CURRENT_UNATTRIBUTED_BACKLOG_SCOPE = CURRENT_UNMATCHED_PAYMENT_BACKLOG_SCOPE
+REPORTS_FUNNEL_STATUS_BLOCKED = "blocked_before_invoicing"
+REPORTS_FUNNEL_STATUS_NO_BOOKINGS = "no_bookings_yet"
+REPORTS_FUNNEL_STATUS_PAID = "paid_result_recorded"
+REPORTS_FUNNEL_STATUS_WAITING_FOR_PAID = "waiting_for_first_paid_result"
 
 
 @dataclass(frozen=True)
@@ -23,11 +32,14 @@ class ReportsSummaryRow:
     booking_link_id: UUID
     tid: str
     source_url: str
+    booking_count: int
     paid_revenue_cents: int
     paid_invoice_count: int
     paid_booking_count: int
-    first_paid_at: datetime
-    last_paid_at: datetime
+    open_blocked_billing_case_count: int
+    funnel_status: str
+    first_paid_at: datetime | None
+    last_paid_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -110,6 +122,15 @@ class CreatorPaidAttributionExplanation:
     evidence: list[PaidAttributionEvidence]
 
 
+@dataclass(frozen=True)
+class _PaidReportsSummaryMetrics:
+    paid_revenue_cents: int = 0
+    paid_invoice_count: int = 0
+    paid_booking_count: int = 0
+    first_paid_at: datetime | None = None
+    last_paid_at: datetime | None = None
+
+
 def get_creator_reports_summary(
     *,
     creator_id: UUID,
@@ -124,7 +145,12 @@ def get_creator_reports_summary(
         end_date=end_date,
     )
 
-    rows = _build_reports_summary_rows(snapshot.settled_rows)
+    rows = _build_reports_summary_rows(
+        creator_id=creator_id,
+        db=db,
+        settled_rows=snapshot.settled_rows,
+        include_unpaid_content=start_date is None and end_date is None,
+    )
     unattributed_reasons = [
         ReportsUnattributedReasonCount(
             reason=item.reason,
@@ -180,7 +206,12 @@ def get_creator_paid_attribution_explanation(
     if not snapshot.settled_rows:
         return None
 
-    summary_rows = _build_reports_summary_rows(snapshot.settled_rows)
+    summary_rows = _build_reports_summary_rows(
+        creator_id=creator_id,
+        db=db,
+        settled_rows=snapshot.settled_rows,
+        include_unpaid_content=False,
+    )
     if not summary_rows:
         return None
 
@@ -224,9 +255,12 @@ def build_reports_summary_csv(summary: CreatorReportsSummary) -> str:
             "booking_link_id",
             "tid",
             "source_url",
+            "booking_count",
             "paid_revenue_cents",
             "paid_invoice_count",
             "paid_booking_count",
+            "open_blocked_billing_case_count",
+            "funnel_status",
             "first_paid_at",
             "last_paid_at",
         ]
@@ -238,31 +272,34 @@ def build_reports_summary_csv(summary: CreatorReportsSummary) -> str:
                 str(row.booking_link_id),
                 row.tid,
                 row.source_url,
+                row.booking_count,
                 row.paid_revenue_cents,
                 row.paid_invoice_count,
                 row.paid_booking_count,
-                _as_utc_isoformat(row.first_paid_at),
-                _as_utc_isoformat(row.last_paid_at),
+                row.open_blocked_billing_case_count,
+                row.funnel_status,
+                _as_utc_isoformat(row.first_paid_at) if row.first_paid_at is not None else "",
+                _as_utc_isoformat(row.last_paid_at) if row.last_paid_at is not None else "",
             ]
         )
     return output.getvalue()
 
 
 def _build_reports_summary_rows(
+    *,
+    creator_id: UUID,
+    db: Session,
     settled_rows: list[SettledPaidEvidenceRow],
+    include_unpaid_content: bool,
 ) -> list[ReportsSummaryRow]:
-    grouped: dict[tuple[UUID, UUID, str, str], ReportsSummaryRow] = {}
+    grouped: dict[tuple[UUID, UUID, str, str], _PaidReportsSummaryMetrics] = {}
     booking_ids_by_group: dict[tuple[UUID, UUID, str, str], set[UUID]] = {}
 
     for row in settled_rows:
         key = (row.content_id, row.booking_link_id, row.tid, row.source_url)
         existing = grouped.get(key)
         if existing is None:
-            grouped[key] = ReportsSummaryRow(
-                content_id=row.content_id,
-                booking_link_id=row.booking_link_id,
-                tid=row.tid,
-                source_url=row.source_url,
+            grouped[key] = _PaidReportsSummaryMetrics(
                 paid_revenue_cents=row.invoice_amount_cents,
                 paid_invoice_count=1,
                 paid_booking_count=1,
@@ -274,11 +311,7 @@ def _build_reports_summary_rows(
 
         booking_ids = booking_ids_by_group[key]
         booking_ids.add(row.booking_id)
-        grouped[key] = ReportsSummaryRow(
-            content_id=existing.content_id,
-            booking_link_id=existing.booking_link_id,
-            tid=existing.tid,
-            source_url=existing.source_url,
+        grouped[key] = _PaidReportsSummaryMetrics(
             paid_revenue_cents=existing.paid_revenue_cents + row.invoice_amount_cents,
             paid_invoice_count=existing.paid_invoice_count + 1,
             paid_booking_count=len(booking_ids),
@@ -286,14 +319,103 @@ def _build_reports_summary_rows(
             last_paid_at=max(existing.last_paid_at, row.invoice_paid_at),
         )
 
+    blocked_case_count_by_tid = {
+        tid: case_count
+        for tid, case_count in db.execute(
+            select(
+                BlockedBillingCase.tid,
+                func.count(BlockedBillingCase.id),
+            )
+            .where(
+                BlockedBillingCase.creator_id == creator_id,
+                BlockedBillingCase.status == "open",
+            )
+            .group_by(BlockedBillingCase.tid)
+        ).all()
+        if tid is not None
+    }
+
+    content_rows = db.execute(
+        select(
+            Content.id,
+            Content.booking_link_id,
+            Content.tid,
+            Content.source_url,
+            func.count(Booking.id),
+        )
+        .select_from(Content)
+        .outerjoin(
+            Booking,
+            and_(
+                Booking.creator_id == creator_id,
+                Booking.tid == Content.tid,
+                Booking.attribution_status == BOOKING_ATTRIBUTION_STATUS_ATTRIBUTED,
+            ),
+        )
+        .where(Content.creator_id == creator_id)
+        .group_by(
+            Content.id,
+            Content.booking_link_id,
+            Content.tid,
+            Content.source_url,
+        )
+    ).all()
+
+    rows: list[ReportsSummaryRow] = []
+    for content_id, booking_link_id, tid, source_url, booking_count in content_rows:
+        key = (content_id, booking_link_id, tid, source_url)
+        paid_metrics = grouped.get(key, _PaidReportsSummaryMetrics())
+        if not include_unpaid_content and paid_metrics.paid_invoice_count == 0:
+            continue
+
+        open_blocked_billing_case_count = blocked_case_count_by_tid.get(tid, 0)
+        rows.append(
+            ReportsSummaryRow(
+                content_id=content_id,
+                booking_link_id=booking_link_id,
+                tid=tid,
+                source_url=source_url,
+                booking_count=booking_count,
+                paid_revenue_cents=paid_metrics.paid_revenue_cents,
+                paid_invoice_count=paid_metrics.paid_invoice_count,
+                paid_booking_count=paid_metrics.paid_booking_count,
+                open_blocked_billing_case_count=open_blocked_billing_case_count,
+                funnel_status=_resolve_reports_funnel_status(
+                    booking_count=booking_count,
+                    paid_invoice_count=paid_metrics.paid_invoice_count,
+                    open_blocked_billing_case_count=open_blocked_billing_case_count,
+                ),
+                first_paid_at=paid_metrics.first_paid_at,
+                last_paid_at=paid_metrics.last_paid_at,
+            )
+        )
+
     return sorted(
-        grouped.values(),
+        rows,
         key=lambda row: (
+            -(1 if row.paid_invoice_count > 0 else 0),
             -row.paid_revenue_cents,
-            -row.last_paid_at.timestamp(),
+            -(row.last_paid_at.timestamp() if row.last_paid_at is not None else 0),
+            -row.booking_count,
+            -row.open_blocked_billing_case_count,
             row.tid,
         ),
     )
+
+
+def _resolve_reports_funnel_status(
+    *,
+    booking_count: int,
+    paid_invoice_count: int,
+    open_blocked_billing_case_count: int,
+) -> str:
+    if paid_invoice_count > 0:
+        return REPORTS_FUNNEL_STATUS_PAID
+    if open_blocked_billing_case_count > 0:
+        return REPORTS_FUNNEL_STATUS_BLOCKED
+    if booking_count > 0:
+        return REPORTS_FUNNEL_STATUS_WAITING_FOR_PAID
+    return REPORTS_FUNNEL_STATUS_NO_BOOKINGS
 
 
 def _as_utc_isoformat(value: datetime) -> str:

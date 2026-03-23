@@ -43,7 +43,9 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 logger = logging.getLogger(__name__)
 
 
-def _as_utc(value: datetime) -> datetime:
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
     return value.astimezone(UTC)
 
 
@@ -57,9 +59,12 @@ def _build_reports_summary_response(summary: CreatorReportsSummary) -> ReportsSu
                 booking_link_id=str(row.booking_link_id),
                 tid=row.tid,
                 source_url=row.source_url,
+                booking_count=row.booking_count,
                 paid_revenue_cents=row.paid_revenue_cents,
                 paid_invoice_count=row.paid_invoice_count,
                 paid_booking_count=row.paid_booking_count,
+                open_blocked_billing_case_count=row.open_blocked_billing_case_count,
+                funnel_status=row.funnel_status,
                 first_paid_at=_as_utc(row.first_paid_at),
                 last_paid_at=_as_utc(row.last_paid_at),
             )

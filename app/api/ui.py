@@ -5075,7 +5075,11 @@ def _render_reports_page(
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
     filters_active = _reports_filters_are_active(filter_values)
-    list_heading = "Paid content results" if summary.rows else "No paid results yet"
+    list_heading = (
+        "Content funnel summary"
+        if summary.rows
+        else ("No paid results in this window" if filters_active else "No tracked content yet")
+    )
     clear_filters_link = (
         '<a href="/app/reports" class="inline-link">Clear filters</a>'
         if filters_active
@@ -5091,7 +5095,7 @@ def _render_reports_page(
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Reports</h1>
-        <p class="lede">Review which tracked content is producing paid results, using the date each invoice was actually paid.</p>
+        <p class="lede">Review which tracked content is producing bookings and paid results, while keeping invoice-backed revenue truth separate from diagnostic backlog state.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -5103,10 +5107,10 @@ def _render_reports_page(
       <article class="card stack">
         <div>
           <p class="eyebrow">Paid-date filter</p>
-          <h2>Invoice-backed paid results</h2>
+          <h2>Invoice-backed paid outcomes</h2>
           <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
-        <p>Use the paid date below to narrow the summary by when the invoice payment actually landed. This page does not group results by booking date.</p>
+        <p>Use the paid date below to narrow paid outcome columns by when the invoice payment actually landed. Booking counts and funnel state below stay creator-scoped current totals rather than booking-date filters.</p>
         <form action="/app/reports" method="get">
           <div class="filter-row">
             <div>
@@ -5177,7 +5181,7 @@ def _render_reports_page(
     <section class="card stack">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Content summary</p>
+          <p class="eyebrow">Content funnel</p>
           <h2>{list_heading}</h2>
         </div>
         <p>{html.escape(_count_copy(len(summary.rows), "content row"))} visible</p>
@@ -5536,6 +5540,7 @@ def _render_reports_results(
         _render_reports_row_card(
             row=row,
             filter_values=filter_values,
+            filters_active=filters_active,
         )
         for row in summary.rows
     )
@@ -5803,29 +5808,51 @@ def _render_unmatched_payment_event_card(*, payment_event: UnmatchedPaymentEvent
     """
 
 
-def _render_reports_row_card(*, row: ReportsSummaryRow, filter_values: dict[str, str]) -> str:
-    explanation_href = html.escape(
-        _reports_paid_explanation_href(
-            tid=row.tid,
-            filter_values=filter_values,
-        ),
-        quote=True,
-    )
+def _render_reports_row_card(
+    *,
+    row: ReportsSummaryRow,
+    filter_values: dict[str, str],
+    filters_active: bool,
+) -> str:
+    explanation_link = ""
+    if row.paid_invoice_count > 0:
+        explanation_href = html.escape(
+            _reports_paid_explanation_href(
+                tid=row.tid,
+                filter_values=filter_values,
+            ),
+            quote=True,
+        )
+        explanation_link = (
+            f'<a href="{explanation_href}" class="inline-link">Why this revenue counted</a>'
+        )
+
+    blocked_line = ""
+    if row.open_blocked_billing_case_count > 0:
+        blocked_line = (
+            f"<p><strong>Blocked before invoicing</strong>: "
+            f"{html.escape(_count_copy(row.open_blocked_billing_case_count, 'open blocked billing case'))} "
+            "still outside paid totals and visible separately in Attention.</p>"
+        )
+
     return f"""
     <article class="content-card stack">
       <div class="content-card-header">
         <div>
-          <p class="eyebrow">Paid content</p>
+          <p class="eyebrow">Content funnel</p>
           <h2>{html.escape(_content_card_title(row.source_url))}</h2>
         </div>
-        <p class="pill-note">{html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))}</p>
+        <p class="pill-note">{html.escape(_reports_funnel_status_label(row))}</p>
       </div>
       <p><strong>Source URL</strong>: <a href="{html.escape(row.source_url)}" class="inline-link">{html.escape(row.source_url)}</a></p>
       <p><strong>Tracking ID</strong>: <code>{html.escape(row.tid)}</code></p>
+      <p><strong>Bookings</strong>: {html.escape(_count_copy(row.booking_count, "tracked booking"))}</p>
       <p><strong>Paid revenue</strong>: {html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
       <p><strong>Paid bookings</strong>: {html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
-      <p><strong>Paid window</strong>: {html.escape(_reports_paid_window_copy(row))}</p>
-      <a href="{explanation_href}" class="inline-link">Why this revenue counted</a>
+      <p><strong>Current funnel state</strong>: {html.escape(_reports_funnel_status_summary(row))}</p>
+      {blocked_line}
+      <p><strong>Paid window</strong>: {html.escape(_reports_paid_window_copy(row, filters_active=filters_active))}</p>
+      {explanation_link}
     </article>
     """
 
@@ -5890,7 +5917,7 @@ def _render_reports_paid_explanation_page(
         </div>
         <p><strong>Source URL</strong>: <a href="{html.escape(row.source_url)}" class="inline-link">{html.escape(row.source_url)}</a></p>
         <p><strong>Tracking ID</strong>: <code>{html.escape(row.tid)}</code></p>
-        <p><strong>Paid window</strong>: {html.escape(_reports_paid_window_copy(row))}</p>
+        <p><strong>Paid window</strong>: {html.escape(_reports_paid_window_copy(row, filters_active=_reports_filters_are_active(filter_values)))}</p>
         <a href="{back_href}" class="inline-link">Back to reports</a>
         <div class="stat-grid">
           <article class="stat-tile">
@@ -7097,7 +7124,42 @@ def _reports_csv_filename(*, start_date: date | None, end_date: date | None) -> 
     return f"reports-summary-{start_label}-to-{end_label}.csv"
 
 
-def _reports_paid_window_copy(row: ReportsSummaryRow) -> str:
+def _reports_funnel_status_label(row: ReportsSummaryRow) -> str:
+    if row.funnel_status == "paid_result_recorded":
+        return "Paid result recorded"
+    if row.funnel_status == "blocked_before_invoicing":
+        return "Blocked before invoicing"
+    if row.funnel_status == "waiting_for_first_paid_result":
+        return "Waiting for first paid result"
+    return "No bookings yet"
+
+
+def _reports_funnel_status_summary(row: ReportsSummaryRow) -> str:
+    if row.funnel_status == "paid_result_recorded":
+        if row.open_blocked_billing_case_count > 0:
+            return (
+                "This content already has counted paid results, but some newer booking activity "
+                "is still blocked before invoicing."
+            )
+        return "This content already has invoice-backed paid results in canonical reporting."
+    if row.funnel_status == "blocked_before_invoicing":
+        return (
+            "Tracked bookings reached billing, but at least one open blocked billing case still "
+            "keeps that booking activity outside paid totals."
+        )
+    if row.funnel_status == "waiting_for_first_paid_result":
+        return (
+            "Canonical bookings are recorded for this content, but no invoice-backed paid result "
+            "is counted yet."
+        )
+    return "This content is tracked, but no canonical booking has been recorded for it yet."
+
+
+def _reports_paid_window_copy(row: ReportsSummaryRow, *, filters_active: bool) -> str:
+    if row.first_paid_at is None or row.last_paid_at is None:
+        if filters_active:
+            return "No invoice-backed paid result is counted in this paid-date view yet."
+        return "No invoice-backed paid result is counted for this content yet."
     if row.first_paid_at == row.last_paid_at:
         return row.first_paid_at.astimezone(timezone.utc).strftime("%B %d, %Y")
     return (

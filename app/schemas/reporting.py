@@ -8,11 +8,14 @@ class ReportsSummaryRowResponse(BaseModel):
     booking_link_id: str
     tid: str
     source_url: str
+    booking_count: int
     paid_revenue_cents: int
     paid_invoice_count: int
     paid_booking_count: int
-    first_paid_at: datetime
-    last_paid_at: datetime
+    open_blocked_billing_case_count: int
+    funnel_status: str
+    first_paid_at: datetime | None
+    last_paid_at: datetime | None
 
 
 class ReportsUnattributedReasonCountResponse(BaseModel):

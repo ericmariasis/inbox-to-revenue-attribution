@@ -4830,9 +4830,12 @@ def test_setup_and_account_pages_reuse_waiting_for_first_paid_result_vocabulary(
     assert "Ready to track</strong>: Done. At least one tracked link is ready to share on a billable setup." in account_response.text
     assert "Waiting for first paid result</strong>: Current. This workspace is ready to track; first value lands after a tracked booking leads to a paid invoice." in setup_response.text
     assert "Waiting for first paid result</strong>: Current. This workspace is ready to track; first value lands after a tracked booking leads to a paid invoice." in account_response.text
-    assert "Waiting for first paid result" in reports_response.text
-    assert "Reports stays empty until real tracked content leads to a booking and the matching invoice is marked paid." in reports_response.text
-    assert "Illustrative preview" in reports_response.text
+    assert "Content funnel summary" in reports_response.text
+    assert "waiting-first-paid" in reports_response.text
+    assert "No bookings yet" in reports_response.text
+    assert "This content is tracked, but no canonical booking has been recorded for it yet." in reports_response.text
+    assert "No invoice-backed paid result is counted for this content yet." in reports_response.text
+    assert "Illustrative preview" not in reports_response.text
 
 
 def test_account_page_disconnected_state_renders_reconnect_copy_without_destructive_forms():

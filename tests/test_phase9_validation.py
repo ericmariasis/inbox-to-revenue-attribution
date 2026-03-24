@@ -419,9 +419,12 @@ def test_phase9_reporting_flow_end_to_end():
             "booking_link_id": booking_link["id"],
             "tid": content["tid"],
             "source_url": source_url,
+            "booking_count": "1",
             "paid_revenue_cents": "19500",
             "paid_invoice_count": "1",
             "paid_booking_count": "1",
+            "open_blocked_billing_case_count": "0",
+            "funnel_status": "paid_result_recorded",
             "first_paid_at": "2026-03-08T22:30:00Z",
             "last_paid_at": "2026-03-08T22:30:00Z",
         }

@@ -2613,6 +2613,9 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
     assert "195.00" in response.text
     assert "1 paid invoice" in response.text
     assert "1 paid booking" in response.text
+    assert "1 tracked booking" in response.text
+    assert "Paid result recorded" in response.text
+    assert "This content already has invoice-backed paid results in canonical reporting." in response.text
     assert "Illustrative preview" not in response.text
     assert "This read-only preview is illustrative only." not in response.text
     assert "Missing tracking ID" in response.text
@@ -3407,7 +3410,7 @@ def test_reports_csv_export_uses_same_filtered_creator_scoped_dataset():
         == 'attachment; filename="reports-summary-2026-03-08-to-2026-03-08.csv"'
     )
     assert response.text.startswith(
-        "content_id,booking_link_id,tid,source_url,paid_revenue_cents,paid_invoice_count,paid_booking_count,first_paid_at,last_paid_at\n"
+        "content_id,booking_link_id,tid,source_url,booking_count,paid_revenue_cents,paid_invoice_count,paid_booking_count,open_blocked_billing_case_count,funnel_status,first_paid_at,last_paid_at\n"
     )
     assert current_tid in response.text
     assert "https://example.com/posts/reports-export-current" in response.text
@@ -3443,7 +3446,7 @@ def test_reports_page_without_tracked_content_explains_prerequisite():
     assert 'href="/app/booking-links"' in response.text
 
 
-def test_reports_page_with_tracked_content_but_no_paid_invoices_shows_empty_paid_state():
+def test_reports_page_with_tracked_content_but_no_paid_invoices_shows_funnel_row():
     inserted = _insert_creator_user(
         email=f"ui_reports_no_paid_{uuid.uuid4().hex}@example.com",
         name="No Paid Reports Creator",
@@ -3463,11 +3466,19 @@ def test_reports_page_with_tracked_content_but_no_paid_invoices_shows_empty_paid
         billing_amount_cents=19500,
         billing_currency="USD",
     )
+    content_tid = f"uireportsnopaid{uuid.uuid4().hex[:8]}"
     _insert_content(
         creator_id=inserted["creator_id"],
         booking_link_id=booking_link_id,
         source_url="https://example.com/posts/reports-no-paid",
-        tid=f"uireportsnopaid{uuid.uuid4().hex[:8]}",
+        tid=content_tid,
+    )
+    _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_NO_PAID_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
     )
 
     with TestClient(app) as client:
@@ -3475,14 +3486,17 @@ def test_reports_page_with_tracked_content_but_no_paid_invoices_shows_empty_paid
         response = client.get("/app/reports", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
+    assert "Content funnel summary" in response.text
+    assert "reports-no-paid" in response.text
+    assert "1 tracked booking" in response.text
+    assert "0 paid bookings" in response.text
     assert "Waiting for first paid result" in response.text
-    assert "This workspace is ready to track. Reports stays empty until real tracked content leads to a booking and the matching invoice is marked paid." in response.text
-    assert "Illustrative preview" in response.text
-    assert "What first value will look like" in response.text
-    assert "This read-only preview is illustrative only. It does not use live bookings, invoices, or paid revenue from this workspace." in response.text
-    assert "Illustrative sample outcome" in response.text
-    assert "USD 195.00" in response.text
-    assert 'href="/app/content"' in response.text
+    assert (
+        "Canonical bookings are recorded for this content, but no invoice-backed paid result is counted yet."
+        in response.text
+    )
+    assert "No invoice-backed paid result is counted for this content yet." in response.text
+    assert "Illustrative preview" not in response.text
 
 
 def test_experiments_page_without_prior_run_renders_generate_empty_state_and_does_not_write():
@@ -4816,9 +4830,12 @@ def test_setup_and_account_pages_reuse_waiting_for_first_paid_result_vocabulary(
     assert "Ready to track</strong>: Done. At least one tracked link is ready to share on a billable setup." in account_response.text
     assert "Waiting for first paid result</strong>: Current. This workspace is ready to track; first value lands after a tracked booking leads to a paid invoice." in setup_response.text
     assert "Waiting for first paid result</strong>: Current. This workspace is ready to track; first value lands after a tracked booking leads to a paid invoice." in account_response.text
-    assert "Waiting for first paid result" in reports_response.text
-    assert "Reports stays empty until real tracked content leads to a booking and the matching invoice is marked paid." in reports_response.text
-    assert "Illustrative preview" in reports_response.text
+    assert "Content funnel summary" in reports_response.text
+    assert "waiting-first-paid" in reports_response.text
+    assert "No bookings yet" in reports_response.text
+    assert "This content is tracked, but no canonical booking has been recorded for it yet." in reports_response.text
+    assert "No invoice-backed paid result is counted for this content yet." in reports_response.text
+    assert "Illustrative preview" not in reports_response.text
 
 
 def test_account_page_disconnected_state_renders_reconnect_copy_without_destructive_forms():

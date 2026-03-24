@@ -32,6 +32,10 @@ from app.services.invoice_payment_events import (
 )
 from app.services.reporting import (
     CURRENT_UNATTRIBUTED_BACKLOG_SCOPE,
+    REPORTS_FUNNEL_STATUS_BLOCKED,
+    REPORTS_FUNNEL_STATUS_NO_BOOKINGS,
+    REPORTS_FUNNEL_STATUS_PAID,
+    REPORTS_FUNNEL_STATUS_WAITING_FOR_PAID,
     get_creator_paid_attribution_explanation,
     get_creator_reports_summary,
 )
@@ -254,7 +258,7 @@ def _create_blocked_billing_case(
     return blocked_case
 
 
-def test_creator_reports_summary_groups_paid_revenue_by_content_and_keeps_current_unattributed_backlog():
+def test_creator_reports_summary_builds_content_funnel_rows_and_keeps_current_unattributed_backlog():
     engine = _engine()
 
     with Session(engine) as session:
@@ -365,6 +369,26 @@ def test_creator_reports_summary_groups_paid_revenue_by_content_and_keeps_curren
             reason_code=BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
             blocked_at=datetime(2026, 3, 8, 22, 5, tzinfo=timezone.utc),
         )
+        waiting_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="service_waiting",
+        )
+        _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=waiting_content,
+            booking_uuid="BOOK_REPORTS_SERVICE_WAITING",
+            booked_at=datetime(2026, 3, 8, 23, 0, tzinfo=timezone.utc),
+        )
+        empty_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="service_empty",
+        )
 
         other_creator, _ = _create_creator_with_user(
             session,
@@ -402,9 +426,15 @@ def test_creator_reports_summary_groups_paid_revenue_by_content_and_keeps_curren
         creator_id = creator.id
         old_content_id = str(content_old.id)
         current_content_id = str(content_current.id)
+        blocked_content_id = str(blocked_content.id)
+        waiting_content_id = str(waiting_content.id)
+        empty_content_id = str(empty_content.id)
         booking_link_id = str(booking_link.id)
         old_tid = content_old.tid
         current_tid = content_current.tid
+        blocked_tid = blocked_content.tid
+        waiting_tid = waiting_content.tid
+        empty_tid = empty_content.tid
         session.commit()
 
     with Session(engine) as session:
@@ -419,23 +449,69 @@ def test_creator_reports_summary_groups_paid_revenue_by_content_and_keeps_curren
             end_date=date(2026, 3, 8),
         )
 
-    assert [(row.content_id, row.tid, row.paid_revenue_cents) for row in full_summary.rows] == [
-        (uuid.UUID(current_content_id), current_tid, 30000),
-        (uuid.UUID(old_content_id), old_tid, 10000),
+    assert [
+        (
+            row.content_id,
+            row.tid,
+            row.booking_count,
+            row.paid_revenue_cents,
+            row.open_blocked_billing_case_count,
+            row.funnel_status,
+        )
+        for row in full_summary.rows
+    ] == [
+        (uuid.UUID(current_content_id), current_tid, 2, 30000, 0, REPORTS_FUNNEL_STATUS_PAID),
+        (uuid.UUID(old_content_id), old_tid, 1, 10000, 0, REPORTS_FUNNEL_STATUS_PAID),
+        (
+            uuid.UUID(blocked_content_id),
+            blocked_tid,
+            1,
+            0,
+            1,
+            REPORTS_FUNNEL_STATUS_BLOCKED,
+        ),
+        (
+            uuid.UUID(waiting_content_id),
+            waiting_tid,
+            1,
+            0,
+            0,
+            REPORTS_FUNNEL_STATUS_WAITING_FOR_PAID,
+        ),
+        (
+            uuid.UUID(empty_content_id),
+            empty_tid,
+            0,
+            0,
+            0,
+            REPORTS_FUNNEL_STATUS_NO_BOOKINGS,
+        ),
     ]
     assert full_summary.paid_revenue_cents == 40000
     assert full_summary.paid_invoice_count == 3
     assert full_summary.paid_booking_count == 3
     assert full_summary.rows[0].booking_link_id == uuid.UUID(booking_link_id)
+    assert full_summary.rows[0].booking_count == 2
     assert full_summary.rows[0].paid_invoice_count == 2
     assert full_summary.rows[0].paid_booking_count == 2
     assert full_summary.rows[0].first_paid_at == datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc)
     assert full_summary.rows[0].last_paid_at == datetime(2026, 3, 8, 19, 0, tzinfo=timezone.utc)
+    assert full_summary.rows[2].first_paid_at is None
+    assert full_summary.rows[2].last_paid_at is None
 
     assert filtered_summary.start_date == date(2026, 3, 8)
     assert filtered_summary.end_date == date(2026, 3, 8)
-    assert [(row.content_id, row.tid, row.paid_revenue_cents) for row in filtered_summary.rows] == [
-        (uuid.UUID(current_content_id), current_tid, 30000),
+    assert [
+        (
+            row.content_id,
+            row.tid,
+            row.booking_count,
+            row.paid_revenue_cents,
+            row.funnel_status,
+        )
+        for row in filtered_summary.rows
+    ] == [
+        (uuid.UUID(current_content_id), current_tid, 2, 30000, REPORTS_FUNNEL_STATUS_PAID),
     ]
     assert filtered_summary.paid_revenue_cents == 30000
     assert filtered_summary.paid_invoice_count == 2
@@ -953,19 +1029,22 @@ def test_reports_summary_returns_creator_scoped_filtered_rows_and_current_unattr
     assert response.json() == {
         "start_date": "2026-03-08",
         "end_date": "2026-03-08",
-        "rows": [
+            "rows": [
                 {
                     "content_id": content_in_range_id,
                     "booking_link_id": content_in_range_booking_link_id,
                     "tid": content_in_range_tid,
                     "source_url": content_in_range_source_url,
-                "paid_revenue_cents": 19500,
-                "paid_invoice_count": 1,
-                "paid_booking_count": 1,
-                "first_paid_at": "2026-03-08T09:00:00Z",
-                "last_paid_at": "2026-03-08T09:00:00Z",
-            }
-        ],
+                    "booking_count": 1,
+                    "paid_revenue_cents": 19500,
+                    "paid_invoice_count": 1,
+                    "paid_booking_count": 1,
+                    "open_blocked_billing_case_count": 0,
+                    "funnel_status": REPORTS_FUNNEL_STATUS_PAID,
+                    "first_paid_at": "2026-03-08T09:00:00Z",
+                    "last_paid_at": "2026-03-08T09:00:00Z",
+                }
+            ],
         "paid_revenue_cents": 19500,
         "paid_invoice_count": 1,
         "paid_booking_count": 1,

@@ -141,12 +141,15 @@ def test_generate_epic_review_artifacts_writes_packet_prompt_and_response_files(
     assert "Use the review packet below as the full source of truth" in prompt_text
     assert "What parts of the system design are likely to become fragile" in prompt_text
     assert "If you were the staff engineer responsible for this system" in prompt_text
-    assert "Do not assume every risk should become new pre-beta scope" in prompt_text
+    assert "Do not assume every risk should become new roadmap scope" in prompt_text
+    assert "Do not use `pre-beta` or `post-beta` framing" in prompt_text
     assert "sample friction" in prompt_text
 
     assert "## Raw GPT Review" in review_response_text
-    assert "## Beta-Freeze Classification" in review_response_text
-    assert "New Pre-Beta Blockers" in review_response_text
+    assert "## Roadmap Classification" in review_response_text
+    assert "Pulled-Forward Roadmap Blockers" in review_response_text
+    assert "Adjust Existing Planned Stories" in review_response_text
+    assert "Deferred Follow-ups" in review_response_text
     assert "## Accepted Recommendations" in review_response_text
 
 

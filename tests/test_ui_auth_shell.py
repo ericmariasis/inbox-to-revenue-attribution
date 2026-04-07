@@ -2635,6 +2635,10 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
         in response.text
     )
     assert (
+        'href="/app/reports/topics?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
+    assert (
         f'href="/app/reports/content/{current_content_tid}?start_date=2026-03-08&amp;end_date=2026-03-08"'
         in response.text
     )
@@ -2644,6 +2648,329 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
     )
     assert "No tracked bookings are blocked before invoicing right now." in response.text
     assert 'href="/app/attention"' in response.text
+
+
+def test_reports_topics_page_renders_authoritative_confirmed_topics_only():
+    creator = _insert_creator_user(
+        email=f"ui_reports_topics_{uuid.uuid4().hex}@example.com",
+        name="Reports Topics Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_topics",
+    )
+    other_creator = _insert_creator_user(
+        email=f"ui_reports_topics_other_{uuid.uuid4().hex}@example.com",
+        name="Reports Topics Other Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_topics_other",
+    )
+    access_token = _access_token(
+        user_id=creator["user_id"],
+        creator_id=creator["creator_id"],
+        email=creator["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Topics Strategy",
+        calendly_url="https://calendly.com/example/topics-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    paid_tid = f"uireportstopicspaid{uuid.uuid4().hex[:8]}"
+    paid_content_id = _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/reports-topics-paid",
+        tid=paid_tid,
+    )
+    paid_booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=paid_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_TOPICS_PAID_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=creator["creator_id"],
+        booking_id=paid_booking_id,
+        tid=paid_tid,
+        stripe_account_id="acct_ui_reports_topics",
+        stripe_invoice_id=f"in_ui_reports_topics_paid_{uuid.uuid4().hex[:8]}",
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+    )
+    paid_snapshot_id = _insert_fetch_snapshot(
+        content_id=paid_content_id,
+        creator_id=creator["creator_id"],
+        requested_url="https://example.com/posts/reports-topics-paid",
+        fetched_url="https://example.com/posts/reports-topics-paid",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<article>Reports topics paid</article>",
+        fetched_at=datetime(2026, 3, 8, 9, 5, tzinfo=timezone.utc),
+    )
+    paid_artifact_id = _insert_extraction_artifact(
+        content_id=paid_content_id,
+        creator_id=creator["creator_id"],
+        fetch_snapshot_id=paid_snapshot_id,
+        extraction_status="succeeded",
+        title="Reports Topics Paid",
+        extracted_text="Reports topics paid extracted text.",
+        created_at=datetime(2026, 3, 8, 9, 10, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=paid_content_id,
+        creator_id=creator["creator_id"],
+        extraction_artifact_id=paid_artifact_id,
+        label="Discovery Calls",
+        candidate_rank=1,
+    )
+    _insert_confirmed_topic(
+        content_id=paid_content_id,
+        creator_id=creator["creator_id"],
+        extraction_artifact_id=paid_artifact_id,
+        label="Pricing Strategy",
+        candidate_rank=2,
+    )
+    _set_authoritative_extraction_artifact(
+        content_id=paid_content_id,
+        artifact_id=paid_artifact_id,
+    )
+
+    waiting_tid = f"uireportstopicswaiting{uuid.uuid4().hex[:8]}"
+    waiting_content_id = _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/reports-topics-waiting",
+        tid=waiting_tid,
+    )
+    _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=waiting_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_TOPICS_WAITING_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc),
+    )
+    waiting_snapshot_id = _insert_fetch_snapshot(
+        content_id=waiting_content_id,
+        creator_id=creator["creator_id"],
+        requested_url="https://example.com/posts/reports-topics-waiting",
+        fetched_url="https://example.com/posts/reports-topics-waiting",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<article>Reports topics waiting</article>",
+        fetched_at=datetime(2026, 3, 8, 10, 5, tzinfo=timezone.utc),
+    )
+    waiting_artifact_id = _insert_extraction_artifact(
+        content_id=waiting_content_id,
+        creator_id=creator["creator_id"],
+        fetch_snapshot_id=waiting_snapshot_id,
+        extraction_status="succeeded",
+        title="Reports Topics Waiting",
+        extracted_text="Reports topics waiting extracted text.",
+        created_at=datetime(2026, 3, 8, 10, 10, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=waiting_content_id,
+        creator_id=creator["creator_id"],
+        extraction_artifact_id=waiting_artifact_id,
+        label="Discovery Calls",
+    )
+    _set_authoritative_extraction_artifact(
+        content_id=waiting_content_id,
+        artifact_id=waiting_artifact_id,
+    )
+
+    older_paid_tid = f"uireportstopicsolder{uuid.uuid4().hex[:8]}"
+    older_paid_content_id = _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/reports-topics-older",
+        tid=older_paid_tid,
+    )
+    older_paid_booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=older_paid_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_TOPICS_OLDER_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 7, 8, 0, tzinfo=timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=creator["creator_id"],
+        booking_id=older_paid_booking_id,
+        tid=older_paid_tid,
+        stripe_account_id="acct_ui_reports_topics",
+        stripe_invoice_id=f"in_ui_reports_topics_older_{uuid.uuid4().hex[:8]}",
+        amount_cents=5000,
+        paid_at=datetime(2026, 3, 7, 9, 0, tzinfo=timezone.utc),
+    )
+    older_paid_snapshot_id = _insert_fetch_snapshot(
+        content_id=older_paid_content_id,
+        creator_id=creator["creator_id"],
+        requested_url="https://example.com/posts/reports-topics-older",
+        fetched_url="https://example.com/posts/reports-topics-older",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<article>Reports topics older</article>",
+        fetched_at=datetime(2026, 3, 7, 9, 5, tzinfo=timezone.utc),
+    )
+    older_paid_artifact_id = _insert_extraction_artifact(
+        content_id=older_paid_content_id,
+        creator_id=creator["creator_id"],
+        fetch_snapshot_id=older_paid_snapshot_id,
+        extraction_status="succeeded",
+        title="Reports Topics Older",
+        extracted_text="Reports topics older extracted text.",
+        created_at=datetime(2026, 3, 7, 9, 10, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=older_paid_content_id,
+        creator_id=creator["creator_id"],
+        extraction_artifact_id=older_paid_artifact_id,
+        label="Retention Reviews",
+    )
+    _set_authoritative_extraction_artifact(
+        content_id=older_paid_content_id,
+        artifact_id=older_paid_artifact_id,
+    )
+
+    ghost_tid = f"uireportstopicsghost{uuid.uuid4().hex[:8]}"
+    ghost_content_id = _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/reports-topics-ghost",
+        tid=ghost_tid,
+    )
+    ghost_booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=ghost_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_TOPICS_GHOST_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 8, 11, 0, tzinfo=timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=creator["creator_id"],
+        booking_id=ghost_booking_id,
+        tid=ghost_tid,
+        stripe_account_id="acct_ui_reports_topics",
+        stripe_invoice_id=f"in_ui_reports_topics_ghost_{uuid.uuid4().hex[:8]}",
+        amount_cents=8800,
+        paid_at=datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc),
+    )
+    ghost_snapshot_id = _insert_fetch_snapshot(
+        content_id=ghost_content_id,
+        creator_id=creator["creator_id"],
+        requested_url="https://example.com/posts/reports-topics-ghost",
+        fetched_url="https://example.com/posts/reports-topics-ghost",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<article>Reports topics ghost</article>",
+        fetched_at=datetime(2026, 3, 8, 12, 5, tzinfo=timezone.utc),
+    )
+    ghost_artifact_id = _insert_extraction_artifact(
+        content_id=ghost_content_id,
+        creator_id=creator["creator_id"],
+        fetch_snapshot_id=ghost_snapshot_id,
+        extraction_status="succeeded",
+        title="Reports Topics Ghost",
+        extracted_text="Reports topics ghost extracted text.",
+        created_at=datetime(2026, 3, 8, 12, 10, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=ghost_content_id,
+        creator_id=creator["creator_id"],
+        extraction_artifact_id=ghost_artifact_id,
+        label="Ghost Topic",
+    )
+
+    other_booking_link_id = _insert_booking_link(
+        creator_id=other_creator["creator_id"],
+        name="Topics Other Strategy",
+        calendly_url="https://calendly.com/example/topics-other-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    other_tid = f"uireportstopicsother{uuid.uuid4().hex[:8]}"
+    other_content_id = _insert_content(
+        creator_id=other_creator["creator_id"],
+        booking_link_id=other_booking_link_id,
+        source_url="https://example.com/posts/reports-topics-other",
+        tid=other_tid,
+    )
+    other_booking_id = _insert_booking(
+        creator_id=other_creator["creator_id"],
+        booking_link_id=other_booking_link_id,
+        tid=other_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_TOPICS_OTHER_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 8, 13, 0, tzinfo=timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=other_creator["creator_id"],
+        booking_id=other_booking_id,
+        tid=other_tid,
+        stripe_account_id="acct_ui_reports_topics_other",
+        stripe_invoice_id=f"in_ui_reports_topics_other_{uuid.uuid4().hex[:8]}",
+        amount_cents=42000,
+        paid_at=datetime(2026, 3, 8, 14, 0, tzinfo=timezone.utc),
+    )
+    other_snapshot_id = _insert_fetch_snapshot(
+        content_id=other_content_id,
+        creator_id=other_creator["creator_id"],
+        requested_url="https://example.com/posts/reports-topics-other",
+        fetched_url="https://example.com/posts/reports-topics-other",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<article>Reports topics other</article>",
+        fetched_at=datetime(2026, 3, 8, 14, 5, tzinfo=timezone.utc),
+    )
+    other_artifact_id = _insert_extraction_artifact(
+        content_id=other_content_id,
+        creator_id=other_creator["creator_id"],
+        fetch_snapshot_id=other_snapshot_id,
+        extraction_status="succeeded",
+        title="Reports Topics Other",
+        extracted_text="Reports topics other extracted text.",
+        created_at=datetime(2026, 3, 8, 14, 10, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=other_content_id,
+        creator_id=other_creator["creator_id"],
+        extraction_artifact_id=other_artifact_id,
+        label="Sales Coaching",
+    )
+    _set_authoritative_extraction_artifact(
+        content_id=other_content_id,
+        artifact_id=other_artifact_id,
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get(
+            "/app/reports/topics",
+            params={"start_date": "2026-03-08", "end_date": "2026-03-08"},
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert "Topic analytics" in response.text
+    assert "Only authoritative confirmed topics count here." in response.text
+    assert "A single content row can appear under more than one confirmed topic" in response.text
+    assert "2 topic rows visible" in response.text
+    assert "Discovery Calls" in response.text
+    assert "Pricing Strategy" in response.text
+    assert "195.00" in response.text
+    assert "Retention Reviews" not in response.text
+    assert "Ghost Topic" not in response.text
+    assert "Sales Coaching" not in response.text
+    assert (
+        'href="/app/reports?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
+    assert (
+        'href="/app/reports/topics?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
 
 
 def test_attention_page_renders_blocked_and_unmatched_cases():

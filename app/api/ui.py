@@ -159,13 +159,16 @@ from app.services.reporting import (
     CreatorReportsContentDrilldown,
     CreatorPaidAttributionExplanation,
     CreatorReportsSummary,
+    CreatorReportsTopicSummary,
     PaidAttributionEvidence,
     ReportsContentBooking,
     ReportsSummaryRow,
+    ReportsTopicSummaryRow,
     build_reports_summary_csv,
     get_creator_paid_attribution_explanation,
     get_creator_reports_content_drilldown,
     get_creator_reports_summary,
+    get_creator_reports_topic_summary,
 )
 from app.services.support_requests import (
     SUPPORT_REQUEST_TYPE_ACCOUNT_DELETION,
@@ -1369,6 +1372,50 @@ def creator_reports_page(
             current_user=current_user,
             content_items=content_items,
             readiness=readiness,
+            summary=summary,
+            filter_values=filter_values,
+            field_errors=field_errors,
+        )
+    )
+
+
+@router.get("/app/reports/topics")
+def creator_reports_topics_page(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    content_items = list_content_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    filter_values = _reports_filter_values(dict(request.query_params))
+    start_date, end_date, field_errors = _reports_date_filters_from_values(filter_values)
+
+    overall_summary = get_creator_reports_topic_summary(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    summary = overall_summary
+    if not field_errors:
+        try:
+            summary = get_creator_reports_topic_summary(
+                creator_id=current_user.creator_id,
+                db=db,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except ValueError:
+            field_errors["date_range"] = "Start date must be on or before end date."
+
+    return _html_response(
+        _render_reports_topics_page(
+            current_user=current_user,
+            content_items=content_items,
             summary=summary,
             filter_values=filter_values,
             field_errors=field_errors,
@@ -5146,6 +5193,10 @@ def _render_reports_page(
       </form>
     </header>
     {_render_shell_nav(current_path="/app/reports")}
+    {_render_reports_surface_nav(
+        current_path="/app/reports",
+        filter_values=filter_values,
+    )}
     {_render_reports_notice(field_errors=field_errors)}
     <section class="grid">
       <article class="card stack">
@@ -5240,6 +5291,123 @@ def _render_reports_page(
     </section>
     """
     return _page_layout(title="Reports", body=body)
+
+
+def _render_reports_topics_page(
+    *,
+    current_user: AuthUser,
+    content_items: list[ContentResponse],
+    summary: CreatorReportsTopicSummary,
+    filter_values: dict[str, str],
+    field_errors: dict[str, str],
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    filters_active = _reports_filters_are_active(filter_values)
+    list_heading = (
+        "Topic analytics"
+        if summary.rows
+        else (
+            "No topic results in this window"
+            if filters_active and summary.has_any_authoritative_topics
+            else (
+                "No authoritative topics yet"
+                if content_items
+                else "No tracked content yet"
+            )
+        )
+    )
+    clear_filters_link = (
+        '<a href="/app/reports/topics" class="inline-link">Clear filters</a>'
+        if filters_active
+        else ""
+    )
+    back_to_reports_href = html.escape(_reports_page_href(filter_values), quote=True)
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Topic analytics</h1>
+        <p class="lede">Group the existing content funnel by authoritative confirmed topics only, without inventing a second revenue truth or speculative taxonomy layer.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/reports")}
+    {_render_reports_surface_nav(
+        current_path="/app/reports/topics",
+        filter_values=filter_values,
+    )}
+    {_render_reports_notice(field_errors=field_errors)}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Paid-date filter</p>
+          <h2>Topic rows in the paid window</h2>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+        </div>
+        <p>Use the paid date below to narrow topic rows by when the counted invoice payment landed. Booking counts below still reflect the current content rows visible in this topic grouping, not booking-date slices.</p>
+        <form action="/app/reports/topics" method="get">
+          <div class="filter-row">
+            <div>
+              <label for="start_date">Start date</label>
+              <input
+                id="start_date"
+                name="start_date"
+                type="date"
+                value="{html.escape(filter_values["start_date"], quote=True)}"
+                aria-invalid="{str("start_date" in field_errors).lower()}"
+              />
+              {_render_reports_field_error(field_errors.get("start_date"))}
+            </div>
+            <div>
+              <label for="end_date">End date</label>
+              <input
+                id="end_date"
+                name="end_date"
+                type="date"
+                value="{html.escape(filter_values["end_date"], quote=True)}"
+                aria-invalid="{str("end_date" in field_errors or "date_range" in field_errors).lower()}"
+              />
+              {_render_reports_field_error(field_errors.get("end_date"))}
+            </div>
+          </div>
+          {_render_reports_field_error(field_errors.get("date_range"))}
+          <div class="filter-actions">
+            <button type="submit">Apply filters</button>
+            {clear_filters_link}
+            <a href="{back_to_reports_href}" class="inline-link">View content funnel totals</a>
+          </div>
+        </form>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">Reading rules</p>
+          <h2>Confirmed-topic groupings are not a second total</h2>
+        </div>
+        <p>Only authoritative confirmed topics count here. Pending, rejected, or non-authoritative topic candidates stay out of this summary.</p>
+        <p>A single content row can appear under more than one confirmed topic, so these grouped topic rows are useful comparisons rather than a partition of your overall revenue totals.</p>
+        <p>Use the content funnel page when you want one creator-level total without topic overlap.</p>
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Authoritative topics</p>
+          <h2>{list_heading}</h2>
+        </div>
+        <p>{html.escape(_count_copy(len(summary.rows), "topic row"))} visible</p>
+      </div>
+      {_render_reports_topic_results(
+          content_items=content_items,
+          summary=summary,
+          filters_active=filters_active,
+      )}
+    </section>
+    """
+    return _page_layout(title="Topic analytics", body=body)
 
 
 def _render_attention_page(
@@ -5589,6 +5757,100 @@ def _render_reports_results(
         for row in summary.rows
     )
     return f'<div class="content-list">{items}</div>'
+
+
+def _render_reports_topic_results(
+    *,
+    content_items: list[ContentResponse],
+    summary: CreatorReportsTopicSummary,
+    filters_active: bool,
+) -> str:
+    if not summary.rows:
+        return _render_reports_topics_empty_state(
+            content_items=content_items,
+            summary=summary,
+            filters_active=filters_active,
+        )
+
+    items = "".join(
+        _render_reports_topic_row_card(
+            row=row,
+            filters_active=filters_active,
+        )
+        for row in summary.rows
+    )
+    return f'<div class="content-list">{items}</div>'
+
+
+def _render_reports_topics_empty_state(
+    *,
+    content_items: list[ContentResponse],
+    summary: CreatorReportsTopicSummary,
+    filters_active: bool,
+) -> str:
+    if filters_active and summary.has_any_authoritative_topics:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">No topic rows in this window</p>
+          <h2>No authoritative topic rows match this paid-date filter</h2>
+          <p>Try widening the paid-date range or clear the filters to see all authoritative confirmed topic groupings for this creator.</p>
+          <a href="/app/reports/topics" class="inline-link">Clear filters</a>
+        </section>
+        """
+
+    if not content_items:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">No tracked content yet</p>
+          <h2>Track content before topic analytics can appear</h2>
+          <p>Topic analytics groups the existing content funnel. Save tracked content first, then review and confirm topics from the content workflow.</p>
+          <a href="/app/content" class="inline-link">Open content</a>
+        </section>
+        """
+
+    return """
+    <section class="empty-state">
+      <p class="eyebrow">No authoritative topics yet</p>
+      <h2>Review and confirm topics before this summary can fill in</h2>
+      <p>This page only counts authoritative confirmed topics. If tracked content exists but nothing appears here yet, finish the topic review flow on the content pages first.</p>
+      <a href="/app/content" class="inline-link">Open content</a>
+    </section>
+    """
+
+
+def _render_reports_topic_row_card(
+    *,
+    row: ReportsTopicSummaryRow,
+    filters_active: bool,
+) -> str:
+    blocked_line = ""
+    if row.open_blocked_billing_case_count > 0:
+        blocked_line = (
+            f"<p><strong>Blocked before invoicing</strong>: "
+            f"{html.escape(_count_copy(row.open_blocked_billing_case_count, 'open blocked billing case'))} "
+            "still outside paid totals and visible separately in Attention.</p>"
+        )
+
+    return f"""
+    <article class="content-card stack">
+      <div class="content-card-header">
+        <div>
+          <p class="eyebrow">Authoritative confirmed topic</p>
+          <h2>{html.escape(row.canonical_label)}</h2>
+        </div>
+        <p class="pill-note">{html.escape(_reports_topic_funnel_status_label(row))}</p>
+      </div>
+      <p><strong>Grouped content rows</strong>: {html.escape(_count_copy(row.content_count, "content row"))}</p>
+      <p><strong>Tracked bookings</strong>: {html.escape(_count_copy(row.booking_count, "tracked booking"))}</p>
+      <p><strong>Paid revenue</strong>: {html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
+      <p><strong>Paid invoices</strong>: {html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))}</p>
+      <p><strong>Paid bookings</strong>: {html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
+      <p><strong>Current grouped state</strong>: {html.escape(_reports_topic_funnel_status_summary(row))}</p>
+      {blocked_line}
+      <p><strong>Paid window</strong>: {html.escape(_reports_topic_paid_window_copy(row, filters_active=filters_active))}</p>
+      <p>This grouped view reuses the existing content funnel truth. One content row can appear here under more than one authoritative topic.</p>
+    </article>
+    """
 
 
 def _render_illustrative_first_value_proof() -> str:
@@ -7485,6 +7747,10 @@ def _reports_page_href(filter_values: dict[str, str]) -> str:
     return f"/app/reports{_reports_query_string(filter_values)}"
 
 
+def _reports_topics_page_href(filter_values: dict[str, str]) -> str:
+    return f"/app/reports/topics{_reports_query_string(filter_values)}"
+
+
 def _reports_export_href(filter_values: dict[str, str]) -> str:
     return f"/app/reports/export.csv{_reports_query_string(filter_values)}"
 
@@ -7519,6 +7785,25 @@ def _reports_csv_filename(*, start_date: date | None, end_date: date | None) -> 
     start_label = start_date.isoformat() if start_date is not None else "open"
     end_label = end_date.isoformat() if end_date is not None else "open"
     return f"reports-summary-{start_label}-to-{end_label}.csv"
+
+
+def _render_reports_surface_nav(
+    *,
+    current_path: str,
+    filter_values: dict[str, str],
+) -> str:
+    links = [
+        (_reports_page_href(filter_values), "/app/reports", "Content"),
+        (_reports_topics_page_href(filter_values), "/app/reports/topics", "Topics"),
+    ]
+    rendered_links = "".join(
+        (
+            f'<a href="{html.escape(href, quote=True)}" '
+            f'class="nav-link{" active" if current_path == base_path else ""}">{html.escape(label)}</a>'
+        )
+        for href, base_path, label in links
+    )
+    return f'<nav class="shell-nav">{rendered_links}</nav>'
 
 
 def _reports_funnel_status_label(row: ReportsSummaryRow) -> str:
@@ -7557,6 +7842,60 @@ def _reports_paid_window_copy(row: ReportsSummaryRow, *, filters_active: bool) -
         if filters_active:
             return "No invoice-backed paid result is counted in this paid-date view yet."
         return "No invoice-backed paid result is counted for this content yet."
+    if row.first_paid_at == row.last_paid_at:
+        return row.first_paid_at.astimezone(timezone.utc).strftime("%B %d, %Y")
+    return (
+        f"{row.first_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')} to "
+        f"{row.last_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')}"
+    )
+
+
+def _reports_topic_funnel_status_label(row: ReportsTopicSummaryRow) -> str:
+    if row.funnel_status == "paid_result_recorded":
+        return "Paid result recorded"
+    if row.funnel_status == "blocked_before_invoicing":
+        return "Blocked before invoicing"
+    if row.funnel_status == "waiting_for_first_paid_result":
+        return "Waiting for first paid result"
+    return "No bookings yet"
+
+
+def _reports_topic_funnel_status_summary(row: ReportsTopicSummaryRow) -> str:
+    if row.funnel_status == "paid_result_recorded":
+        if row.open_blocked_billing_case_count > 0:
+            return (
+                "At least one content row in this topic group already has counted paid results, "
+                "but some newer booking activity is still blocked before invoicing."
+            )
+        return (
+            "At least one content row in this authoritative topic group already has "
+            "invoice-backed paid results in canonical reporting."
+        )
+    if row.funnel_status == "blocked_before_invoicing":
+        return (
+            "Grouped bookings under this authoritative topic reached billing, but at least "
+            "one open blocked billing case still keeps that activity outside paid totals."
+        )
+    if row.funnel_status == "waiting_for_first_paid_result":
+        return (
+            "Grouped content rows under this authoritative topic have canonical bookings, "
+            "but no invoice-backed paid result is counted yet."
+        )
+    return (
+        "This authoritative topic is attached to tracked content, but no canonical booking "
+        "has been recorded for those visible content rows yet."
+    )
+
+
+def _reports_topic_paid_window_copy(
+    row: ReportsTopicSummaryRow,
+    *,
+    filters_active: bool,
+) -> str:
+    if row.first_paid_at is None or row.last_paid_at is None:
+        if filters_active:
+            return "No invoice-backed paid result is counted in this paid-date view yet."
+        return "No invoice-backed paid result is counted for these topic rows yet."
     if row.first_paid_at == row.last_paid_at:
         return row.first_paid_at.astimezone(timezone.utc).strftime("%B %d, %Y")
     return (

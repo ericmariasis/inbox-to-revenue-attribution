@@ -156,12 +156,15 @@ from app.services.rate_limit import (
     build_support_request_rate_limit_bucket_key,
 )
 from app.services.reporting import (
+    CreatorReportsContentDrilldown,
     CreatorPaidAttributionExplanation,
     CreatorReportsSummary,
     PaidAttributionEvidence,
+    ReportsContentBooking,
     ReportsSummaryRow,
     build_reports_summary_csv,
     get_creator_paid_attribution_explanation,
+    get_creator_reports_content_drilldown,
     get_creator_reports_summary,
 )
 from app.services.support_requests import (
@@ -1369,6 +1372,47 @@ def creator_reports_page(
             summary=summary,
             filter_values=filter_values,
             field_errors=field_errors,
+        )
+    )
+
+
+@router.get("/app/reports/content/{tid}")
+def creator_reports_content_drilldown_page(
+    tid: str,
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    filter_values = _reports_filter_values(dict(request.query_params))
+    start_date, end_date, field_errors = _reports_date_filters_from_values(filter_values)
+    if field_errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=_reports_filter_error_detail(field_errors),
+        )
+
+    drilldown = get_creator_reports_content_drilldown(
+        creator_id=current_user.creator_id,
+        tid=tid,
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if drilldown is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="report drilldown not found",
+        )
+
+    return _html_response(
+        _render_reports_content_drilldown_page(
+            current_user=current_user,
+            drilldown=drilldown,
+            filter_values=filter_values,
         )
     )
 
@@ -5814,6 +5858,14 @@ def _render_reports_row_card(
     filter_values: dict[str, str],
     filters_active: bool,
 ) -> str:
+    details_href = html.escape(
+        _reports_content_drilldown_href(
+            tid=row.tid,
+            filter_values=filter_values,
+        ),
+        quote=True,
+    )
+    details_link = f'<a href="{details_href}" class="inline-link">Open funnel details</a>'
     explanation_link = ""
     if row.paid_invoice_count > 0:
         explanation_href = html.escape(
@@ -5835,6 +5887,10 @@ def _render_reports_row_card(
             "still outside paid totals and visible separately in Attention.</p>"
         )
 
+    footer_links = details_link
+    if explanation_link:
+        footer_links = f"{details_link} {explanation_link}"
+
     return f"""
     <article class="content-card stack">
       <div class="content-card-header">
@@ -5852,7 +5908,7 @@ def _render_reports_row_card(
       <p><strong>Current funnel state</strong>: {html.escape(_reports_funnel_status_summary(row))}</p>
       {blocked_line}
       <p><strong>Paid window</strong>: {html.escape(_reports_paid_window_copy(row, filters_active=filters_active))}</p>
-      {explanation_link}
+      {footer_links}
     </article>
     """
 
@@ -5957,6 +6013,343 @@ def _render_reports_paid_explanation_page(
     </section>
     """
     return _page_layout(title="Why this revenue counted", body=body)
+
+
+def _render_reports_content_drilldown_page(
+    *,
+    current_user: AuthUser,
+    drilldown: CreatorReportsContentDrilldown,
+    filter_values: dict[str, str],
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    row = drilldown.current_summary_row
+    paid_window = drilldown.paid_window
+    filters_active = _reports_filters_are_active(filter_values)
+    back_href = html.escape(_reports_page_href(filter_values), quote=True)
+    clear_filter_href = html.escape(
+        _reports_content_drilldown_href(
+            tid=row.tid,
+            filter_values=_empty_reports_filter_values(),
+        ),
+        quote=True,
+    )
+    paid_explanation_link = ""
+    if drilldown.paid_explanation is not None:
+        paid_explanation_link = (
+            f'<a href="{html.escape(_reports_paid_explanation_href(tid=row.tid, filter_values=filter_values), quote=True)}" '
+            'class="inline-link">Why this revenue counted</a>'
+        )
+    clear_filter_link = (
+        f'<a href="{clear_filter_href}" class="inline-link">View all paid history</a>'
+        if filters_active
+        else ""
+    )
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Content funnel drilldown</h1>
+        <p class="lede">Inspect one tracked content item across bookings, paid outcomes, and any content-scoped diagnostic state without turning reports into an operator console.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/reports")}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Tracked content</p>
+          <h2>{html.escape(_content_card_title(row.source_url))}</h2>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+        </div>
+        <p><strong>Source URL</strong>: <a href="{html.escape(row.source_url)}" class="inline-link">{html.escape(row.source_url)}</a></p>
+        <p><strong>Tracking ID</strong>: <code>{html.escape(row.tid)}</code></p>
+        <p><strong>Booking link</strong>: {html.escape(drilldown.booking_link_name)}</p>
+        <p><strong>Current funnel state</strong>: {html.escape(_reports_funnel_status_summary(row))}</p>
+        <p><strong>Paid window on this page</strong>: {html.escape(_reports_content_paid_window_copy(drilldown=drilldown, filters_active=filters_active))}</p>
+        <a href="{back_href}" class="inline-link">Back to reports</a>
+        <div class="stat-grid">
+          <article class="stat-tile">
+            <p class="eyebrow">Tracked bookings</p>
+            <p class="stat-value">{html.escape(str(row.booking_count))}</p>
+            <p>{html.escape(_count_copy(row.booking_count, "tracked booking"))}</p>
+          </article>
+          <article class="stat-tile">
+            <p class="eyebrow">All-time paid bookings</p>
+            <p class="stat-value">{html.escape(str(row.paid_booking_count))}</p>
+            <p>{html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
+          </article>
+          <article class="stat-tile">
+            <p class="eyebrow">All-time paid revenue</p>
+            <p class="stat-value">{html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
+          </article>
+        </div>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">Reading rules</p>
+          <h2>Current funnel truth stays separate from filtered paid outcomes</h2>
+        </div>
+        <p>Bookings and current funnel state here stay tied to the stored tracking ID for this content. Paid outcomes still come only from canonical invoice and payment truth.</p>
+        <p>If you opened this page from a paid-date-filtered reports view, the paid-results section below follows that same window. Diagnostic items only appear here when they still carry this content's canonical tracking ID.</p>
+        {clear_filter_link}
+        {paid_explanation_link}
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Tracked bookings</p>
+          <h2>Bookings tied to this content</h2>
+        </div>
+        <p>{html.escape(_count_copy(len(drilldown.bookings), "booking"))} shown</p>
+      </div>
+      {_render_reports_content_booking_list(drilldown.bookings)}
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Paid outcomes</p>
+          <h2>Invoice-backed results in the current paid window</h2>
+        </div>
+        <p>{html.escape(_count_copy(paid_window.paid_invoice_count, "paid invoice"))} counted</p>
+      </div>
+      {_render_reports_content_paid_outcomes(
+          drilldown=drilldown,
+          filter_values=filter_values,
+      )}
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Diagnostic state</p>
+          <h2>Items still outside paid totals</h2>
+        </div>
+        <p>{html.escape(_count_copy(len(drilldown.blocked_cases) + len(drilldown.unmatched_payment_events), "diagnostic item"))} shown</p>
+      </div>
+      {_render_reports_content_diagnostics(
+          drilldown=drilldown,
+          filter_values=filter_values,
+      )}
+    </section>
+    """
+    return _page_layout(title="Content funnel drilldown", body=body)
+
+
+def _render_reports_content_booking_list(bookings: list[ReportsContentBooking]) -> str:
+    if not bookings:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">No bookings yet</p>
+          <h2>No canonical booking is tied to this content yet</h2>
+          <p>This content is tracked, but no attributed booking carrying this stored tracking ID has landed in canonical booking truth yet.</p>
+        </section>
+        """
+
+    items = "".join(
+        _render_reports_content_booking_card(booking=booking)
+        for booking in bookings
+    )
+    return f'<div class="activity-list">{items}</div>'
+
+
+def _render_reports_content_booking_card(*, booking: ReportsContentBooking) -> str:
+    status = _booking_activity_status(booking.status)
+    canceled_at_line = ""
+    if booking.canceled_at is not None:
+        canceled_at_line = (
+            f"<p><strong>Canceled at</strong>: "
+            f"{_format_timestamp_in_utc(booking.canceled_at)}</p>"
+        )
+
+    return f"""
+    <article class="activity-card stack">
+      <div class="activity-card-header">
+        <div>
+          <p class="eyebrow">Tracked booking</p>
+          <h2>{html.escape(booking.provider_booking_id)}</h2>
+        </div>
+        <span class="status-pill {html.escape(status["badge_class"])}">{html.escape(status["label"])}</span>
+      </div>
+      <p><strong>Booked at</strong>: {_format_timestamp_in_utc(booking.booked_at)}</p>
+      {canceled_at_line}
+      <p><strong>Booking link</strong>: {html.escape(booking.booking_link_name)}</p>
+      <p>This booking is counted here because it still points to this content's stored tracking ID in canonical booking truth.</p>
+    </article>
+    """
+
+
+def _render_reports_content_paid_outcomes(
+    *,
+    drilldown: CreatorReportsContentDrilldown,
+    filter_values: dict[str, str],
+) -> str:
+    row = drilldown.current_summary_row
+    paid_window = drilldown.paid_window
+    filters_active = _reports_filters_are_active(filter_values)
+    clear_filter_link = (
+        f'<a href="{html.escape(_reports_content_drilldown_href(tid=row.tid, filter_values=_empty_reports_filter_values()), quote=True)}" '
+        'class="inline-link">View all paid history</a>'
+        if filters_active
+        else ""
+    )
+
+    if paid_window.paid_invoice_count == 0:
+        empty_copy = (
+            "This content has invoice-backed paid history, but none of it landed inside the current paid-date view."
+            if filters_active and row.paid_invoice_count > 0
+            else "No invoice-backed paid result is counted for this content yet."
+        )
+        return f"""
+        <section class="empty-state">
+          <p class="eyebrow">No paid outcomes in view</p>
+          <h2>No paid result is counted in this paid window</h2>
+          <p>{html.escape(empty_copy)}</p>
+          {clear_filter_link}
+        </section>
+        """
+
+    explanation_link = (
+        f'<a href="{html.escape(_reports_paid_explanation_href(tid=row.tid, filter_values=filter_values), quote=True)}" '
+        'class="inline-link">Why this revenue counted</a>'
+    )
+
+    return f"""
+    <div class="stack">
+      <p>Only canonical invoice-backed paid results are counted here. Matching payment events remain supporting evidence, and the deeper chain stays on the existing explanation page.</p>
+      <div class="stat-grid">
+        <article class="stat-tile">
+          <p class="eyebrow">Paid revenue</p>
+          <p class="stat-value">{html.escape(_format_money_from_cents(paid_window.paid_revenue_cents))}</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Paid invoices</p>
+          <p class="stat-value">{html.escape(str(paid_window.paid_invoice_count))}</p>
+          <p>{html.escape(_count_copy(paid_window.paid_invoice_count, "paid invoice"))}</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Paid bookings</p>
+          <p class="stat-value">{html.escape(str(paid_window.paid_booking_count))}</p>
+          <p>{html.escape(_count_copy(paid_window.paid_booking_count, "paid booking"))}</p>
+        </article>
+      </div>
+      <p><strong>Paid window</strong>: {html.escape(_reports_content_paid_window_copy(drilldown=drilldown, filters_active=filters_active))}</p>
+      {explanation_link}
+    </div>
+    """
+
+
+def _render_reports_content_diagnostics(
+    *,
+    drilldown: CreatorReportsContentDrilldown,
+    filter_values: dict[str, str],
+) -> str:
+    if not drilldown.blocked_cases and not drilldown.unmatched_payment_events:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">Clear</p>
+          <h2>No content-scoped diagnostics are waiting right now</h2>
+          <p>No open blocked billing case or unmatched payment event still carries this content's stored tracking ID today.</p>
+        </section>
+        """
+
+    global_unmatched_link = html.escape(
+        _reports_unattributed_explanation_href(filter_values),
+        quote=True,
+    )
+    blocked_items = "".join(
+        _render_reports_content_blocked_case_card(blocked_case=blocked_case)
+        for blocked_case in drilldown.blocked_cases
+    )
+    unmatched_items = "".join(
+        _render_reports_content_unmatched_payment_card(payment_event=payment_event)
+        for payment_event in drilldown.unmatched_payment_events
+    )
+    blocked_section = (
+        f"""
+        <div class="stack">
+          <p class="eyebrow">Blocked before invoicing</p>
+          <h2>{html.escape(_count_copy(len(drilldown.blocked_cases), "open case"))}</h2>
+          <div class="content-list">{blocked_items}</div>
+        </div>
+        """
+        if drilldown.blocked_cases
+        else "<p>No blocked billing case tied to this content is open right now.</p>"
+    )
+    unmatched_section = (
+        f"""
+        <div class="stack">
+          <p class="eyebrow">Unmatched payment signals</p>
+          <h2>{html.escape(_count_copy(len(drilldown.unmatched_payment_events), "backlog event"))}</h2>
+          <div class="content-list">{unmatched_items}</div>
+        </div>
+        """
+        if drilldown.unmatched_payment_events
+        else "<p>No unmatched payment event still points back to this content's tracking ID right now.</p>"
+    )
+
+    return f"""
+    <div class="stack">
+      <p>Only blocked cases and unmatched payment events that still carry this content's stored tracking ID appear here. Anything without a safe content link stays on the broader diagnostic pages instead of being guessed onto this row.</p>
+      {blocked_section}
+      {unmatched_section}
+      <p><a href="/app/attention" class="inline-link">Open Attention for fuller blocked-case detail</a></p>
+      <p><a href="{global_unmatched_link}" class="inline-link">Open the global unmatched-payment explanation</a></p>
+    </div>
+    """
+
+
+def _render_reports_content_blocked_case_card(*, blocked_case: BlockedBillingCaseSummary) -> str:
+    reason_copy = _blocked_billing_reason_copy(blocked_case.reason_code)
+    return f"""
+    <article class="content-card stack">
+      <div class="content-card-header">
+        <div>
+          <p class="eyebrow">Blocked billing</p>
+          <h2>{html.escape(reason_copy.label)}</h2>
+        </div>
+        <span class="status-pill pending">Blocked</span>
+      </div>
+      <p>{html.escape(reason_copy.summary)}</p>
+      <p><strong>Likely cause</strong>: {html.escape(reason_copy.likely_cause)}</p>
+      <p><strong>What to do next</strong>: {html.escape(reason_copy.next_step)}</p>
+      <p><strong>Booking</strong>: <code>{html.escape(blocked_case.provider_booking_id)}</code></p>
+      <p><strong>First blocked</strong>: {_format_timestamp_in_utc(blocked_case.first_blocked_at)}</p>
+      <p><strong>Last blocked</strong>: {_format_timestamp_in_utc(blocked_case.last_blocked_at)}</p>
+    </article>
+    """
+
+
+def _render_reports_content_unmatched_payment_card(
+    *,
+    payment_event: UnmatchedPaymentEventSummary,
+) -> str:
+    reason_copy = _unmatched_payment_reason_copy(payment_event.unattributed_reason)
+    paid_at_copy = (
+        _format_timestamp_in_utc(payment_event.paid_at)
+        if payment_event.paid_at is not None
+        else "Unknown"
+    )
+
+    return f"""
+    <article class="content-card stack">
+      <div class="content-card-header">
+        <div>
+          <p class="eyebrow">Unmatched payment</p>
+          <h2>{html.escape(reason_copy.label)}</h2>
+        </div>
+        <span class="status-pill pending">{html.escape(_reports_payment_event_status_label(payment_event.status))}</span>
+      </div>
+      <p>{html.escape(reason_copy.summary)}</p>
+      <p><strong>Likely cause</strong>: {html.escape(reason_copy.likely_cause)}</p>
+      <p><strong>What to do next</strong>: {html.escape(reason_copy.next_step)}</p>
+      <p><strong>Paid at</strong>: {paid_at_copy}</p>
+      <p><strong>Received at</strong>: {_format_timestamp_in_utc(payment_event.received_at)}</p>
+    </article>
+    """
 
 
 def _render_reports_paid_evidence(
@@ -7100,6 +7493,10 @@ def _reports_unattributed_explanation_href(filter_values: dict[str, str]) -> str
     return f"/app/reports/explanations/unattributed{_reports_query_string(filter_values)}"
 
 
+def _reports_content_drilldown_href(*, tid: str, filter_values: dict[str, str]) -> str:
+    return f"/app/reports/content/{quote(tid, safe='')}{_reports_query_string(filter_values)}"
+
+
 def _reports_paid_explanation_href(*, tid: str, filter_values: dict[str, str]) -> str:
     return f"/app/reports/explanations/paid/{quote(tid, safe='')}{_reports_query_string(filter_values)}"
 
@@ -7165,6 +7562,24 @@ def _reports_paid_window_copy(row: ReportsSummaryRow, *, filters_active: bool) -
     return (
         f"{row.first_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')} to "
         f"{row.last_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')}"
+    )
+
+
+def _reports_content_paid_window_copy(
+    *,
+    drilldown: CreatorReportsContentDrilldown,
+    filters_active: bool,
+) -> str:
+    paid_window = drilldown.paid_window
+    if paid_window.first_paid_at is None or paid_window.last_paid_at is None:
+        if filters_active:
+            return "No invoice-backed paid result is counted in this paid-date view yet."
+        return "No invoice-backed paid result is counted for this content yet."
+    if paid_window.first_paid_at == paid_window.last_paid_at:
+        return paid_window.first_paid_at.astimezone(timezone.utc).strftime("%B %d, %Y")
+    return (
+        f"{paid_window.first_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')} to "
+        f"{paid_window.last_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')}"
     )
 
 

@@ -10,9 +10,18 @@ from sqlalchemy.orm import Session
 from app.models.blocked_billing_case import BlockedBillingCase
 from app.models.booking import Booking
 from app.models.billing_provider import BILLING_PROVIDER_STRIPE
+from app.models.booking_link import BookingLink
 from app.models.content import Content
+from app.services.blocked_billing import (
+    BlockedBillingCaseSummary,
+    list_open_blocked_billing_cases,
+)
 from app.services.booking_attribution import BOOKING_ATTRIBUTION_STATUS_ATTRIBUTED
-from app.services.invoice_payment_events import PaymentProvenanceSummary
+from app.services.invoice_payment_events import (
+    PaymentProvenanceSummary,
+    UnmatchedPaymentEventSummary,
+    list_current_unmatched_payment_events,
+)
 from app.services.settled_paid_evidence import (
     CURRENT_UNMATCHED_PAYMENT_BACKLOG_SCOPE,
     SettledPaidEvidenceRow,
@@ -120,6 +129,40 @@ class CreatorPaidAttributionExplanation:
     end_date: date | None
     summary_row: ReportsSummaryRow
     evidence: list[PaidAttributionEvidence]
+
+
+@dataclass(frozen=True)
+class ReportsContentBooking:
+    booking_id: UUID
+    provider_booking_id: str
+    booking_link_id: UUID
+    booking_link_name: str
+    status: str
+    booked_at: datetime
+    canceled_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ReportsPaidWindowSummary:
+    paid_revenue_cents: int
+    paid_invoice_count: int
+    paid_booking_count: int
+    first_paid_at: datetime | None
+    last_paid_at: datetime | None
+
+
+@dataclass(frozen=True)
+class CreatorReportsContentDrilldown:
+    creator_id: UUID
+    start_date: date | None
+    end_date: date | None
+    booking_link_name: str
+    current_summary_row: ReportsSummaryRow
+    paid_window: ReportsPaidWindowSummary
+    bookings: list[ReportsContentBooking]
+    blocked_cases: list[BlockedBillingCaseSummary]
+    unmatched_payment_events: list[UnmatchedPaymentEventSummary]
+    paid_explanation: CreatorPaidAttributionExplanation | None
 
 
 @dataclass(frozen=True)
@@ -243,6 +286,117 @@ def get_creator_paid_attribution_explanation(
         end_date=end_date,
         summary_row=summary_row,
         evidence=evidence,
+    )
+
+
+def get_creator_reports_content_drilldown(
+    *,
+    creator_id: UUID,
+    tid: str,
+    db: Session,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> CreatorReportsContentDrilldown | None:
+    current_summary = get_creator_reports_summary(
+        creator_id=creator_id,
+        db=db,
+    )
+    current_summary_row = next((row for row in current_summary.rows if row.tid == tid), None)
+    if current_summary_row is None:
+        return None
+
+    booking_link_name = db.scalar(
+        select(BookingLink.name).where(
+            BookingLink.id == current_summary_row.booking_link_id,
+            BookingLink.creator_id == creator_id,
+        )
+    )
+    if booking_link_name is None:
+        return None
+
+    paid_explanation = get_creator_paid_attribution_explanation(
+        creator_id=creator_id,
+        tid=tid,
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    paid_window = ReportsPaidWindowSummary(
+        paid_revenue_cents=(
+            paid_explanation.summary_row.paid_revenue_cents if paid_explanation is not None else 0
+        ),
+        paid_invoice_count=(
+            paid_explanation.summary_row.paid_invoice_count if paid_explanation is not None else 0
+        ),
+        paid_booking_count=(
+            paid_explanation.summary_row.paid_booking_count if paid_explanation is not None else 0
+        ),
+        first_paid_at=(
+            paid_explanation.summary_row.first_paid_at if paid_explanation is not None else None
+        ),
+        last_paid_at=(
+            paid_explanation.summary_row.last_paid_at if paid_explanation is not None else None
+        ),
+    )
+
+    booking_rows = db.execute(
+        select(Booking, BookingLink.name)
+        .select_from(Booking)
+        .join(
+            BookingLink,
+            and_(
+                BookingLink.id == Booking.booking_link_id,
+                BookingLink.creator_id == creator_id,
+            ),
+        )
+        .where(
+            Booking.creator_id == creator_id,
+            Booking.tid == tid,
+            Booking.attribution_status == BOOKING_ATTRIBUTION_STATUS_ATTRIBUTED,
+        )
+        .order_by(Booking.booked_at.desc(), Booking.id.desc())
+    ).all()
+    bookings = [
+        ReportsContentBooking(
+            booking_id=booking.id,
+            provider_booking_id=booking.resolved_provider_booking_id or "missing",
+            booking_link_id=booking.booking_link_id,
+            booking_link_name=booking_link_name_value,
+            status=booking.status,
+            booked_at=booking.booked_at,
+            canceled_at=booking.canceled_at,
+        )
+        for booking, booking_link_name_value in booking_rows
+    ]
+
+    blocked_cases = [
+        blocked_case
+        for blocked_case in list_open_blocked_billing_cases(
+            creator_id=creator_id,
+            db=db,
+        )
+        if blocked_case.tid == tid
+    ]
+    unmatched_payment_events = [
+        payment_event
+        for payment_event in list_current_unmatched_payment_events(
+            creator_id=creator_id,
+            db=db,
+        )
+        if payment_event.tid == tid
+    ]
+
+    return CreatorReportsContentDrilldown(
+        creator_id=creator_id,
+        start_date=start_date,
+        end_date=end_date,
+        booking_link_name=booking_link_name,
+        current_summary_row=current_summary_row,
+        paid_window=paid_window,
+        bookings=bookings,
+        blocked_cases=blocked_cases,
+        unmatched_payment_events=unmatched_payment_events,
+        paid_explanation=paid_explanation,
     )
 
 

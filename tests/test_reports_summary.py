@@ -36,6 +36,7 @@ from app.services.reporting import (
     REPORTS_FUNNEL_STATUS_NO_BOOKINGS,
     REPORTS_FUNNEL_STATUS_PAID,
     REPORTS_FUNNEL_STATUS_WAITING_FOR_PAID,
+    get_creator_reports_content_drilldown,
     get_creator_paid_attribution_explanation,
     get_creator_reports_summary,
 )
@@ -174,6 +175,8 @@ def _create_unmatched_payment_event(
     stripe_invoice_id: str,
     reason: str,
     paid_at: datetime,
+    booking: Booking | None = None,
+    tid: str | None = None,
 ) -> InvoicePaymentEvent:
     event = InvoicePaymentEvent(
         stripe_event_id=stripe_event_id,
@@ -182,8 +185,8 @@ def _create_unmatched_payment_event(
         stripe_invoice_id=stripe_invoice_id,
         invoice_id=None,
         creator_id=creator.id,
-        booking_id=None,
-        tid=None,
+        booking_id=booking.id if booking is not None else None,
+        tid=tid if tid is not None else (booking.tid if booking is not None else None),
         status="unmatched",
         unattributed_reason=reason,
         paid_at=paid_at,
@@ -532,6 +535,169 @@ def test_creator_reports_summary_builds_content_funnel_rows_and_keeps_current_un
         (item.reason_code, item.case_count)
         for item in filtered_summary.blocked_summary.reasons
     ] == [(BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE, 1)]
+
+
+def test_creator_reports_content_drilldown_returns_bookings_paid_and_content_scoped_diagnostics():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, _ = _create_creator_with_user(
+            session,
+            suffix="drilldown",
+            stripe_account_id="acct_reports_drilldown",
+        )
+        booking_link = _create_booking_link(session, creator=creator, suffix="drilldown")
+        content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="drilldown",
+        )
+        paid_booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_REPORTS_DRILLDOWN_PAID",
+            booked_at=datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+        )
+        invoice = _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=paid_booking,
+            stripe_invoice_id="in_reports_drilldown_paid",
+            amount_cents=19500,
+            paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+        )
+        _create_matched_payment_event(
+            session,
+            creator=creator,
+            booking=paid_booking,
+            invoice=invoice,
+            stripe_event_id="evt_reports_drilldown_paid",
+            paid_at=invoice.paid_at,
+        )
+
+        waiting_booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_REPORTS_DRILLDOWN_WAITING",
+            booked_at=datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc),
+        )
+        blocked_booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_REPORTS_DRILLDOWN_BLOCKED",
+            booked_at=datetime(2026, 3, 8, 11, 0, tzinfo=timezone.utc),
+        )
+        _create_blocked_billing_case(
+            session,
+            creator=creator,
+            booking=blocked_booking,
+            reason_code=BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE,
+            blocked_at=datetime(2026, 3, 8, 11, 5, tzinfo=timezone.utc),
+        )
+        scoped_unmatched = _create_unmatched_payment_event(
+            session,
+            creator=creator,
+            stripe_event_id="evt_reports_drilldown_scoped_unmatched",
+            stripe_invoice_id="in_reports_drilldown_scoped_unmatched",
+            reason=UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+            paid_at=datetime(2026, 3, 8, 11, 30, tzinfo=timezone.utc),
+            booking=waiting_booking,
+        )
+        scoped_unmatched_id = scoped_unmatched.id
+        _create_unmatched_payment_event(
+            session,
+            creator=creator,
+            stripe_event_id="evt_reports_drilldown_global_unmatched",
+            stripe_invoice_id="in_reports_drilldown_global_unmatched",
+            reason=UNATTRIBUTED_REASON_MISSING_TID,
+            paid_at=datetime(2026, 3, 8, 11, 45, tzinfo=timezone.utc),
+        )
+
+        other_creator, _ = _create_creator_with_user(
+            session,
+            suffix="drilldown_other",
+            stripe_account_id="acct_reports_drilldown_other",
+        )
+        other_booking_link = _create_booking_link(
+            session,
+            creator=other_creator,
+            suffix="drilldown_other",
+        )
+        other_content = _create_content(
+            session,
+            creator=other_creator,
+            booking_link=other_booking_link,
+            suffix="drilldown_other",
+        )
+        other_booking = _create_booking(
+            session,
+            creator=other_creator,
+            booking_link=other_booking_link,
+            content=other_content,
+            booking_uuid="BOOK_REPORTS_DRILLDOWN_OTHER",
+            booked_at=datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=other_creator,
+            booking=other_booking,
+            stripe_invoice_id="in_reports_drilldown_other",
+            amount_cents=88000,
+            paid_at=datetime(2026, 3, 8, 13, 0, tzinfo=timezone.utc),
+        )
+
+        creator_id = creator.id
+        other_creator_id = other_creator.id
+        content_tid = content.tid
+        session.commit()
+
+    with Session(engine) as session:
+        drilldown = get_creator_reports_content_drilldown(
+            creator_id=creator_id,
+            tid=content_tid,
+            db=session,
+            start_date=date(2026, 3, 8),
+            end_date=date(2026, 3, 8),
+        )
+        hidden_from_other_creator = get_creator_reports_content_drilldown(
+            creator_id=other_creator_id,
+            tid=content_tid,
+            db=session,
+        )
+
+    assert drilldown is not None
+    assert drilldown.booking_link_name == "Reports Link drilldown"
+    assert drilldown.current_summary_row.tid == content_tid
+    assert drilldown.current_summary_row.booking_count == 3
+    assert drilldown.current_summary_row.paid_revenue_cents == 19500
+    assert drilldown.current_summary_row.open_blocked_billing_case_count == 1
+    assert drilldown.current_summary_row.funnel_status == REPORTS_FUNNEL_STATUS_PAID
+    assert drilldown.paid_window.paid_revenue_cents == 19500
+    assert drilldown.paid_window.paid_invoice_count == 1
+    assert drilldown.paid_window.paid_booking_count == 1
+    assert drilldown.paid_window.first_paid_at == datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc)
+    assert drilldown.paid_window.last_paid_at == datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc)
+    assert [booking.provider_booking_id for booking in drilldown.bookings] == [
+        "BOOK_REPORTS_DRILLDOWN_BLOCKED",
+        "BOOK_REPORTS_DRILLDOWN_WAITING",
+        "BOOK_REPORTS_DRILLDOWN_PAID",
+    ]
+    assert len(drilldown.blocked_cases) == 1
+    assert drilldown.blocked_cases[0].reason_code == BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE
+    assert len(drilldown.unmatched_payment_events) == 1
+    assert drilldown.unmatched_payment_events[0].payment_event_id == scoped_unmatched_id
+    assert drilldown.unmatched_payment_events[0].tid == content_tid
+    assert drilldown.paid_explanation is not None
+    assert drilldown.paid_explanation.summary_row.tid == content_tid
+    assert len(drilldown.paid_explanation.evidence) == 1
+    assert hidden_from_other_creator is None
 
 
 def test_creator_paid_attribution_explanation_returns_canonical_chain_for_creator_scoped_row():

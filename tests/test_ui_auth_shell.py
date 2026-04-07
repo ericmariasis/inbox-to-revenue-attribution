@@ -629,6 +629,8 @@ def _insert_unmatched_payment_event(
     stripe_invoice_id: str | None = None,
     reason: str,
     paid_at: datetime,
+    booking_id: str | None = None,
+    tid: str | None = None,
     payment_provider: str = "stripe",
     provider_account_id: str | None = None,
     provider_event_id: str | None = None,
@@ -670,8 +672,8 @@ def _insert_unmatched_payment_event(
                 "stripe_invoice_id": stripe_invoice_id,
                 "invoice_id": None,
                 "creator_id": creator_id,
-                "booking_id": None,
-                "tid": None,
+                "booking_id": booking_id,
+                "tid": tid,
                 "status": "unmatched",
                 "unattributed_reason": reason,
                 "paid_at": paid_at,
@@ -2633,6 +2635,10 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
         in response.text
     )
     assert (
+        f'href="/app/reports/content/{current_content_tid}?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
+    assert (
         f'href="/app/reports/explanations/paid/{current_content_tid}?start_date=2026-03-08&amp;end_date=2026-03-08"'
         in response.text
     )
@@ -3247,6 +3253,185 @@ def test_reports_paid_explanation_page_returns_404_for_other_creators_row():
 
     assert response.status_code == 404
     assert response.json() == {"detail": "report explanation not found"}
+
+
+def test_reports_content_drilldown_page_renders_creator_scoped_bookings_paid_and_diagnostics():
+    creator = _insert_creator_user(
+        email=f"ui_reports_drilldown_{uuid.uuid4().hex}@example.com",
+        name="Reports Drilldown Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_drilldown",
+    )
+    access_token = _access_token(
+        user_id=creator["user_id"],
+        creator_id=creator["creator_id"],
+        email=creator["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Drilldown Strategy",
+        calendly_url="https://calendly.com/example/drilldown-strategy",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    content_tid = f"uireportsdrilldown{uuid.uuid4().hex[:8]}"
+    source_url = "https://example.com/posts/reports-drilldown"
+
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url=source_url,
+        tid=content_tid,
+    )
+    paid_booking_uuid = f"BOOK_UI_REPORTS_DRILLDOWN_PAID_{uuid.uuid4().hex[:8]}"
+    paid_booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=paid_booking_uuid,
+        booked_at=datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+    )
+    invoice_id = _insert_invoice(
+        creator_id=creator["creator_id"],
+        booking_id=paid_booking_id,
+        tid=content_tid,
+        stripe_account_id="acct_ui_reports_drilldown",
+        stripe_invoice_id=f"in_ui_reports_drilldown_paid_{uuid.uuid4().hex[:8]}",
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=creator["creator_id"],
+        booking_id=paid_booking_id,
+        tid=content_tid,
+        invoice_id=invoice_id,
+        stripe_account_id="acct_ui_reports_drilldown",
+        stripe_event_id=f"evt_ui_reports_drilldown_paid_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=f"in_ui_reports_drilldown_paid_{uuid.uuid4().hex[:8]}",
+        paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+    )
+    waiting_booking_uuid = f"BOOK_UI_REPORTS_DRILLDOWN_WAITING_{uuid.uuid4().hex[:8]}"
+    waiting_booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=waiting_booking_uuid,
+        booked_at=datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc),
+    )
+    blocked_booking_uuid = f"BOOK_UI_REPORTS_DRILLDOWN_BLOCKED_{uuid.uuid4().hex[:8]}"
+    blocked_booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=blocked_booking_uuid,
+        booked_at=datetime(2026, 3, 8, 11, 0, tzinfo=timezone.utc),
+    )
+    _insert_blocked_billing_case(
+        creator_id=creator["creator_id"],
+        booking_id=blocked_booking_id,
+        tid=content_tid,
+        calendly_booking_uuid=blocked_booking_uuid,
+        stripe_account_id="acct_ui_reports_drilldown",
+        frozen_amount_cents=19500,
+        frozen_currency="USD",
+        reason_code="creator_not_billable",
+        first_blocked_at=datetime(2026, 3, 8, 11, 5, tzinfo=timezone.utc),
+    )
+    _insert_unmatched_payment_event(
+        creator_id=creator["creator_id"],
+        stripe_account_id="acct_ui_reports_drilldown",
+        stripe_event_id=f"evt_ui_reports_drilldown_unmatched_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=f"in_ui_reports_drilldown_unmatched_{uuid.uuid4().hex[:8]}",
+        reason=UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
+        paid_at=datetime(2026, 3, 8, 11, 30, tzinfo=timezone.utc),
+        booking_id=waiting_booking_id,
+        tid=content_tid,
+    )
+    _insert_unmatched_payment_event(
+        creator_id=creator["creator_id"],
+        stripe_account_id="acct_ui_reports_drilldown",
+        stripe_event_id=f"evt_ui_reports_drilldown_missing_tid_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=f"in_ui_reports_drilldown_missing_tid_{uuid.uuid4().hex[:8]}",
+        reason=UNATTRIBUTED_REASON_MISSING_TID,
+        paid_at=datetime(2026, 3, 8, 11, 40, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get(
+            f"/app/reports/content/{content_tid}",
+            params={"start_date": "2026-03-08", "end_date": "2026-03-08"},
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert "Content funnel drilldown" in response.text
+    assert source_url in response.text
+    assert content_tid in response.text
+    assert "Drilldown Strategy" in response.text
+    assert paid_booking_uuid in response.text
+    assert waiting_booking_uuid in response.text
+    assert blocked_booking_uuid in response.text
+    assert "Invoice-backed results in the current paid window" in response.text
+    assert "195.00" in response.text
+    assert "Creator not billable" in response.text
+    assert "Unknown invoice" in response.text
+    assert "Missing tracking ID" not in response.text
+    assert (
+        f'href="/app/reports/explanations/paid/{content_tid}?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
+    assert (
+        'href="/app/reports?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
+
+
+def test_reports_content_drilldown_page_returns_404_for_other_creators_row():
+    creator_a = _insert_creator_user(
+        email=f"ui_reports_drilldown_a_{uuid.uuid4().hex}@example.com",
+        name="Reports Drilldown Creator A",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_drilldown_a",
+    )
+    creator_b = _insert_creator_user(
+        email=f"ui_reports_drilldown_b_{uuid.uuid4().hex}@example.com",
+        name="Reports Drilldown Creator B",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_drilldown_b",
+    )
+    access_token_b = _access_token(
+        user_id=creator_b["user_id"],
+        creator_id=creator_b["creator_id"],
+        email=creator_b["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=creator_a["creator_id"],
+        name="Drilldown Isolation Strategy",
+        calendly_url="https://calendly.com/example/drilldown-isolation",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    content_tid = f"uireportsdrilldownhidden{uuid.uuid4().hex[:8]}"
+
+    _insert_content(
+        creator_id=creator_a["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/reports-drilldown-hidden",
+        tid=content_tid,
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token_b)
+        response = client.get(
+            f"/app/reports/content/{content_tid}",
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "report drilldown not found"}
 
 
 def test_reports_unattributed_explanation_page_renders_current_backlog_reason():

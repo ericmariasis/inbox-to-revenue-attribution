@@ -14,10 +14,18 @@ from app.models.blocked_billing_case import BlockedBillingCase
 from app.models.booking import Booking
 from app.models.booking_link import BookingLink
 from app.models.content import Content
+from app.models.content_confirmed_topic import ContentConfirmedTopic
+from app.models.content_extraction_artifact import ContentExtractionArtifact
+from app.models.content_fetch_snapshot import ContentFetchSnapshot
+from app.models.content_topic_candidate import ContentTopicCandidate
 from app.models.creator import Creator
 from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
 from app.services.blocked_billing import BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE
+from app.services.content_topics import (
+    CONTENT_TOPIC_REVIEW_STATUS_CONFIRMED,
+    normalize_topic_label,
+)
 from app.services.invoice_payment_events import (
     PAYMENT_PROVENANCE_CONFLICT_STATUS_NONE,
     PAYMENT_PROVENANCE_CONFLICT_STATUS_UNMATCHED_PROVIDER_SIGNAL,
@@ -39,6 +47,7 @@ from app.services.reporting import (
     get_creator_reports_content_drilldown,
     get_creator_paid_attribution_explanation,
     get_creator_reports_summary,
+    get_creator_reports_topic_summary,
 )
 
 
@@ -116,6 +125,87 @@ def _create_content(
     session.add(content)
     session.flush()
     return content
+
+
+def _create_content_extraction_artifact(
+    session: Session,
+    *,
+    creator: Creator,
+    content: Content,
+    suffix: str,
+) -> ContentExtractionArtifact:
+    created_at = datetime.now(timezone.utc)
+    fetch_snapshot = ContentFetchSnapshot(
+        content_id=content.id,
+        creator_id=creator.id,
+        requested_url=content.source_url,
+        fetched_url=content.source_url,
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text=f"<article>{suffix}</article>",
+        response_content_type="text/html",
+        response_content_charset="utf-8",
+        fetched_at=created_at,
+    )
+    session.add(fetch_snapshot)
+    session.flush()
+
+    artifact = ContentExtractionArtifact(
+        content_id=content.id,
+        creator_id=creator.id,
+        fetch_snapshot_id=fetch_snapshot.id,
+        extraction_status="succeeded",
+        extraction_method="html_article",
+        title=f"{suffix.title()} artifact",
+        source_text_char_count=len(suffix),
+        extracted_text_char_count=len(suffix),
+        extracted_text_word_count=len(suffix.split()),
+        extracted_text=suffix,
+        created_at=created_at,
+    )
+    session.add(artifact)
+    session.flush()
+    return artifact
+
+
+def _attach_confirmed_topic_to_artifact(
+    session: Session,
+    *,
+    creator: Creator,
+    content: Content,
+    artifact: ContentExtractionArtifact,
+    label: str,
+    candidate_rank: int = 1,
+) -> ContentConfirmedTopic:
+    normalized_label = normalize_topic_label(label)
+    reviewed_at = datetime.now(timezone.utc)
+    confirmed_topic = ContentConfirmedTopic(
+        content_id=content.id,
+        creator_id=creator.id,
+        canonical_label=label,
+        normalized_label=normalized_label,
+        created_at=reviewed_at,
+        updated_at=reviewed_at,
+    )
+    session.add(confirmed_topic)
+    session.flush()
+
+    candidate = ContentTopicCandidate(
+        content_id=content.id,
+        creator_id=creator.id,
+        extraction_artifact_id=artifact.id,
+        confirmed_topic_id=confirmed_topic.id,
+        suggested_label=label,
+        normalized_label=normalized_label,
+        suggestion_method="text_keywords",
+        candidate_rank=candidate_rank,
+        review_status=CONTENT_TOPIC_REVIEW_STATUS_CONFIRMED,
+        reviewed_at=reviewed_at,
+        created_at=reviewed_at,
+    )
+    session.add(candidate)
+    session.flush()
+    return confirmed_topic
 
 
 def _create_booking(
@@ -698,6 +788,258 @@ def test_creator_reports_content_drilldown_returns_bookings_paid_and_content_sco
     assert drilldown.paid_explanation.summary_row.tid == content_tid
     assert len(drilldown.paid_explanation.evidence) == 1
     assert hidden_from_other_creator is None
+
+
+def test_creator_reports_topic_summary_groups_content_rows_by_authoritative_confirmed_topics_only():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, _ = _create_creator_with_user(
+            session,
+            suffix="topics",
+            stripe_account_id="acct_reports_topics",
+        )
+        booking_link = _create_booking_link(session, creator=creator, suffix="topics")
+
+        paid_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="topics_paid",
+        )
+        paid_booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=paid_content,
+            booking_uuid="BOOK_REPORTS_TOPICS_PAID",
+            booked_at=datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=paid_booking,
+            stripe_invoice_id="in_reports_topics_paid",
+            amount_cents=19500,
+            paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+        )
+        paid_artifact = _create_content_extraction_artifact(
+            session,
+            creator=creator,
+            content=paid_content,
+            suffix="topics-paid",
+        )
+        paid_content.authoritative_extraction_artifact_id = paid_artifact.id
+        session.flush()
+        _attach_confirmed_topic_to_artifact(
+            session,
+            creator=creator,
+            content=paid_content,
+            artifact=paid_artifact,
+            label="Discovery Calls",
+            candidate_rank=1,
+        )
+        _attach_confirmed_topic_to_artifact(
+            session,
+            creator=creator,
+            content=paid_content,
+            artifact=paid_artifact,
+            label="Pricing Strategy",
+            candidate_rank=2,
+        )
+
+        waiting_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="topics_waiting",
+        )
+        _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=waiting_content,
+            booking_uuid="BOOK_REPORTS_TOPICS_WAITING",
+            booked_at=datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc),
+        )
+        waiting_artifact = _create_content_extraction_artifact(
+            session,
+            creator=creator,
+            content=waiting_content,
+            suffix="topics-waiting",
+        )
+        waiting_content.authoritative_extraction_artifact_id = waiting_artifact.id
+        session.flush()
+        _attach_confirmed_topic_to_artifact(
+            session,
+            creator=creator,
+            content=waiting_content,
+            artifact=waiting_artifact,
+            label="Discovery Calls",
+        )
+
+        older_paid_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="topics_older_paid",
+        )
+        older_paid_booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=older_paid_content,
+            booking_uuid="BOOK_REPORTS_TOPICS_OLDER_PAID",
+            booked_at=datetime(2026, 3, 7, 8, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=older_paid_booking,
+            stripe_invoice_id="in_reports_topics_older_paid",
+            amount_cents=5000,
+            paid_at=datetime(2026, 3, 7, 9, 0, tzinfo=timezone.utc),
+        )
+        older_paid_artifact = _create_content_extraction_artifact(
+            session,
+            creator=creator,
+            content=older_paid_content,
+            suffix="topics-older-paid",
+        )
+        older_paid_content.authoritative_extraction_artifact_id = older_paid_artifact.id
+        session.flush()
+        _attach_confirmed_topic_to_artifact(
+            session,
+            creator=creator,
+            content=older_paid_content,
+            artifact=older_paid_artifact,
+            label="Retention Reviews",
+        )
+
+        non_authoritative_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            suffix="topics_non_authoritative",
+        )
+        non_authoritative_booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=non_authoritative_content,
+            booking_uuid="BOOK_REPORTS_TOPICS_NON_AUTHORITATIVE",
+            booked_at=datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=non_authoritative_booking,
+            stripe_invoice_id="in_reports_topics_non_authoritative",
+            amount_cents=8800,
+            paid_at=datetime(2026, 3, 8, 13, 0, tzinfo=timezone.utc),
+        )
+        _attach_confirmed_topic_to_artifact(
+            session,
+            creator=creator,
+            content=non_authoritative_content,
+            artifact=_create_content_extraction_artifact(
+                session,
+                creator=creator,
+                content=non_authoritative_content,
+                suffix="topics-non-authoritative",
+            ),
+            label="Ghost Topic",
+        )
+
+        other_creator, _ = _create_creator_with_user(
+            session,
+            suffix="topics_other",
+            stripe_account_id="acct_reports_topics_other",
+        )
+        other_booking_link = _create_booking_link(
+            session,
+            creator=other_creator,
+            suffix="topics_other",
+        )
+        other_content = _create_content(
+            session,
+            creator=other_creator,
+            booking_link=other_booking_link,
+            suffix="topics_other",
+        )
+        other_booking = _create_booking(
+            session,
+            creator=other_creator,
+            booking_link=other_booking_link,
+            content=other_content,
+            booking_uuid="BOOK_REPORTS_TOPICS_OTHER",
+            booked_at=datetime(2026, 3, 8, 14, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=other_creator,
+            booking=other_booking,
+            stripe_invoice_id="in_reports_topics_other",
+            amount_cents=99999,
+            paid_at=datetime(2026, 3, 8, 15, 0, tzinfo=timezone.utc),
+        )
+        other_artifact = _create_content_extraction_artifact(
+            session,
+            creator=other_creator,
+            content=other_content,
+            suffix="topics-other",
+        )
+        other_content.authoritative_extraction_artifact_id = other_artifact.id
+        session.flush()
+        _attach_confirmed_topic_to_artifact(
+            session,
+            creator=other_creator,
+            content=other_content,
+            artifact=other_artifact,
+            label="Discovery Calls",
+        )
+
+        creator_id = creator.id
+        session.commit()
+
+    with Session(engine) as session:
+        full_summary = get_creator_reports_topic_summary(
+            creator_id=creator_id,
+            db=session,
+        )
+        filtered_summary = get_creator_reports_topic_summary(
+            creator_id=creator_id,
+            db=session,
+            start_date=date(2026, 3, 8),
+            end_date=date(2026, 3, 8),
+        )
+
+    assert full_summary.has_any_authoritative_topics is True
+    assert [
+        (
+            row.canonical_label,
+            row.content_count,
+            row.booking_count,
+            row.paid_revenue_cents,
+            row.paid_invoice_count,
+            row.paid_booking_count,
+            row.funnel_status,
+        )
+        for row in full_summary.rows
+    ] == [
+        ("Discovery Calls", 2, 2, 19500, 1, 1, REPORTS_FUNNEL_STATUS_PAID),
+        ("Pricing Strategy", 1, 1, 19500, 1, 1, REPORTS_FUNNEL_STATUS_PAID),
+        ("Retention Reviews", 1, 1, 5000, 1, 1, REPORTS_FUNNEL_STATUS_PAID),
+    ]
+    assert [
+        (row.canonical_label, row.content_count, row.booking_count, row.paid_revenue_cents)
+        for row in filtered_summary.rows
+    ] == [
+        ("Discovery Calls", 1, 1, 19500),
+        ("Pricing Strategy", 1, 1, 19500),
+    ]
+    assert filtered_summary.has_any_authoritative_topics is True
+    assert all(row.canonical_label != "Ghost Topic" for row in full_summary.rows)
 
 
 def test_creator_paid_attribution_explanation_returns_canonical_chain_for_creator_scoped_row():

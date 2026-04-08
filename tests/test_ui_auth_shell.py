@@ -2639,6 +2639,10 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
         in response.text
     )
     assert (
+        'href="/app/reports/booking-links?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
+    assert (
         f'href="/app/reports/content/{current_content_tid}?start_date=2026-03-08&amp;end_date=2026-03-08"'
         in response.text
     )
@@ -2970,6 +2974,192 @@ def test_reports_topics_page_renders_authoritative_confirmed_topics_only():
     assert (
         'href="/app/reports/topics?start_date=2026-03-08&amp;end_date=2026-03-08"'
         in response.text
+    )
+    assert (
+        'href="/app/reports/booking-links?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in response.text
+    )
+
+
+def test_reports_booking_links_page_groups_rows_by_saved_link_identity():
+    creator = _insert_creator_user(
+        email=f"ui_reports_booking_links_{uuid.uuid4().hex}@example.com",
+        name="Reports Booking Links Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_booking_links",
+    )
+    other_creator = _insert_creator_user(
+        email=f"ui_reports_booking_links_other_{uuid.uuid4().hex}@example.com",
+        name="Reports Booking Links Other Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_reports_booking_links_other",
+    )
+    access_token = _access_token(
+        user_id=creator["user_id"],
+        creator_id=creator["creator_id"],
+        email=creator["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    active_booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Discovery Call CTA",
+        calendly_url="https://calendly.com/example/discovery-call-cta",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    historical_booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Legacy Webinar CTA",
+        calendly_url="https://calendly.com/example/legacy-webinar-cta",
+        billing_amount_cents=5000,
+        billing_currency="USD",
+    )
+    paid_tid = f"uireportsbookinglinkspaid{uuid.uuid4().hex[:8]}"
+    waiting_tid = f"uireportsbookinglinkswaiting{uuid.uuid4().hex[:8]}"
+    historical_tid = f"uireportsbookinglinkshistorical{uuid.uuid4().hex[:8]}"
+
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=active_booking_link_id,
+        source_url="https://example.com/posts/reports-booking-links-paid",
+        tid=paid_tid,
+    )
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=active_booking_link_id,
+        source_url="https://example.com/posts/reports-booking-links-waiting",
+        tid=waiting_tid,
+    )
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=historical_booking_link_id,
+        source_url="https://example.com/posts/reports-booking-links-historical",
+        tid=historical_tid,
+    )
+
+    paid_booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=active_booking_link_id,
+        tid=paid_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_BOOKING_LINKS_PAID_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+    )
+    _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=active_booking_link_id,
+        tid=waiting_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_BOOKING_LINKS_WAITING_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc),
+    )
+    historical_booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=historical_booking_link_id,
+        tid=historical_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_BOOKING_LINKS_HISTORICAL_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 7, 8, 0, tzinfo=timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=creator["creator_id"],
+        booking_id=paid_booking_id,
+        tid=paid_tid,
+        stripe_account_id="acct_ui_reports_booking_links",
+        stripe_invoice_id=f"in_ui_reports_booking_links_paid_{uuid.uuid4().hex[:8]}",
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=creator["creator_id"],
+        booking_id=historical_booking_id,
+        tid=historical_tid,
+        stripe_account_id="acct_ui_reports_booking_links",
+        stripe_invoice_id=f"in_ui_reports_booking_links_historical_{uuid.uuid4().hex[:8]}",
+        amount_cents=5000,
+        paid_at=datetime(2026, 3, 7, 9, 0, tzinfo=timezone.utc),
+    )
+
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE booking_links "
+                "SET name = :name, billing_amount_cents = NULL, billing_currency = NULL "
+                "WHERE id = :id"
+            ),
+            {
+                "id": historical_booking_link_id,
+                "name": "Archived Webinar CTA",
+            },
+        )
+
+    other_booking_link_id = _insert_booking_link(
+        creator_id=other_creator["creator_id"],
+        name="Other Creator CTA",
+        calendly_url="https://calendly.com/example/other-creator-cta",
+        billing_amount_cents=42000,
+        billing_currency="USD",
+    )
+    other_tid = f"uireportsbookinglinksother{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=other_creator["creator_id"],
+        booking_link_id=other_booking_link_id,
+        source_url="https://example.com/posts/reports-booking-links-other",
+        tid=other_tid,
+    )
+    other_booking_id = _insert_booking(
+        creator_id=other_creator["creator_id"],
+        booking_link_id=other_booking_link_id,
+        tid=other_tid,
+        calendly_booking_uuid=f"BOOK_UI_REPORTS_BOOKING_LINKS_OTHER_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 8, 13, 0, tzinfo=timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=other_creator["creator_id"],
+        booking_id=other_booking_id,
+        tid=other_tid,
+        stripe_account_id="acct_ui_reports_booking_links_other",
+        stripe_invoice_id=f"in_ui_reports_booking_links_other_{uuid.uuid4().hex[:8]}",
+        amount_cents=42000,
+        paid_at=datetime(2026, 3, 8, 14, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        unfiltered_response = client.get(
+            "/app/reports/booking-links",
+            headers=HTML_ACCEPT_HEADERS,
+        )
+        filtered_response = client.get(
+            "/app/reports/booking-links",
+            params={"start_date": "2026-03-08", "end_date": "2026-03-08"},
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert unfiltered_response.status_code == 200
+    assert "Booking-link analytics" in unfiltered_response.text
+    assert "Booking-link rows stay tied to saved link identity" in unfiltered_response.text
+    assert "2 booking link rows visible" in unfiltered_response.text
+    assert "Discovery Call CTA" in unfiltered_response.text
+    assert "Archived Webinar CTA" in unfiltered_response.text
+    assert "No billing defaults yet" in unfiltered_response.text
+    assert "Other Creator CTA" not in unfiltered_response.text
+    assert 'href="/app/reports/topics"' in unfiltered_response.text
+    assert 'href="/app/reports/booking-links" class="nav-link active"' in unfiltered_response.text
+
+    assert filtered_response.status_code == 200
+    assert "1 booking link row visible" in filtered_response.text
+    assert "Discovery Call CTA" in filtered_response.text
+    assert "Archived Webinar CTA" not in filtered_response.text
+    assert (
+        'href="/app/reports?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in filtered_response.text
+    )
+    assert (
+        'href="/app/reports/topics?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in filtered_response.text
+    )
+    assert (
+        'href="/app/reports/booking-links?start_date=2026-03-08&amp;end_date=2026-03-08"'
+        in filtered_response.text
     )
 
 

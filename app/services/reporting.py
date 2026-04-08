@@ -196,6 +196,33 @@ class CreatorReportsTopicSummary:
 
 
 @dataclass(frozen=True)
+class ReportsBookingLinkSummaryRow:
+    booking_link_id: UUID
+    booking_link_name: str
+    booking_link_provider: str
+    booking_link_destination_url: str | None
+    booking_link_billing_amount_cents: int | None
+    booking_link_billing_currency: str | None
+    content_count: int
+    booking_count: int
+    paid_revenue_cents: int
+    paid_invoice_count: int
+    paid_booking_count: int
+    open_blocked_billing_case_count: int
+    funnel_status: str
+    first_paid_at: datetime | None
+    last_paid_at: datetime | None
+
+
+@dataclass(frozen=True)
+class CreatorReportsBookingLinkSummary:
+    creator_id: UUID
+    start_date: date | None
+    end_date: date | None
+    rows: list[ReportsBookingLinkSummaryRow]
+
+
+@dataclass(frozen=True)
 class _PaidReportsSummaryMetrics:
     paid_revenue_cents: int = 0
     paid_invoice_count: int = 0
@@ -208,6 +235,15 @@ class _PaidReportsSummaryMetrics:
 class _AuthoritativeReportsTopic:
     canonical_label: str
     normalized_label: str
+
+
+@dataclass(frozen=True)
+class _ReportsBookingLinkMetadata:
+    name: str
+    provider: str
+    destination_url: str | None
+    billing_amount_cents: int | None
+    billing_currency: str | None
 
 
 def get_creator_reports_summary(
@@ -464,6 +500,36 @@ def get_creator_reports_topic_summary(
         end_date=end_date,
         rows=rows,
         has_any_authoritative_topics=bool(authoritative_topics_by_content_id),
+    )
+
+
+def get_creator_reports_booking_link_summary(
+    *,
+    creator_id: UUID,
+    db: Session,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> CreatorReportsBookingLinkSummary:
+    content_summary = get_creator_reports_summary(
+        creator_id=creator_id,
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    booking_links_by_id = _load_creator_booking_links_by_id(
+        creator_id=creator_id,
+        db=db,
+    )
+    rows = _build_reports_booking_link_summary_rows(
+        content_rows=content_summary.rows,
+        booking_links_by_id=booking_links_by_id,
+    )
+
+    return CreatorReportsBookingLinkSummary(
+        creator_id=creator_id,
+        start_date=start_date,
+        end_date=end_date,
+        rows=rows,
     )
 
 
@@ -774,6 +840,125 @@ def _build_reports_topic_summary_rows(
             -row.booking_count,
             -row.content_count,
             row.normalized_label,
+        ),
+    )
+
+
+def _load_creator_booking_links_by_id(
+    *,
+    creator_id: UUID,
+    db: Session,
+) -> dict[UUID, _ReportsBookingLinkMetadata]:
+    booking_links = db.execute(
+        select(BookingLink).where(BookingLink.creator_id == creator_id)
+    ).scalars().all()
+
+    return {
+        booking_link.id: _ReportsBookingLinkMetadata(
+            name=booking_link.name,
+            provider=booking_link.provider,
+            destination_url=booking_link.resolved_destination_url,
+            billing_amount_cents=booking_link.billing_amount_cents,
+            billing_currency=booking_link.billing_currency,
+        )
+        for booking_link in booking_links
+    }
+
+
+def _build_reports_booking_link_summary_rows(
+    *,
+    content_rows: list[ReportsSummaryRow],
+    booking_links_by_id: dict[UUID, _ReportsBookingLinkMetadata],
+) -> list[ReportsBookingLinkSummaryRow]:
+    grouped: dict[UUID, dict[str, object]] = {}
+
+    for content_row in content_rows:
+        existing = grouped.get(content_row.booking_link_id)
+        if existing is None:
+            metadata = booking_links_by_id.get(content_row.booking_link_id)
+            grouped[content_row.booking_link_id] = {
+                "booking_link_id": content_row.booking_link_id,
+                "booking_link_name": metadata.name if metadata is not None else "Unknown booking link",
+                "booking_link_provider": metadata.provider if metadata is not None else "unknown",
+                "booking_link_destination_url": (
+                    metadata.destination_url if metadata is not None else None
+                ),
+                "booking_link_billing_amount_cents": (
+                    metadata.billing_amount_cents if metadata is not None else None
+                ),
+                "booking_link_billing_currency": (
+                    metadata.billing_currency if metadata is not None else None
+                ),
+                "content_count": 1,
+                "booking_count": content_row.booking_count,
+                "paid_revenue_cents": content_row.paid_revenue_cents,
+                "paid_invoice_count": content_row.paid_invoice_count,
+                "paid_booking_count": content_row.paid_booking_count,
+                "open_blocked_billing_case_count": content_row.open_blocked_billing_case_count,
+                "first_paid_at": content_row.first_paid_at,
+                "last_paid_at": content_row.last_paid_at,
+            }
+            continue
+
+        existing["content_count"] = int(existing["content_count"]) + 1
+        existing["booking_count"] = int(existing["booking_count"]) + content_row.booking_count
+        existing["paid_revenue_cents"] = (
+            int(existing["paid_revenue_cents"]) + content_row.paid_revenue_cents
+        )
+        existing["paid_invoice_count"] = (
+            int(existing["paid_invoice_count"]) + content_row.paid_invoice_count
+        )
+        existing["paid_booking_count"] = (
+            int(existing["paid_booking_count"]) + content_row.paid_booking_count
+        )
+        existing["open_blocked_billing_case_count"] = (
+            int(existing["open_blocked_billing_case_count"])
+            + content_row.open_blocked_billing_case_count
+        )
+        if content_row.first_paid_at is not None:
+            existing_first_paid_at = existing["first_paid_at"]
+            if existing_first_paid_at is None or content_row.first_paid_at < existing_first_paid_at:
+                existing["first_paid_at"] = content_row.first_paid_at
+        if content_row.last_paid_at is not None:
+            existing_last_paid_at = existing["last_paid_at"]
+            if existing_last_paid_at is None or content_row.last_paid_at > existing_last_paid_at:
+                existing["last_paid_at"] = content_row.last_paid_at
+
+    rows = [
+        ReportsBookingLinkSummaryRow(
+            booking_link_id=group["booking_link_id"],
+            booking_link_name=str(group["booking_link_name"]),
+            booking_link_provider=str(group["booking_link_provider"]),
+            booking_link_destination_url=group["booking_link_destination_url"],
+            booking_link_billing_amount_cents=group["booking_link_billing_amount_cents"],
+            booking_link_billing_currency=group["booking_link_billing_currency"],
+            content_count=int(group["content_count"]),
+            booking_count=int(group["booking_count"]),
+            paid_revenue_cents=int(group["paid_revenue_cents"]),
+            paid_invoice_count=int(group["paid_invoice_count"]),
+            paid_booking_count=int(group["paid_booking_count"]),
+            open_blocked_billing_case_count=int(group["open_blocked_billing_case_count"]),
+            funnel_status=_resolve_reports_funnel_status(
+                booking_count=int(group["booking_count"]),
+                paid_invoice_count=int(group["paid_invoice_count"]),
+                open_blocked_billing_case_count=int(group["open_blocked_billing_case_count"]),
+            ),
+            first_paid_at=group["first_paid_at"],
+            last_paid_at=group["last_paid_at"],
+        )
+        for group in grouped.values()
+    ]
+
+    return sorted(
+        rows,
+        key=lambda row: (
+            -(1 if row.paid_invoice_count > 0 else 0),
+            -row.paid_revenue_cents,
+            -(row.last_paid_at.timestamp() if row.last_paid_at is not None else 0),
+            -row.booking_count,
+            -row.content_count,
+            row.booking_link_name.casefold(),
+            str(row.booking_link_id),
         ),
     )
 

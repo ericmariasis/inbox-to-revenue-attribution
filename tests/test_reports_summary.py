@@ -44,6 +44,7 @@ from app.services.reporting import (
     REPORTS_FUNNEL_STATUS_NO_BOOKINGS,
     REPORTS_FUNNEL_STATUS_PAID,
     REPORTS_FUNNEL_STATUS_WAITING_FOR_PAID,
+    get_creator_reports_booking_link_summary,
     get_creator_reports_content_drilldown,
     get_creator_paid_attribution_explanation,
     get_creator_reports_summary,
@@ -1040,6 +1041,205 @@ def test_creator_reports_topic_summary_groups_content_rows_by_authoritative_conf
     ]
     assert filtered_summary.has_any_authoritative_topics is True
     assert all(row.canonical_label != "Ghost Topic" for row in full_summary.rows)
+
+
+def test_creator_reports_booking_link_summary_groups_rows_by_stable_booking_link_identity():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, _ = _create_creator_with_user(
+            session,
+            suffix="booking_links",
+            stripe_account_id="acct_reports_booking_links",
+        )
+        primary_link = _create_booking_link(
+            session,
+            creator=creator,
+            suffix="booking_links_primary",
+        )
+        historical_link = _create_booking_link(
+            session,
+            creator=creator,
+            suffix="booking_links_historical",
+        )
+
+        paid_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=primary_link,
+            suffix="booking_links_paid",
+        )
+        paid_booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=primary_link,
+            content=paid_content,
+            booking_uuid="BOOK_REPORTS_BOOKING_LINKS_PAID",
+            booked_at=datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=paid_booking,
+            stripe_invoice_id="in_reports_booking_links_paid",
+            amount_cents=19500,
+            paid_at=datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc),
+        )
+
+        waiting_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=primary_link,
+            suffix="booking_links_waiting",
+        )
+        _create_booking(
+            session,
+            creator=creator,
+            booking_link=primary_link,
+            content=waiting_content,
+            booking_uuid="BOOK_REPORTS_BOOKING_LINKS_WAITING",
+            booked_at=datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc),
+        )
+
+        historical_content = _create_content(
+            session,
+            creator=creator,
+            booking_link=historical_link,
+            suffix="booking_links_historical_paid",
+        )
+        historical_booking = _create_booking(
+            session,
+            creator=creator,
+            booking_link=historical_link,
+            content=historical_content,
+            booking_uuid="BOOK_REPORTS_BOOKING_LINKS_HISTORICAL",
+            booked_at=datetime(2026, 3, 7, 8, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=creator,
+            booking=historical_booking,
+            stripe_invoice_id="in_reports_booking_links_historical",
+            amount_cents=5000,
+            paid_at=datetime(2026, 3, 7, 9, 0, tzinfo=timezone.utc),
+        )
+
+        # Keep historical results attached to the same saved link identity even if the
+        # current stored metadata changes later.
+        historical_link.name = primary_link.name
+        historical_link.billing_amount_cents = None
+        historical_link.billing_currency = None
+        session.flush()
+
+        other_creator, _ = _create_creator_with_user(
+            session,
+            suffix="booking_links_other",
+            stripe_account_id="acct_reports_booking_links_other",
+        )
+        other_link = _create_booking_link(
+            session,
+            creator=other_creator,
+            suffix="booking_links_other",
+        )
+        other_content = _create_content(
+            session,
+            creator=other_creator,
+            booking_link=other_link,
+            suffix="booking_links_other",
+        )
+        other_booking = _create_booking(
+            session,
+            creator=other_creator,
+            booking_link=other_link,
+            content=other_content,
+            booking_uuid="BOOK_REPORTS_BOOKING_LINKS_OTHER",
+            booked_at=datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_invoice(
+            session,
+            creator=other_creator,
+            booking=other_booking,
+            stripe_invoice_id="in_reports_booking_links_other",
+            amount_cents=99999,
+            paid_at=datetime(2026, 3, 8, 13, 0, tzinfo=timezone.utc),
+        )
+
+        creator_id = creator.id
+        primary_link_id = primary_link.id
+        historical_link_id = historical_link.id
+        current_link_name = primary_link.name
+        session.commit()
+
+    with Session(engine) as session:
+        full_summary = get_creator_reports_booking_link_summary(
+            creator_id=creator_id,
+            db=session,
+        )
+        filtered_summary = get_creator_reports_booking_link_summary(
+            creator_id=creator_id,
+            db=session,
+            start_date=date(2026, 3, 8),
+            end_date=date(2026, 3, 8),
+        )
+
+    assert [
+        (
+            row.booking_link_id,
+            row.booking_link_name,
+            row.content_count,
+            row.booking_count,
+            row.paid_revenue_cents,
+            row.paid_invoice_count,
+            row.paid_booking_count,
+            row.booking_link_billing_amount_cents,
+            row.booking_link_billing_currency,
+            row.funnel_status,
+        )
+        for row in full_summary.rows
+    ] == [
+        (
+            primary_link_id,
+            current_link_name,
+            2,
+            2,
+            19500,
+            1,
+            1,
+            19500,
+            "USD",
+            REPORTS_FUNNEL_STATUS_PAID,
+        ),
+        (
+            historical_link_id,
+            current_link_name,
+            1,
+            1,
+            5000,
+            1,
+            1,
+            None,
+            None,
+            REPORTS_FUNNEL_STATUS_PAID,
+        ),
+    ]
+    assert [
+        (
+            row.booking_link_id,
+            row.booking_link_name,
+            row.content_count,
+            row.booking_count,
+            row.paid_revenue_cents,
+        )
+        for row in filtered_summary.rows
+    ] == [
+        (
+            primary_link_id,
+            current_link_name,
+            1,
+            1,
+            19500,
+        ),
+    ]
 
 
 def test_creator_paid_attribution_explanation_returns_canonical_chain_for_creator_scoped_row():

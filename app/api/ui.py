@@ -157,15 +157,18 @@ from app.services.rate_limit import (
 )
 from app.services.reporting import (
     CreatorReportsContentDrilldown,
+    CreatorReportsBookingLinkSummary,
     CreatorPaidAttributionExplanation,
     CreatorReportsSummary,
     CreatorReportsTopicSummary,
     PaidAttributionEvidence,
+    ReportsBookingLinkSummaryRow,
     ReportsContentBooking,
     ReportsSummaryRow,
     ReportsTopicSummaryRow,
     build_reports_summary_csv,
     get_creator_paid_attribution_explanation,
+    get_creator_reports_booking_link_summary,
     get_creator_reports_content_drilldown,
     get_creator_reports_summary,
     get_creator_reports_topic_summary,
@@ -1416,6 +1419,55 @@ def creator_reports_topics_page(
         _render_reports_topics_page(
             current_user=current_user,
             content_items=content_items,
+            summary=summary,
+            filter_values=filter_values,
+            field_errors=field_errors,
+        )
+    )
+
+
+@router.get("/app/reports/booking-links")
+def creator_reports_booking_links_page(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    content_items = list_content_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    booking_links = list_booking_link_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    filter_values = _reports_filter_values(dict(request.query_params))
+    start_date, end_date, field_errors = _reports_date_filters_from_values(filter_values)
+
+    overall_summary = get_creator_reports_booking_link_summary(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    summary = overall_summary
+    if not field_errors:
+        try:
+            summary = get_creator_reports_booking_link_summary(
+                creator_id=current_user.creator_id,
+                db=db,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except ValueError:
+            field_errors["date_range"] = "Start date must be on or before end date."
+
+    return _html_response(
+        _render_reports_booking_links_page(
+            current_user=current_user,
+            content_items=content_items,
+            booking_links=booking_links,
             summary=summary,
             filter_values=filter_values,
             field_errors=field_errors,
@@ -5410,6 +5462,121 @@ def _render_reports_topics_page(
     return _page_layout(title="Topic analytics", body=body)
 
 
+def _render_reports_booking_links_page(
+    *,
+    current_user: AuthUser,
+    content_items: list[ContentResponse],
+    booking_links: list[BookingLinkResponse],
+    summary: CreatorReportsBookingLinkSummary,
+    filter_values: dict[str, str],
+    field_errors: dict[str, str],
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    filters_active = _reports_filters_are_active(filter_values)
+    list_heading = (
+        "Booking-link analytics"
+        if summary.rows
+        else (
+            "No booking-link results in this window"
+            if filters_active and booking_links
+            else ("No booking links yet" if not booking_links else "No tracked content yet")
+        )
+    )
+    clear_filters_link = (
+        '<a href="/app/reports/booking-links" class="inline-link">Clear filters</a>'
+        if filters_active
+        else ""
+    )
+    back_to_reports_href = html.escape(_reports_page_href(filter_values), quote=True)
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Booking-link analytics</h1>
+        <p class="lede">Group the existing content funnel by saved booking-link identity, without turning reports into CTA experimentation, campaign analytics, or a second revenue truth.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/reports")}
+    {_render_reports_surface_nav(
+        current_path="/app/reports/booking-links",
+        filter_values=filter_values,
+    )}
+    {_render_reports_notice(field_errors=field_errors)}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Paid-date filter</p>
+          <h2>Booking-link rows in the paid window</h2>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+        </div>
+        <p>Use the paid date below to narrow booking-link rows by when the counted invoice payment landed. Grouped booking counts still describe the current visible content rows attached to each saved booking link, not booking-date slices.</p>
+        <form action="/app/reports/booking-links" method="get">
+          <div class="filter-row">
+            <div>
+              <label for="start_date">Start date</label>
+              <input
+                id="start_date"
+                name="start_date"
+                type="date"
+                value="{html.escape(filter_values["start_date"], quote=True)}"
+                aria-invalid="{str("start_date" in field_errors).lower()}"
+              />
+              {_render_reports_field_error(field_errors.get("start_date"))}
+            </div>
+            <div>
+              <label for="end_date">End date</label>
+              <input
+                id="end_date"
+                name="end_date"
+                type="date"
+                value="{html.escape(filter_values["end_date"], quote=True)}"
+                aria-invalid="{str("end_date" in field_errors or "date_range" in field_errors).lower()}"
+              />
+              {_render_reports_field_error(field_errors.get("end_date"))}
+            </div>
+          </div>
+          {_render_reports_field_error(field_errors.get("date_range"))}
+          <div class="filter-actions">
+            <button type="submit">Apply filters</button>
+            {clear_filters_link}
+            <a href="{back_to_reports_href}" class="inline-link">View content funnel totals</a>
+          </div>
+        </form>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">Reading rules</p>
+          <h2>Booking-link rows stay tied to saved link identity</h2>
+        </div>
+        <p>This page groups visible content rows by stable booking-link identity, not by a mutable link name or destination string.</p>
+        <p>If the current stored link name or billing defaults changed later, historical bookings and paid outcomes still stay attached to the same saved booking-link row here.</p>
+        <p>Use the content funnel page when you want content-level totals, or the topic page when you want grouped content comparisons by authoritative confirmed topic.</p>
+      </article>
+    </section>
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Saved booking links</p>
+          <h2>{list_heading}</h2>
+        </div>
+        <p>{html.escape(_count_copy(len(summary.rows), "booking link row"))} visible</p>
+      </div>
+      {_render_reports_booking_link_results(
+          content_items=content_items,
+          booking_links=booking_links,
+          summary=summary,
+          filters_active=filters_active,
+      )}
+    </section>
+    """
+    return _page_layout(title="Booking-link analytics", body=body)
+
+
 def _render_attention_page(
     *,
     current_user: AuthUser,
@@ -5782,6 +5949,30 @@ def _render_reports_topic_results(
     return f'<div class="content-list">{items}</div>'
 
 
+def _render_reports_booking_link_results(
+    *,
+    content_items: list[ContentResponse],
+    booking_links: list[BookingLinkResponse],
+    summary: CreatorReportsBookingLinkSummary,
+    filters_active: bool,
+) -> str:
+    if not summary.rows:
+        return _render_reports_booking_links_empty_state(
+            content_items=content_items,
+            booking_links=booking_links,
+            filters_active=filters_active,
+        )
+
+    items = "".join(
+        _render_reports_booking_link_row_card(
+            row=row,
+            filters_active=filters_active,
+        )
+        for row in summary.rows
+    )
+    return f'<div class="content-list">{items}</div>'
+
+
 def _render_reports_topics_empty_state(
     *,
     content_items: list[ContentResponse],
@@ -5818,6 +6009,52 @@ def _render_reports_topics_empty_state(
     """
 
 
+def _render_reports_booking_links_empty_state(
+    *,
+    content_items: list[ContentResponse],
+    booking_links: list[BookingLinkResponse],
+    filters_active: bool,
+) -> str:
+    if filters_active and booking_links:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">No booking-link rows in this window</p>
+          <h2>No booking-link rows match this paid-date filter</h2>
+          <p>Try widening the paid-date range or clear the filters to see all visible booking-link identities for this creator.</p>
+          <a href="/app/reports/booking-links" class="inline-link">Clear filters</a>
+        </section>
+        """
+
+    if not booking_links:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">No booking links yet</p>
+          <h2>Create a booking link before booking-link analytics can appear</h2>
+          <p>This page groups the existing content funnel by saved booking-link identity, so you need at least one saved booking link before any rows can show up here.</p>
+          <a href="/app/booking-links" class="inline-link">Open booking links</a>
+        </section>
+        """
+
+    if not content_items:
+        return """
+        <section class="empty-state">
+          <p class="eyebrow">No tracked content yet</p>
+          <h2>Track content before booking-link analytics can appear</h2>
+          <p>Booking-link analytics reuses the existing content funnel. Save tracked content against one of your booking links first, then this summary can fill in.</p>
+          <a href="/app/content" class="inline-link">Open content</a>
+        </section>
+        """
+
+    return """
+    <section class="empty-state">
+      <p class="eyebrow">No booking-link rows yet</p>
+      <h2>Booking-link analytics will fill in once tracked content starts using saved links</h2>
+      <p>This page only shows grouped rows when visible content funnel rows exist for the creator's saved booking-link identities.</p>
+      <a href="/app/reports" class="inline-link">Open content funnel</a>
+    </section>
+    """
+
+
 def _render_reports_topic_row_card(
     *,
     row: ReportsTopicSummaryRow,
@@ -5849,6 +6086,50 @@ def _render_reports_topic_row_card(
       {blocked_line}
       <p><strong>Paid window</strong>: {html.escape(_reports_topic_paid_window_copy(row, filters_active=filters_active))}</p>
       <p>This grouped view reuses the existing content funnel truth. One content row can appear here under more than one authoritative topic.</p>
+    </article>
+    """
+
+
+def _render_reports_booking_link_row_card(
+    *,
+    row: ReportsBookingLinkSummaryRow,
+    filters_active: bool,
+) -> str:
+    blocked_line = ""
+    if row.open_blocked_billing_case_count > 0:
+        blocked_line = (
+            f"<p><strong>Blocked before invoicing</strong>: "
+            f"{html.escape(_count_copy(row.open_blocked_billing_case_count, 'open blocked billing case'))} "
+            "still outside paid totals and visible separately in Attention.</p>"
+        )
+
+    destination_line = (
+        f'<p><strong>Current destination</strong>: <a href="{html.escape(row.booking_link_destination_url, quote=True)}" class="inline-link">{html.escape(row.booking_link_destination_url)}</a></p>'
+        if row.booking_link_destination_url is not None
+        else "<p><strong>Current destination</strong>: Not recorded.</p>"
+    )
+
+    return f"""
+    <article class="content-card stack">
+      <div class="content-card-header">
+        <div>
+          <p class="eyebrow">Saved booking link</p>
+          <h2>{html.escape(row.booking_link_name)}</h2>
+        </div>
+        <p class="pill-note">{html.escape(_reports_booking_link_funnel_status_label(row))}</p>
+      </div>
+      <p><strong>Provider</strong>: {html.escape(_booking_link_provider_label(row.booking_link_provider))}</p>
+      {destination_line}
+      <p><strong>Current stored defaults</strong>: {html.escape(_reports_booking_link_billing_defaults_copy(row))}</p>
+      <p><strong>Grouped content rows</strong>: {html.escape(_count_copy(row.content_count, "content row"))}</p>
+      <p><strong>Tracked bookings</strong>: {html.escape(_count_copy(row.booking_count, "tracked booking"))}</p>
+      <p><strong>Paid revenue</strong>: {html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
+      <p><strong>Paid invoices</strong>: {html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))}</p>
+      <p><strong>Paid bookings</strong>: {html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
+      <p><strong>Current grouped state</strong>: {html.escape(_reports_booking_link_funnel_status_summary(row))}</p>
+      {blocked_line}
+      <p><strong>Paid window</strong>: {html.escape(_reports_booking_link_paid_window_copy(row, filters_active=filters_active))}</p>
+      <p>Historical bookings and paid results stay attached to this saved booking-link identity even if the current link name or defaults changed later.</p>
     </article>
     """
 
@@ -7751,6 +8032,10 @@ def _reports_topics_page_href(filter_values: dict[str, str]) -> str:
     return f"/app/reports/topics{_reports_query_string(filter_values)}"
 
 
+def _reports_booking_links_page_href(filter_values: dict[str, str]) -> str:
+    return f"/app/reports/booking-links{_reports_query_string(filter_values)}"
+
+
 def _reports_export_href(filter_values: dict[str, str]) -> str:
     return f"/app/reports/export.csv{_reports_query_string(filter_values)}"
 
@@ -7795,6 +8080,11 @@ def _render_reports_surface_nav(
     links = [
         (_reports_page_href(filter_values), "/app/reports", "Content"),
         (_reports_topics_page_href(filter_values), "/app/reports/topics", "Topics"),
+        (
+            _reports_booking_links_page_href(filter_values),
+            "/app/reports/booking-links",
+            "Booking links",
+        ),
     ]
     rendered_links = "".join(
         (
@@ -7902,6 +8192,73 @@ def _reports_topic_paid_window_copy(
         f"{row.first_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')} to "
         f"{row.last_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')}"
     )
+
+
+def _reports_booking_link_funnel_status_label(row: ReportsBookingLinkSummaryRow) -> str:
+    if row.funnel_status == "paid_result_recorded":
+        return "Paid result recorded"
+    if row.funnel_status == "blocked_before_invoicing":
+        return "Blocked before invoicing"
+    if row.funnel_status == "waiting_for_first_paid_result":
+        return "Waiting for first paid result"
+    return "No bookings yet"
+
+
+def _reports_booking_link_funnel_status_summary(row: ReportsBookingLinkSummaryRow) -> str:
+    if row.funnel_status == "paid_result_recorded":
+        if row.open_blocked_billing_case_count > 0:
+            return (
+                "This saved booking link already has counted paid results, but some newer "
+                "booking activity is still blocked before invoicing."
+            )
+        return (
+            "This saved booking link already has invoice-backed paid results in canonical "
+            "reporting."
+        )
+    if row.funnel_status == "blocked_before_invoicing":
+        return (
+            "Tracked bookings under this saved booking link reached billing, but at least one "
+            "open blocked billing case still keeps that activity outside paid totals."
+        )
+    if row.funnel_status == "waiting_for_first_paid_result":
+        return (
+            "Tracked content rows attached to this saved booking link have canonical bookings, "
+            "but no invoice-backed paid result is counted yet."
+        )
+    return (
+        "This saved booking link is attached to tracked content, but no canonical booking has "
+        "been recorded for those visible content rows yet."
+    )
+
+
+def _reports_booking_link_paid_window_copy(
+    row: ReportsBookingLinkSummaryRow,
+    *,
+    filters_active: bool,
+) -> str:
+    if row.first_paid_at is None or row.last_paid_at is None:
+        if filters_active:
+            return "No invoice-backed paid result is counted in this paid-date view yet."
+        return "No invoice-backed paid result is counted for this booking link yet."
+    if row.first_paid_at == row.last_paid_at:
+        return row.first_paid_at.astimezone(timezone.utc).strftime("%B %d, %Y")
+    return (
+        f"{row.first_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')} to "
+        f"{row.last_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')}"
+    )
+
+
+def _reports_booking_link_billing_defaults_copy(row: ReportsBookingLinkSummaryRow) -> str:
+    amount = row.booking_link_billing_amount_cents
+    currency = row.booking_link_billing_currency
+
+    if amount is not None and currency is not None:
+        return f"Amount and currency set: {currency} {_format_billing_amount(amount)}"
+    if amount is not None:
+        return f"Amount set: {_format_billing_amount(amount)} and currency still missing"
+    if currency is not None:
+        return f"Currency set: {currency} and amount still missing"
+    return "No billing defaults yet"
 
 
 def _reports_content_paid_window_copy(

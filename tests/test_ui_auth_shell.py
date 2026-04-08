@@ -5534,7 +5534,7 @@ def test_setup_and_account_pages_reuse_waiting_for_first_paid_result_vocabulary(
     assert "Content funnel summary" in reports_response.text
     assert "waiting-first-paid" in reports_response.text
     assert "No bookings yet" in reports_response.text
-    assert "This content is tracked, but no canonical booking has been recorded for it yet." in reports_response.text
+    assert "This content is tracked, but no booking has landed yet." in reports_response.text
     assert "No invoice-backed paid result is counted for this content yet." in reports_response.text
     assert "Illustrative preview" not in reports_response.text
 

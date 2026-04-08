@@ -370,7 +370,7 @@ def test_phase9_reporting_flow_end_to_end():
     assert "Why this revenue counted" in reports_response.text
     assert "Why some payments are not counted yet" in reports_response.text
     assert "Unknown booking" in reports_response.text
-    assert "Blocked billing backlog" in reports_response.text
+    assert "Blocked before invoicing" in reports_response.text
     assert "No tracked bookings are blocked before invoicing right now." in reports_response.text
     assert 'href="/app/attention"' in reports_response.text
     assert (

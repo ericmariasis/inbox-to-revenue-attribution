@@ -5218,6 +5218,8 @@ def _render_reports_page(
     creator_name = html.escape(current_user.creator.name)
     creator_email = html.escape(current_user.email)
     filters_active = _reports_filters_are_active(filter_values)
+    visible_row_count = len(summary.rows)
+    total_row_count = len(content_items)
     list_heading = (
         "Content funnel summary"
         if summary.rows
@@ -5231,6 +5233,13 @@ def _render_reports_page(
     export_link = _render_reports_export_link(
         filter_values=filter_values,
         field_errors=field_errors,
+    )
+    results_visibility_copy = html.escape(
+        _reports_row_visibility_copy(
+            visible_count=visible_row_count,
+            total_count=total_row_count,
+            filters_active=filters_active,
+        )
     )
 
     body = f"""
@@ -5250,69 +5259,68 @@ def _render_reports_page(
         filter_values=filter_values,
     )}
     {_render_reports_notice(field_errors=field_errors)}
-    <section class="grid">
-      <article class="card stack">
+    <section class="card stack report-toolbar-card">
+      <div class="section-heading">
         <div>
           <p class="eyebrow">Paid-date filter</p>
           <h2>Invoice-backed paid outcomes</h2>
-          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
-        <p>Use the paid date below to narrow paid outcome columns by when the invoice payment actually landed. Booking counts and funnel state below stay creator-scoped current totals rather than booking-date filters.</p>
-        <form action="/app/reports" method="get">
-          <div class="filter-row">
-            <div>
-              <label for="start_date">Start date</label>
-              <input
-                id="start_date"
-                name="start_date"
-                type="date"
-                value="{html.escape(filter_values["start_date"], quote=True)}"
-                aria-invalid="{str("start_date" in field_errors).lower()}"
-              />
-              {_render_reports_field_error(field_errors.get("start_date"))}
-            </div>
-            <div>
-              <label for="end_date">End date</label>
-              <input
-                id="end_date"
-                name="end_date"
-                type="date"
-                value="{html.escape(filter_values["end_date"], quote=True)}"
-                aria-invalid="{str("end_date" in field_errors or "date_range" in field_errors).lower()}"
-              />
-              {_render_reports_field_error(field_errors.get("end_date"))}
-            </div>
+        <p class="report-toolbar-meta">Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+      </div>
+      <p class="report-scope-note">Paid date changes only paid totals and paid window labels. Booking counts and row status below stay current across your tracked content.</p>
+      <form action="/app/reports" method="get">
+        <div class="filter-row">
+          <div>
+            <label for="start_date">Start date</label>
+            <input
+              id="start_date"
+              name="start_date"
+              type="date"
+              value="{html.escape(filter_values["start_date"], quote=True)}"
+              aria-invalid="{str("start_date" in field_errors).lower()}"
+            />
+            {_render_reports_field_error(field_errors.get("start_date"))}
           </div>
-          {_render_reports_field_error(field_errors.get("date_range"))}
-          <div class="filter-actions">
-            <button type="submit">Apply filters</button>
-            {clear_filters_link}
-            {export_link}
+          <div>
+            <label for="end_date">End date</label>
+            <input
+              id="end_date"
+              name="end_date"
+              type="date"
+              value="{html.escape(filter_values["end_date"], quote=True)}"
+              aria-invalid="{str("end_date" in field_errors or "date_range" in field_errors).lower()}"
+            />
+            {_render_reports_field_error(field_errors.get("end_date"))}
           </div>
-        </form>
-        <div class="stat-grid">
-          <article class="stat-tile">
-            <p class="eyebrow">Paid revenue</p>
-            <p class="stat-value">{html.escape(_format_money_from_cents(summary.paid_revenue_cents))}</p>
-          </article>
-          <article class="stat-tile">
-            <p class="eyebrow">Paid invoices</p>
-            <p class="stat-value">{html.escape(str(summary.paid_invoice_count))}</p>
-            <p>{html.escape(_count_copy(summary.paid_invoice_count, "paid invoice"))}</p>
-          </article>
-          <article class="stat-tile">
-            <p class="eyebrow">Paid bookings</p>
-            <p class="stat-value">{html.escape(str(summary.paid_booking_count))}</p>
-            <p>{html.escape(_count_copy(summary.paid_booking_count, "paid booking"))}</p>
-          </article>
         </div>
+        {_render_reports_field_error(field_errors.get("date_range"))}
+        <div class="filter-actions">
+          <button type="submit">Apply filters</button>
+          {clear_filters_link}
+          {export_link}
+        </div>
+      </form>
+    </section>
+    <section class="report-answer-strip">
+      <article class="stat-tile">
+        <p class="eyebrow">Paid revenue</p>
+        <p class="stat-value">{html.escape(_format_money_from_cents(summary.paid_revenue_cents))}</p>
       </article>
-      <article class="card accent stack">
+      <article class="stat-tile">
+        <p class="eyebrow">Paid invoices</p>
+        <p class="stat-value">{html.escape(str(summary.paid_invoice_count))}</p>
+        <p>{html.escape(_count_copy(summary.paid_invoice_count, "paid invoice"))}</p>
+      </article>
+      <article class="stat-tile">
+        <p class="eyebrow">Paid bookings</p>
+        <p class="stat-value">{html.escape(str(summary.paid_booking_count))}</p>
+        <p>{html.escape(_count_copy(summary.paid_booking_count, "paid booking"))}</p>
+      </article>
+      <article class="stat-tile report-diagnostic-tile">
         <div>
-          <p class="eyebrow">What is not counted yet</p>
-          <h2>Keep diagnostic backlog separate from paid totals</h2>
+          <p class="eyebrow">Diagnostic only</p>
+          <h2>Payments still outside totals</h2>
         </div>
-        <p>Paid totals on this page come only from invoices that are marked paid and matched back to your tracked content through the stored booking chain.</p>
         <p><strong>Current unmatched backlog</strong>: {html.escape(_unmatched_payment_backlog_copy(summary.unattributed_current_backlog.event_count))}</p>
         {_render_reports_unmatched_explainer(summary)}
         {_render_reports_unmatched_reasons(summary)}
@@ -5320,7 +5328,12 @@ def _render_reports_page(
             summary=summary,
             filter_values=filter_values,
         )}
-        <p><strong>Blocked billing backlog</strong>: {html.escape(_blocked_billing_backlog_copy(summary.blocked_summary.open_case_count))}</p>
+      </article>
+      <article class="stat-tile report-diagnostic-tile">
+        <div>
+          <p class="eyebrow">Blocked before invoicing</p>
+          <h2>{html.escape(_blocked_billing_backlog_copy(summary.blocked_summary.open_case_count))}</h2>
+        </div>
         {_render_reports_blocked_reasons(summary)}
         <p><a href="/app/attention" class="inline-link">Open Attention for case details and retry actions</a></p>
       </article>
@@ -5331,8 +5344,9 @@ def _render_reports_page(
           <p class="eyebrow">Content funnel</p>
           <h2>{list_heading}</h2>
         </div>
-        <p>{html.escape(_count_copy(len(summary.rows), "content row"))} visible</p>
+        <p>{results_visibility_copy}</p>
       </div>
+      <p class="report-section-intro">Start with counted revenue, then compare current activity and anything still excluded from totals for each content row.</p>
       {_render_reports_results(
           content_items=content_items,
           readiness=readiness,
@@ -6422,36 +6436,45 @@ def _render_reports_row_card(
             f'<a href="{explanation_href}" class="inline-link">Why this revenue counted</a>'
         )
 
-    blocked_line = ""
-    if row.open_blocked_billing_case_count > 0:
-        blocked_line = (
-            f"<p><strong>Blocked before invoicing</strong>: "
-            f"{html.escape(_count_copy(row.open_blocked_billing_case_count, 'open blocked billing case'))} "
-            "still outside paid totals and visible separately in Attention.</p>"
-        )
-
     footer_links = details_link
     if explanation_link:
         footer_links = f"{details_link} {explanation_link}"
 
     return f"""
-    <article class="content-card stack">
+    <article class="content-card stack report-row-card">
       <div class="content-card-header">
         <div>
-          <p class="eyebrow">Content funnel</p>
+          <p class="eyebrow">Tracked content</p>
           <h2>{html.escape(_content_card_title(row.source_url))}</h2>
         </div>
         <p class="pill-note">{html.escape(_reports_funnel_status_label(row))}</p>
       </div>
-      <p><strong>Source URL</strong>: <a href="{html.escape(row.source_url)}" class="inline-link">{html.escape(row.source_url)}</a></p>
-      <p><strong>Tracking ID</strong>: <code>{html.escape(row.tid)}</code></p>
-      <p><strong>Bookings</strong>: {html.escape(_count_copy(row.booking_count, "tracked booking"))}</p>
-      <p><strong>Paid revenue</strong>: {html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
-      <p><strong>Paid bookings</strong>: {html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
-      <p><strong>Current funnel state</strong>: {html.escape(_reports_funnel_status_summary(row))}</p>
-      {blocked_line}
-      <p><strong>Paid window</strong>: {html.escape(_reports_paid_window_copy(row, filters_active=filters_active))}</p>
-      {footer_links}
+      <div class="report-row-meta">
+        <p><strong>Source URL</strong>: <a href="{html.escape(row.source_url)}" class="inline-link">{html.escape(row.source_url)}</a></p>
+        <p><strong>Tracking ID</strong>: <code>{html.escape(row.tid)}</code></p>
+      </div>
+      <div class="report-snapshot-grid">
+        <section class="report-snapshot">
+          <p class="eyebrow">Paid outcomes</p>
+          <p class="report-snapshot-value">{html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
+          <p>{html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))} and {html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
+          <p><strong>Paid window</strong>: {html.escape(_reports_paid_window_copy(row, filters_active=filters_active))}</p>
+        </section>
+        <section class="report-snapshot">
+          <p class="eyebrow">Tracked activity</p>
+          <p class="report-snapshot-value">{html.escape(str(row.booking_count))}</p>
+          <p>{html.escape(_count_copy(row.booking_count, "tracked booking"))}</p>
+          <p>{html.escape(_reports_funnel_status_summary(row))}</p>
+        </section>
+        <section class="report-snapshot report-snapshot-diagnostic">
+          <p class="eyebrow">Diagnostic only</p>
+          <p class="report-snapshot-value">{html.escape(str(row.open_blocked_billing_case_count))}</p>
+          <p>{html.escape(_reports_row_diagnostic_copy(row))}</p>
+        </section>
+      </div>
+      <div class="report-row-actions">
+        {footer_links}
+      </div>
     </article>
     """
 
@@ -6588,6 +6611,7 @@ def _render_reports_content_drilldown_page(
         if filters_active
         else ""
     )
+    diagnostic_count = len(drilldown.blocked_cases) + len(drilldown.unmatched_payment_events)
 
     body = f"""
     <header class="shell-header">
@@ -6601,65 +6625,69 @@ def _render_reports_content_drilldown_page(
       </form>
     </header>
     {_render_shell_nav(current_path="/app/reports")}
-    <section class="grid">
-      <article class="card stack">
+    <section class="card stack report-focus-card">
+      <div class="section-heading">
         <div>
           <p class="eyebrow">Tracked content</p>
           <h2>{html.escape(_content_card_title(row.source_url))}</h2>
-          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
+        <p class="pill-note">{html.escape(_reports_funnel_status_label(row))}</p>
+      </div>
+      <p class="report-toolbar-meta">Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+      <div class="report-row-meta">
         <p><strong>Source URL</strong>: <a href="{html.escape(row.source_url)}" class="inline-link">{html.escape(row.source_url)}</a></p>
         <p><strong>Tracking ID</strong>: <code>{html.escape(row.tid)}</code></p>
         <p><strong>Booking link</strong>: {html.escape(drilldown.booking_link_name)}</p>
-        <p><strong>Current funnel state</strong>: {html.escape(_reports_funnel_status_summary(row))}</p>
-        <p><strong>Paid window on this page</strong>: {html.escape(_reports_content_paid_window_copy(drilldown=drilldown, filters_active=filters_active))}</p>
+      </div>
+      <p class="report-scope-note">All attributed bookings stay visible on this page. Only counted paid outcomes follow the selected paid window: {html.escape(_reports_content_paid_window_copy(drilldown=drilldown, filters_active=filters_active))}</p>
+      <div class="report-answer-strip report-answer-strip-compact">
+        <article class="stat-tile">
+          <p class="eyebrow">Attributed bookings</p>
+          <p class="stat-value">{html.escape(str(row.booking_count))}</p>
+          <p>{html.escape(_count_copy(row.booking_count, "tracked booking"))}</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Counted revenue in view</p>
+          <p class="stat-value">{html.escape(_format_money_from_cents(paid_window.paid_revenue_cents))}</p>
+          <p>{html.escape(_count_copy(paid_window.paid_invoice_count, "paid invoice"))}</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Counted paid bookings</p>
+          <p class="stat-value">{html.escape(str(paid_window.paid_booking_count))}</p>
+          <p>{html.escape(_count_copy(paid_window.paid_booking_count, "paid booking"))}</p>
+        </article>
+        <article class="stat-tile report-diagnostic-tile">
+          <p class="eyebrow">Diagnostics excluded</p>
+          <p class="stat-value">{html.escape(str(diagnostic_count))}</p>
+          <p>{html.escape(_count_copy(diagnostic_count, "diagnostic item"))} currently sit outside paid totals.</p>
+        </article>
+      </div>
+      <div class="report-row-actions">
         <a href="{back_href}" class="inline-link">Back to reports</a>
-        <div class="stat-grid">
-          <article class="stat-tile">
-            <p class="eyebrow">Tracked bookings</p>
-            <p class="stat-value">{html.escape(str(row.booking_count))}</p>
-            <p>{html.escape(_count_copy(row.booking_count, "tracked booking"))}</p>
-          </article>
-          <article class="stat-tile">
-            <p class="eyebrow">All-time paid bookings</p>
-            <p class="stat-value">{html.escape(str(row.paid_booking_count))}</p>
-            <p>{html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
-          </article>
-          <article class="stat-tile">
-            <p class="eyebrow">All-time paid revenue</p>
-            <p class="stat-value">{html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
-          </article>
-        </div>
-      </article>
-      <article class="card accent stack">
-        <div>
-          <p class="eyebrow">Reading rules</p>
-          <h2>Current funnel truth stays separate from filtered paid outcomes</h2>
-        </div>
-        <p>Bookings and current funnel state here stay tied to the stored tracking ID for this content. Paid outcomes still come only from canonical invoice and payment truth.</p>
-        <p>If you opened this page from a paid-date-filtered reports view, the paid-results section below follows that same window. Diagnostic items only appear here when they still carry this content's canonical tracking ID.</p>
         {clear_filter_link}
         {paid_explanation_link}
-      </article>
+      </div>
     </section>
     <section class="card stack">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Tracked bookings</p>
-          <h2>Bookings tied to this content</h2>
+          <p class="eyebrow">Step 1</p>
+          <h2>Bookings attributed to this content</h2>
         </div>
         <p>{html.escape(_count_copy(len(drilldown.bookings), "booking"))} shown</p>
       </div>
+      <p class="report-section-intro">These bookings still carry this content's stored tracking ID in canonical booking truth.</p>
       {_render_reports_content_booking_list(drilldown.bookings)}
     </section>
     <section class="card stack">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Paid outcomes</p>
-          <h2>Invoice-backed results in the current paid window</h2>
+          <p class="eyebrow">Step 2</p>
+          <h2>Paid outcomes counted in this window</h2>
         </div>
         <p>{html.escape(_count_copy(paid_window.paid_invoice_count, "paid invoice"))} counted</p>
       </div>
+      <p class="report-section-intro">Only invoice-backed paid results count here. Provider events can support the chain, but they do not replace canonical booking and invoice truth.</p>
       {_render_reports_content_paid_outcomes(
           drilldown=drilldown,
           filter_values=filter_values,
@@ -6668,11 +6696,12 @@ def _render_reports_content_drilldown_page(
     <section class="card stack">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Diagnostic state</p>
-          <h2>Items still outside paid totals</h2>
+          <p class="eyebrow">Step 3</p>
+          <h2>Diagnostics excluded from totals</h2>
         </div>
-        <p>{html.escape(_count_copy(len(drilldown.blocked_cases) + len(drilldown.unmatched_payment_events), "diagnostic item"))} shown</p>
+        <p>{html.escape(_count_copy(diagnostic_count, "diagnostic item"))} shown</p>
       </div>
+      <p class="report-section-intro">Everything below stays outside paid totals until the missing link or blocked billing issue is resolved.</p>
       {_render_reports_content_diagnostics(
           drilldown=drilldown,
           filter_values=filter_values,
@@ -6762,7 +6791,11 @@ def _render_reports_content_paid_outcomes(
 
     return f"""
     <div class="stack">
-      <p>Only canonical invoice-backed paid results are counted here. Matching payment events remain supporting evidence, and the deeper chain stays on the existing explanation page.</p>
+      <article class="topic-summary report-inline-proof">
+        <p class="eyebrow">Counted in this view</p>
+        <p class="report-snapshot-value">{html.escape(_count_copy(paid_window.paid_invoice_count, "paid invoice"))}</p>
+        <p>{html.escape(_reports_content_inline_proof_copy(drilldown=drilldown, filters_active=filters_active))}</p>
+      </article>
       <div class="stat-grid">
         <article class="stat-tile">
           <p class="eyebrow">Paid revenue</p>
@@ -6780,7 +6813,10 @@ def _render_reports_content_paid_outcomes(
         </article>
       </div>
       <p><strong>Paid window</strong>: {html.escape(_reports_content_paid_window_copy(drilldown=drilldown, filters_active=filters_active))}</p>
-      {explanation_link}
+      <div class="report-row-actions">
+        {explanation_link}
+        {clear_filter_link}
+      </div>
     </div>
     """
 
@@ -6794,8 +6830,8 @@ def _render_reports_content_diagnostics(
         return """
         <section class="empty-state">
           <p class="eyebrow">Clear</p>
-          <h2>No content-scoped diagnostics are waiting right now</h2>
-          <p>No open blocked billing case or unmatched payment event still carries this content's stored tracking ID today.</p>
+          <h2>No content-scoped diagnostics are open right now</h2>
+          <p>No blocked billing case or unmatched payment signal still carries this content's stored tracking ID today.</p>
         </section>
         """
 
@@ -6825,18 +6861,18 @@ def _render_reports_content_diagnostics(
     unmatched_section = (
         f"""
         <div class="stack">
-          <p class="eyebrow">Unmatched payment signals</p>
+          <p class="eyebrow">Payment signals still outside totals</p>
           <h2>{html.escape(_count_copy(len(drilldown.unmatched_payment_events), "backlog event"))}</h2>
           <div class="content-list">{unmatched_items}</div>
         </div>
         """
         if drilldown.unmatched_payment_events
-        else "<p>No unmatched payment event still points back to this content's tracking ID right now.</p>"
+        else "<p>No unmatched payment signal still points back to this content's tracking ID right now.</p>"
     )
 
     return f"""
     <div class="stack">
-      <p>Only blocked cases and unmatched payment events that still carry this content's stored tracking ID appear here. Anything without a safe content link stays on the broader diagnostic pages instead of being guessed onto this row.</p>
+      <p>Only blocked cases and unmatched payment signals that still carry this content's stored tracking ID appear here. Anything without a safe content link stays on the broader diagnostic pages instead of being guessed onto this row.</p>
       {blocked_section}
       {unmatched_section}
       <p><a href="/app/attention" class="inline-link">Open Attention for fuller blocked-case detail</a></p>
@@ -8098,11 +8134,11 @@ def _render_reports_surface_nav(
 
 def _reports_funnel_status_label(row: ReportsSummaryRow) -> str:
     if row.funnel_status == "paid_result_recorded":
-        return "Paid result recorded"
+        return "Paid"
     if row.funnel_status == "blocked_before_invoicing":
-        return "Blocked before invoicing"
+        return "Blocked"
     if row.funnel_status == "waiting_for_first_paid_result":
-        return "Waiting for first paid result"
+        return "Waiting"
     return "No bookings yet"
 
 
@@ -8110,21 +8146,16 @@ def _reports_funnel_status_summary(row: ReportsSummaryRow) -> str:
     if row.funnel_status == "paid_result_recorded":
         if row.open_blocked_billing_case_count > 0:
             return (
-                "This content already has counted paid results, but some newer booking activity "
-                "is still blocked before invoicing."
+                "Counted revenue already exists here, but some newer activity is still blocked before invoicing."
             )
-        return "This content already has invoice-backed paid results in canonical reporting."
+        return "At least one booking from this content already became counted revenue."
     if row.funnel_status == "blocked_before_invoicing":
         return (
-            "Tracked bookings reached billing, but at least one open blocked billing case still "
-            "keeps that booking activity outside paid totals."
+            "Bookings exist, but billing is blocked before any revenue can count."
         )
     if row.funnel_status == "waiting_for_first_paid_result":
-        return (
-            "Canonical bookings are recorded for this content, but no invoice-backed paid result "
-            "is counted yet."
-        )
-    return "This content is tracked, but no canonical booking has been recorded for it yet."
+        return "Bookings exist, but no invoice-backed payment counts yet."
+    return "This content is tracked, but no booking has landed yet."
 
 
 def _reports_paid_window_copy(row: ReportsSummaryRow, *, filters_active: bool) -> str:
@@ -8138,6 +8169,26 @@ def _reports_paid_window_copy(row: ReportsSummaryRow, *, filters_active: bool) -
         f"{row.first_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')} to "
         f"{row.last_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')}"
     )
+
+
+def _reports_row_visibility_copy(
+    *,
+    visible_count: int,
+    total_count: int,
+    filters_active: bool,
+) -> str:
+    if filters_active and total_count > visible_count:
+        return f"Showing {visible_count} of {total_count} tracked content rows in this paid view."
+    return f"{_count_copy(visible_count, 'content row')} visible"
+
+
+def _reports_row_diagnostic_copy(row: ReportsSummaryRow) -> str:
+    if row.open_blocked_billing_case_count > 0:
+        return (
+            f"{_count_copy(row.open_blocked_billing_case_count, 'open blocked billing case')} "
+            "still sits outside paid totals."
+        )
+    return "Nothing open for this content right now."
 
 
 def _reports_topic_funnel_status_label(row: ReportsTopicSummaryRow) -> str:
@@ -8276,6 +8327,25 @@ def _reports_content_paid_window_copy(
     return (
         f"{paid_window.first_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')} to "
         f"{paid_window.last_paid_at.astimezone(timezone.utc).strftime('%B %d, %Y')}"
+    )
+
+
+def _reports_content_inline_proof_copy(
+    *,
+    drilldown: CreatorReportsContentDrilldown,
+    filters_active: bool,
+) -> str:
+    paid_window = drilldown.paid_window
+    booking_copy = _count_copy(paid_window.paid_booking_count, "attributed booking")
+    invoice_copy = _count_copy(paid_window.paid_invoice_count, "paid invoice")
+    if filters_active:
+        return (
+            f"{booking_copy.capitalize()} from this content produced {invoice_copy} inside the "
+            "selected paid window. Use the explanation page for the full booking-to-invoice-to-payment chain."
+        )
+    return (
+        f"{booking_copy.capitalize()} from this content produced {invoice_copy} in canonical paid "
+        "reporting. Use the explanation page for the full booking-to-invoice-to-payment chain."
     )
 
 
@@ -8650,7 +8720,7 @@ def _page_layout(*, title: str, body: str) -> str:
       }}
 
       main {{
-        width: min(960px, calc(100% - 32px));
+        width: min(1120px, calc(100% - 40px));
         margin: 0 auto;
         padding: 48px 0 64px;
       }}
@@ -9058,6 +9128,90 @@ def _page_layout(*, title: str, body: str) -> str:
         background: rgba(163, 74, 40, 0.1);
         font-size: 0.88rem;
         font-weight: 700;
+      }}
+
+      .report-toolbar-card {{
+        margin-bottom: 16px;
+      }}
+
+      .report-toolbar-meta {{
+        margin: 0;
+        color: var(--muted);
+      }}
+
+      .report-scope-note,
+      .report-section-intro {{
+        margin: 0;
+        color: var(--muted);
+      }}
+
+      .report-answer-strip {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px;
+        margin-bottom: 16px;
+      }}
+
+      .report-answer-strip-compact {{
+        margin-bottom: 0;
+      }}
+
+      .report-diagnostic-tile {{
+        display: grid;
+        gap: 10px;
+      }}
+
+      .report-row-card {{
+        gap: 14px;
+      }}
+
+      .report-row-meta {{
+        display: grid;
+        gap: 8px;
+        color: var(--muted);
+      }}
+
+      .report-snapshot-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }}
+
+      .report-snapshot {{
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255, 249, 239, 0.74);
+        display: grid;
+        gap: 10px;
+      }}
+
+      .report-snapshot-diagnostic {{
+        background: rgba(243, 223, 212, 0.28);
+      }}
+
+      .report-snapshot-value {{
+        margin: 0;
+        color: var(--ink);
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+        font-size: 1.8rem;
+        line-height: 1.05;
+      }}
+
+      .report-row-actions {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }}
+
+      .report-focus-card {{
+        margin-bottom: 16px;
+      }}
+
+      .report-inline-proof {{
+        display: grid;
+        gap: 10px;
       }}
 
       .topic-summary {{

@@ -200,7 +200,7 @@ def test_reporting_contract_golden_browser_lane():
     assert fixture.historical_source_url in reports_unfiltered.text
 
     assert reports_filtered.status_code == 200
-    assert "1 content row visible" in reports_filtered.text
+    assert "Showing 1 of 2 tracked content rows in this paid view." in reports_filtered.text
     assert fixture.primary_source_url in reports_filtered.text
     assert fixture.historical_source_url not in reports_filtered.text
     assert "Missing tracking ID" in reports_filtered.text

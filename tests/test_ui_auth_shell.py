@@ -2616,8 +2616,9 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
     assert "1 paid invoice" in response.text
     assert "1 paid booking" in response.text
     assert "1 tracked booking" in response.text
-    assert "Paid result recorded" in response.text
-    assert "This content already has invoice-backed paid results in canonical reporting." in response.text
+    assert "Paid" in response.text
+    assert "At least one booking from this content already became counted revenue." in response.text
+    assert "Showing 1 of 2 tracked content rows in this paid view." in response.text
     assert "Illustrative preview" not in response.text
     assert "This read-only preview is illustrative only." not in response.text
     assert "Missing tracking ID" in response.text
@@ -3890,7 +3891,8 @@ def test_reports_content_drilldown_page_renders_creator_scoped_bookings_paid_and
     assert paid_booking_uuid in response.text
     assert waiting_booking_uuid in response.text
     assert blocked_booking_uuid in response.text
-    assert "Invoice-backed results in the current paid window" in response.text
+    assert "Paid outcomes counted in this window" in response.text
+    assert "Counted in this view" in response.text
     assert "195.00" in response.text
     assert "Creator not billable" in response.text
     assert "Unknown invoice" in response.text
@@ -4192,11 +4194,8 @@ def test_reports_page_with_tracked_content_but_no_paid_invoices_shows_funnel_row
     assert "reports-no-paid" in response.text
     assert "1 tracked booking" in response.text
     assert "0 paid bookings" in response.text
-    assert "Waiting for first paid result" in response.text
-    assert (
-        "Canonical bookings are recorded for this content, but no invoice-backed paid result is counted yet."
-        in response.text
-    )
+    assert "Waiting" in response.text
+    assert "Bookings exist, but no invoice-backed payment counts yet." in response.text
     assert "No invoice-backed paid result is counted for this content yet." in response.text
     assert "Illustrative preview" not in response.text
 

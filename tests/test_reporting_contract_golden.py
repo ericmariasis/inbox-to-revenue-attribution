@@ -217,6 +217,7 @@ def test_reporting_contract_golden_browser_lane():
 
     assert topics_filtered.status_code == 200
     assert "Topic analytics" in topics_filtered.text
+    assert "Confirmed-topic rows can overlap." in topics_filtered.text
     assert "Pricing Strategy" in topics_filtered.text
     assert "Discovery Calls" in topics_filtered.text
     assert "Retention Reviews" not in topics_filtered.text
@@ -224,6 +225,7 @@ def test_reporting_contract_golden_browser_lane():
 
     assert booking_links_unfiltered.status_code == 200
     assert "Booking-link analytics" in booking_links_unfiltered.text
+    assert "Each row stays tied to one saved booking-link identity." in booking_links_unfiltered.text
     assert fixture.active_booking_link_name in booking_links_unfiltered.text
     assert fixture.historical_booking_link_name in booking_links_unfiltered.text
     assert "No billing defaults yet" in booking_links_unfiltered.text

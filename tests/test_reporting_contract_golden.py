@@ -241,6 +241,6 @@ def test_reporting_contract_golden_browser_lane():
     assert fixture.provider_event_id in paid_explanation.text
 
     assert unattributed_explanation.status_code == 200
-    assert "Why some payments are not counted yet" in unattributed_explanation.text
+    assert "Why some payments stay outside totals" in unattributed_explanation.text
     assert "Missing tracking ID" in unattributed_explanation.text
     assert "Unknown invoice" in unattributed_explanation.text

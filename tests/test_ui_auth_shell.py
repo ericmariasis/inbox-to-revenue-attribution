@@ -3687,7 +3687,8 @@ def test_reports_paid_explanation_page_renders_creator_scoped_canonical_chain():
 
     assert response.status_code == 200
     assert "Why this revenue counted" in response.text
-    assert "the same tracking ID moved through your stored content, booking, invoice, and payment record chain" in response.text
+    assert "Counted in paid totals for this selected window" in response.text
+    assert "What had to line up" in response.text
     assert source_url in response.text
     assert content_tid in response.text
     assert booking_uuid in response.text
@@ -3984,8 +3985,9 @@ def test_reports_unattributed_explanation_page_renders_current_backlog_reason():
         )
 
     assert response.status_code == 200
-    assert "Why some payments are not counted yet" in response.text
-    assert "This page is diagnostic only. It shows counts, causes, and next steps" in response.text
+    assert "Why some payments stay outside totals" in response.text
+    assert "Diagnostic only" in response.text
+    assert "No revenue estimate" in response.text
     assert "Missing tracking ID" in response.text
     assert "Use the tracked link consistently going forward." in response.text
     assert (

@@ -351,7 +351,7 @@ def test_phase14_launch_surfaces_cover_warm_creator_and_operator_paths():
     assert "1 paid booking" in reports_response.text
     assert source_url in reports_response.text
     assert content_tid in reports_response.text
-    assert "Why some payments are not counted yet" in reports_response.text
+    assert "Why some payments stay outside totals" in reports_response.text
     assert "Unknown booking" in reports_response.text
     assert 'href="/app/attention"' in reports_response.text
 

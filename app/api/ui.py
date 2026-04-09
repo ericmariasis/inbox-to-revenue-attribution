@@ -5395,7 +5395,7 @@ def _render_reports_topics_page(
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Topic analytics</h1>
-        <p class="lede">Group the existing content funnel by authoritative confirmed topics only, without inventing a second revenue truth or speculative taxonomy layer.</p>
+        <p class="lede">Compare where authoritative confirmed topics are showing up in the existing content funnel without treating topic rows as a second creator-wide total.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -5411,10 +5411,10 @@ def _render_reports_topics_page(
       <article class="card stack">
         <div>
           <p class="eyebrow">Paid-date filter</p>
-          <h2>Topic rows in the paid window</h2>
+          <h2>Compare confirmed topics in the paid window</h2>
           <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
-        <p>Use the paid date below to narrow topic rows by when the counted invoice payment landed. Booking counts below still reflect the current content rows visible in this topic grouping, not booking-date slices.</p>
+        <p>Use the paid date below to narrow grouped paid outcomes by when the counted invoice payment landed. Booking counts below still reflect the visible content rows attached to each topic grouping, not booking-date slices.</p>
         <form action="/app/reports/topics" method="get">
           <div class="filter-row">
             <div>
@@ -5450,11 +5450,11 @@ def _render_reports_topics_page(
       </article>
       <article class="card accent stack">
         <div>
-          <p class="eyebrow">Reading rules</p>
+          <p class="eyebrow">Comparison rules</p>
           <h2>Confirmed-topic groupings are not a second total</h2>
         </div>
         <p>Only authoritative confirmed topics count here. Pending, rejected, or non-authoritative topic candidates stay out of this summary.</p>
-        <p>A single content row can appear under more than one confirmed topic, so these grouped topic rows are useful comparisons rather than a partition of your overall revenue totals.</p>
+        <p>A single content row can appear under more than one confirmed topic, so these grouped topic rows are comparisons rather than a partition of your overall revenue totals.</p>
         <p>Use the content funnel page when you want one creator-level total without topic overlap.</p>
       </article>
     </section>
@@ -5466,6 +5466,7 @@ def _render_reports_topics_page(
         </div>
         <p>{html.escape(_count_copy(len(summary.rows), "topic row"))} visible</p>
       </div>
+      <p class="report-scope-note">Confirmed-topic rows can overlap. Use them to compare where paid outcomes are showing up, not as an additive creator-wide total.</p>
       {_render_reports_topic_results(
           content_items=content_items,
           summary=summary,
@@ -5509,7 +5510,7 @@ def _render_reports_booking_links_page(
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Booking-link analytics</h1>
-        <p class="lede">Group the existing content funnel by saved booking-link identity, without turning reports into CTA experimentation, campaign analytics, or a second revenue truth.</p>
+        <p class="lede">Compare outcomes by saved booking-link identity without turning reports into CTA experimentation, campaign analytics, or a second revenue truth.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -5525,10 +5526,10 @@ def _render_reports_booking_links_page(
       <article class="card stack">
         <div>
           <p class="eyebrow">Paid-date filter</p>
-          <h2>Booking-link rows in the paid window</h2>
+          <h2>Compare saved links in the paid window</h2>
           <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
-        <p>Use the paid date below to narrow booking-link rows by when the counted invoice payment landed. Grouped booking counts still describe the current visible content rows attached to each saved booking link, not booking-date slices.</p>
+        <p>Use the paid date below to narrow grouped paid outcomes by when the counted invoice payment landed. Grouped booking counts still describe the visible content rows attached to each saved booking link, not booking-date slices.</p>
         <form action="/app/reports/booking-links" method="get">
           <div class="filter-row">
             <div>
@@ -5564,7 +5565,7 @@ def _render_reports_booking_links_page(
       </article>
       <article class="card accent stack">
         <div>
-          <p class="eyebrow">Reading rules</p>
+          <p class="eyebrow">Comparison rules</p>
           <h2>Booking-link rows stay tied to saved link identity</h2>
         </div>
         <p>This page groups visible content rows by stable booking-link identity, not by a mutable link name or destination string.</p>
@@ -5580,6 +5581,7 @@ def _render_reports_booking_links_page(
         </div>
         <p>{html.escape(_count_copy(len(summary.rows), "booking link row"))} visible</p>
       </div>
+      <p class="report-scope-note">Each row stays tied to one saved booking-link identity. Current names, URLs, and defaults shown below are present-day metadata, not historical proof.</p>
       {_render_reports_booking_link_results(
           content_items=content_items,
           booking_links=booking_links,
@@ -6074,16 +6076,14 @@ def _render_reports_topic_row_card(
     row: ReportsTopicSummaryRow,
     filters_active: bool,
 ) -> str:
-    blocked_line = ""
-    if row.open_blocked_billing_case_count > 0:
-        blocked_line = (
-            f"<p><strong>Blocked before invoicing</strong>: "
-            f"{html.escape(_count_copy(row.open_blocked_billing_case_count, 'open blocked billing case'))} "
-            "still outside paid totals and visible separately in Attention.</p>"
-        )
+    blocked_copy = (
+        f"{_count_copy(row.open_blocked_billing_case_count, 'open blocked billing case')} still outside paid totals and visible separately in Attention."
+        if row.open_blocked_billing_case_count > 0
+        else "No blocked billing is open for this grouped topic view right now."
+    )
 
     return f"""
-    <article class="content-card stack">
+    <article class="content-card stack report-row-card">
       <div class="content-card-header">
         <div>
           <p class="eyebrow">Authoritative confirmed topic</p>
@@ -6091,15 +6091,33 @@ def _render_reports_topic_row_card(
         </div>
         <p class="pill-note">{html.escape(_reports_topic_funnel_status_label(row))}</p>
       </div>
-      <p><strong>Grouped content rows</strong>: {html.escape(_count_copy(row.content_count, "content row"))}</p>
-      <p><strong>Tracked bookings</strong>: {html.escape(_count_copy(row.booking_count, "tracked booking"))}</p>
-      <p><strong>Paid revenue</strong>: {html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
-      <p><strong>Paid invoices</strong>: {html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))}</p>
-      <p><strong>Paid bookings</strong>: {html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
-      <p><strong>Current grouped state</strong>: {html.escape(_reports_topic_funnel_status_summary(row))}</p>
-      {blocked_line}
-      <p><strong>Paid window</strong>: {html.escape(_reports_topic_paid_window_copy(row, filters_active=filters_active))}</p>
-      <p>This grouped view reuses the existing content funnel truth. One content row can appear here under more than one authoritative topic.</p>
+      <p class="report-scope-note">Comparison view over {html.escape(_count_copy(row.content_count, "content row"))}. One content row can still appear here under more than one authoritative confirmed topic.</p>
+      <div class="report-proof-grid">
+        <section class="topic-summary stack report-proof-block">
+          <div>
+            <p class="eyebrow">Paid outcomes</p>
+            <h3>{html.escape(_format_money_from_cents(row.paid_revenue_cents))}</h3>
+          </div>
+          <p>{html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))} and {html.escape(_count_copy(row.paid_booking_count, "paid booking"))} currently counted in canonical reporting.</p>
+          <p><strong>Paid window</strong>: {html.escape(_reports_topic_paid_window_copy(row, filters_active=filters_active))}</p>
+        </section>
+        <section class="topic-summary stack report-proof-block">
+          <div>
+            <p class="eyebrow">Grouped content</p>
+            <h3>{html.escape(_count_copy(row.content_count, "content row"))}</h3>
+          </div>
+          <p>{html.escape(_count_copy(row.booking_count, "tracked booking"))} currently visible under this authoritative confirmed topic.</p>
+          <p><strong>Current grouped state</strong>: {html.escape(_reports_topic_funnel_status_label(row))}</p>
+        </section>
+        <section class="topic-summary stack report-proof-block">
+          <div>
+            <p class="eyebrow">Diagnostic only</p>
+            <h3>{html.escape(_reports_topic_funnel_status_label(row))}</h3>
+          </div>
+          <p>{html.escape(_reports_topic_funnel_status_summary(row))}</p>
+          <p><strong>Blocked before invoicing</strong>: {html.escape(blocked_copy)}</p>
+        </section>
+      </div>
     </article>
     """
 
@@ -6109,13 +6127,11 @@ def _render_reports_booking_link_row_card(
     row: ReportsBookingLinkSummaryRow,
     filters_active: bool,
 ) -> str:
-    blocked_line = ""
-    if row.open_blocked_billing_case_count > 0:
-        blocked_line = (
-            f"<p><strong>Blocked before invoicing</strong>: "
-            f"{html.escape(_count_copy(row.open_blocked_billing_case_count, 'open blocked billing case'))} "
-            "still outside paid totals and visible separately in Attention.</p>"
-        )
+    blocked_copy = (
+        f"{_count_copy(row.open_blocked_billing_case_count, 'open blocked billing case')} still outside paid totals and visible separately in Attention."
+        if row.open_blocked_billing_case_count > 0
+        else "No blocked billing is open for this saved link right now."
+    )
 
     destination_line = (
         f'<p><strong>Current destination</strong>: <a href="{html.escape(row.booking_link_destination_url, quote=True)}" class="inline-link">{html.escape(row.booking_link_destination_url)}</a></p>'
@@ -6124,7 +6140,7 @@ def _render_reports_booking_link_row_card(
     )
 
     return f"""
-    <article class="content-card stack">
+    <article class="content-card stack report-row-card">
       <div class="content-card-header">
         <div>
           <p class="eyebrow">Saved booking link</p>
@@ -6132,18 +6148,43 @@ def _render_reports_booking_link_row_card(
         </div>
         <p class="pill-note">{html.escape(_reports_booking_link_funnel_status_label(row))}</p>
       </div>
-      <p><strong>Provider</strong>: {html.escape(_booking_link_provider_label(row.booking_link_provider))}</p>
-      {destination_line}
-      <p><strong>Current stored defaults</strong>: {html.escape(_reports_booking_link_billing_defaults_copy(row))}</p>
-      <p><strong>Grouped content rows</strong>: {html.escape(_count_copy(row.content_count, "content row"))}</p>
-      <p><strong>Tracked bookings</strong>: {html.escape(_count_copy(row.booking_count, "tracked booking"))}</p>
-      <p><strong>Paid revenue</strong>: {html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
-      <p><strong>Paid invoices</strong>: {html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))}</p>
-      <p><strong>Paid bookings</strong>: {html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
-      <p><strong>Current grouped state</strong>: {html.escape(_reports_booking_link_funnel_status_summary(row))}</p>
-      {blocked_line}
-      <p><strong>Paid window</strong>: {html.escape(_reports_booking_link_paid_window_copy(row, filters_active=filters_active))}</p>
-      <p>Historical bookings and paid results stay attached to this saved booking-link identity even if the current link name or defaults changed later.</p>
+      <p class="report-scope-note">This row compares one saved booking-link identity across {html.escape(_count_copy(row.content_count, "content row"))} and {html.escape(_count_copy(row.booking_count, "tracked booking"))} currently visible in the content funnel.</p>
+      <div class="report-proof-grid">
+        <section class="topic-summary stack report-proof-block">
+          <div>
+            <p class="eyebrow">Saved-link identity</p>
+            <h3>{html.escape(_booking_link_provider_label(row.booking_link_provider))}</h3>
+          </div>
+          <p><strong>Grouped content rows</strong>: {html.escape(_count_copy(row.content_count, "content row"))}</p>
+          <p><strong>Tracked bookings</strong>: {html.escape(_count_copy(row.booking_count, "tracked booking"))}</p>
+          <p><strong>Current grouped state</strong>: {html.escape(_reports_booking_link_funnel_status_label(row))}</p>
+        </section>
+        <section class="topic-summary stack report-proof-block">
+          <div>
+            <p class="eyebrow">Paid outcomes</p>
+            <h3>{html.escape(_format_money_from_cents(row.paid_revenue_cents))}</h3>
+          </div>
+          <p>{html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))} and {html.escape(_count_copy(row.paid_booking_count, "paid booking"))} currently counted in canonical reporting.</p>
+          <p><strong>Paid window</strong>: {html.escape(_reports_booking_link_paid_window_copy(row, filters_active=filters_active))}</p>
+        </section>
+        <section class="topic-summary stack report-proof-block">
+          <div>
+            <p class="eyebrow">Diagnostic only</p>
+            <h3>{html.escape(_reports_booking_link_funnel_status_label(row))}</h3>
+          </div>
+          <p>{html.escape(_reports_booking_link_funnel_status_summary(row))}</p>
+          <p><strong>Blocked before invoicing</strong>: {html.escape(blocked_copy)}</p>
+        </section>
+        <section class="topic-summary stack report-proof-block">
+          <div>
+            <p class="eyebrow">Current metadata today</p>
+            <h3>Present-day context</h3>
+          </div>
+          {destination_line}
+          <p><strong>Current stored defaults</strong>: {html.escape(_reports_booking_link_billing_defaults_copy(row))}</p>
+          <p>Historical bookings and paid results stay attached to this saved booking-link identity even if the current link name or defaults changed later.</p>
+        </section>
+      </div>
     </article>
     """
 

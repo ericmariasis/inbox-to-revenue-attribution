@@ -2961,6 +2961,10 @@ def test_reports_topics_page_renders_authoritative_confirmed_topics_only():
     assert "Topic analytics" in response.text
     assert "Only authoritative confirmed topics count here." in response.text
     assert "A single content row can appear under more than one confirmed topic" in response.text
+    assert "Confirmed-topic rows can overlap." in response.text
+    assert "Paid outcomes" in response.text
+    assert "Grouped content" in response.text
+    assert "Diagnostic only" in response.text
     assert "2 topic rows visible" in response.text
     assert "Discovery Calls" in response.text
     assert "Pricing Strategy" in response.text
@@ -3138,6 +3142,11 @@ def test_reports_booking_links_page_groups_rows_by_saved_link_identity():
     assert unfiltered_response.status_code == 200
     assert "Booking-link analytics" in unfiltered_response.text
     assert "Booking-link rows stay tied to saved link identity" in unfiltered_response.text
+    assert "Each row stays tied to one saved booking-link identity." in unfiltered_response.text
+    assert "Saved-link identity" in unfiltered_response.text
+    assert "Current metadata today" in unfiltered_response.text
+    assert "Paid outcomes" in unfiltered_response.text
+    assert "Diagnostic only" in unfiltered_response.text
     assert "2 booking link rows visible" in unfiltered_response.text
     assert "Discovery Call CTA" in unfiltered_response.text
     assert "Archived Webinar CTA" in unfiltered_response.text

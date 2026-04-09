@@ -516,7 +516,7 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert source_url in reports_response.text
     assert created_tid in reports_response.text
     assert "Why this revenue counted" in reports_response.text
-    assert "Why some payments are not counted yet" in reports_response.text
+    assert "Why some payments stay outside totals" in reports_response.text
     assert "Unknown booking" in reports_response.text
     assert "1 booking still blocked before invoicing and outside paid totals." in reports_response.text
     assert 'href="/app/attention"' in reports_response.text

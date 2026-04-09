@@ -6503,7 +6503,7 @@ def _render_reports_unmatched_explanation_link(
 
     return (
         f'<a href="{html.escape(_reports_unattributed_explanation_href(filter_values), quote=True)}" '
-        'class="inline-link">Why some payments are not counted yet</a>'
+        'class="inline-link">Why some payments stay outside totals</a>'
     )
 
 
@@ -6517,64 +6517,91 @@ def _render_reports_paid_explanation_page(
     creator_email = html.escape(current_user.email)
     row = explanation.summary_row
     back_href = html.escape(_reports_page_href(filter_values), quote=True)
+    provider_event_count = sum(
+        1 for evidence in explanation.evidence if evidence.provider_event_id is not None
+    )
 
     body = f"""
     <header class="shell-header">
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Why this revenue counted</h1>
-        <p class="lede">This result is counted because the same tracking ID moved through your stored content, booking, invoice, and payment record chain.</p>
+        <p class="lede">This paid result stays in totals because one tracked content row, one creator-scoped booking, and one canonical paid invoice still align inside the selected paid window.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
       </form>
     </header>
     {_render_shell_nav(current_path="/app/reports")}
-    <section class="grid">
-      <article class="card stack">
+    <section class="card stack report-focus-card">
+      <div class="section-heading">
         <div>
-          <p class="eyebrow">Creator-scoped evidence</p>
-          <h2>Paid attribution for one tracked content row</h2>
-          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+          <p class="eyebrow">Counting decision</p>
+          <h2>Counted in paid totals for this selected window</h2>
         </div>
+        <p class="pill-note">Paid</p>
+      </div>
+      <p class="report-toolbar-meta">Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+      <p class="report-scope-note">This creator-scoped row stays counted because the booking and canonical paid invoice still align for the selected paid window: {html.escape(_reports_paid_window_copy(row, filters_active=_reports_filters_are_active(filter_values)))}</p>
+      <div class="report-row-meta">
         <p><strong>Source URL</strong>: <a href="{html.escape(row.source_url)}" class="inline-link">{html.escape(row.source_url)}</a></p>
         <p><strong>Tracking ID</strong>: <code>{html.escape(row.tid)}</code></p>
-        <p><strong>Paid window</strong>: {html.escape(_reports_paid_window_copy(row, filters_active=_reports_filters_are_active(filter_values)))}</p>
+      </div>
+      <div class="report-answer-strip report-answer-strip-compact">
+        <article class="stat-tile">
+          <p class="eyebrow">Counted revenue</p>
+          <p class="stat-value">{html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Canonical invoices</p>
+          <p class="stat-value">{html.escape(str(row.paid_invoice_count))}</p>
+          <p>{html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))}</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Counted bookings</p>
+          <p class="stat-value">{html.escape(str(row.paid_booking_count))}</p>
+          <p>{html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Supporting provider events</p>
+          <p class="stat-value">{html.escape(str(provider_event_count))}</p>
+          <p>{html.escape(_count_copy(provider_event_count, "linked provider event"))}</p>
+        </article>
+      </div>
+      <div class="report-row-actions">
         <a href="{back_href}" class="inline-link">Back to reports</a>
-        <div class="stat-grid">
-          <article class="stat-tile">
-            <p class="eyebrow">Paid revenue</p>
-            <p class="stat-value">{html.escape(_format_money_from_cents(row.paid_revenue_cents))}</p>
-          </article>
-          <article class="stat-tile">
-            <p class="eyebrow">Paid invoices</p>
-            <p class="stat-value">{html.escape(str(row.paid_invoice_count))}</p>
-            <p>{html.escape(_count_copy(row.paid_invoice_count, "paid invoice"))}</p>
-          </article>
-          <article class="stat-tile">
-            <p class="eyebrow">Paid bookings</p>
-            <p class="stat-value">{html.escape(str(row.paid_booking_count))}</p>
-            <p>{html.escape(_count_copy(row.paid_booking_count, "paid booking"))}</p>
-          </article>
+      </div>
+    </section>
+    <section class="grid">
+      <article class="topic-summary stack">
+        <div>
+          <p class="eyebrow">Required truth</p>
+          <h2>What had to line up</h2>
         </div>
+        <ul class="reason-list">
+          <li>The tracked content row and its stored tracking ID still match this counted result.</li>
+          <li>A creator-scoped booking still carries that same tracking ID.</li>
+          <li>A canonical invoice for that booking is marked paid inside the selected paid window.</li>
+        </ul>
       </article>
       <article class="card accent stack">
         <div>
-          <p class="eyebrow">How attribution works here</p>
-          <h2>The stored chain decides what counts</h2>
+          <p class="eyebrow">Supporting provider evidence</p>
+          <h2>Provider events support the decision</h2>
         </div>
-        <p>This row stays in paid totals when the stored content, booking, and invoice records all point back to the same creator-scoped tracking ID.</p>
-        <p>A linked payment event, when present, is supporting provider evidence rather than the settlement gate. If the content, booking, or invoice link is missing, the payment is explained separately and kept out of paid totals until the missing link is repaired.</p>
+        <p>Stored payment events can confirm provider timing and provenance, but they do not replace canonical booking and invoice truth.</p>
+        <p>If the payment event is missing, the invoice can still count here when canonical invoice state is already trusted for this creator-scoped row.</p>
       </article>
     </section>
     <section class="card stack">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Counted payment evidence</p>
-          <h2>Content to booking to invoice to payment event</h2>
+          <p class="eyebrow">Evidence used for this decision</p>
+          <h2>Attribution link, canonical paid record, and provider proof</h2>
         </div>
         <p>{html.escape(_count_copy(len(explanation.evidence), "invoice chain"))} shown</p>
       </div>
+      <p class="report-section-intro">Review the creator-scoped attribution link, the canonical paid invoice, and any supporting provider event stored for each counted chain.</p>
       {_render_reports_paid_evidence(explanation)}
     </section>
     """
@@ -6964,34 +6991,60 @@ def _render_reports_paid_evidence_card(
         if evidence.payment_event_status is not None
         else "Invoice-settled"
     )
-    payment_event_line = (
-        f"<p><strong>Payment event</strong>: "
-        f"<code>{html.escape(evidence.provider_event_id or '')}</code> "
-        f"stored as {html.escape(payment_event_status_label)} "
-        f"and received {_format_timestamp_in_utc(evidence.payment_event_received_at)}.</p>"
-        if evidence.provider_event_id is not None and evidence.payment_event_received_at is not None
-        else "<p><strong>Payment event</strong>: No linked payment event is stored for this invoice yet.</p>"
-    )
-    payment_paid_line = (
-        f"<p><strong>Provider paid time</strong>: {_format_timestamp_in_utc(evidence.payment_event_paid_at)}</p>"
-        if evidence.payment_event_paid_at is not None
-        else ""
-    )
+    provider_event_summary = ""
+    if evidence.provider_event_id is not None and evidence.payment_event_received_at is not None:
+        provider_paid_line = (
+            f"<p><strong>Provider paid time</strong>: {_format_timestamp_in_utc(evidence.payment_event_paid_at)}</p>"
+            if evidence.payment_event_paid_at is not None
+            else ""
+        )
+        provider_event_summary = f"""
+        <p><strong>Payment event</strong>: <code>{html.escape(evidence.provider_event_id)}</code></p>
+        <p><strong>Status</strong>: {html.escape(payment_event_status_label)}</p>
+        <p><strong>Received at</strong>: {_format_timestamp_in_utc(evidence.payment_event_received_at)}</p>
+        {provider_paid_line}
+        """
+    else:
+        provider_event_summary = """
+        <p>No linked payment event is stored for this invoice yet.</p>
+        <p>The canonical invoice still controls whether this row counts in paid totals.</p>
+        """
 
     return f"""
     <article class="content-card stack">
       <div class="content-card-header">
         <div>
-          <p class="eyebrow">Invoice chain {index}</p>
+          <p class="eyebrow">Counted chain {index}</p>
           <h2>{html.escape(_reports_currency_amount_copy(evidence.invoice_currency, evidence.invoice_amount_cents))}</h2>
         </div>
         <p class="pill-note">{html.escape(payment_event_status_label)}</p>
       </div>
-      <p><strong>Booking</strong>: <code>{html.escape(evidence.booking_uuid)}</code> captured {_format_timestamp_in_utc(evidence.booked_at)}.</p>
-      <p><strong>Payment provider</strong>: <code>{html.escape(payment_provider_label)}</code></p>
-      <p><strong>Invoice</strong>: <code>{html.escape(evidence.provider_invoice_id)}</code> marked paid {_format_timestamp_in_utc(evidence.invoice_paid_at)}.</p>
-      {payment_event_line}
-      {payment_paid_line}
+      <div class="report-proof-grid">
+        <section class="topic-summary stack report-proof-block">
+          <div>
+            <p class="eyebrow">Attribution link</p>
+            <h3>Booking matched to this tracked content</h3>
+          </div>
+          <p><strong>Booking</strong>: <code>{html.escape(evidence.booking_uuid)}</code></p>
+          <p><strong>Booked at</strong>: {_format_timestamp_in_utc(evidence.booked_at)}</p>
+        </section>
+        <section class="topic-summary stack report-proof-block">
+          <div>
+            <p class="eyebrow">Canonical paid record</p>
+            <h3>Invoice counted in paid totals</h3>
+          </div>
+          <p><strong>Invoice</strong>: <code>{html.escape(evidence.provider_invoice_id)}</code></p>
+          <p><strong>Marked paid</strong>: {_format_timestamp_in_utc(evidence.invoice_paid_at)}</p>
+          <p><strong>Payment provider</strong>: <code>{html.escape(payment_provider_label)}</code></p>
+        </section>
+        <section class="topic-summary stack report-proof-block">
+          <div>
+            <p class="eyebrow">Supporting provider evidence</p>
+            <h3>Provider event and provenance</h3>
+          </div>
+          {provider_event_summary}
+        </section>
+      </div>
     </article>
     """
 
@@ -7011,8 +7064,8 @@ def _render_reports_unattributed_explanation_page(
     <header class="shell-header">
       <div>
         <p class="eyebrow">Creator Home</p>
-        <h1>Why some payments are not counted yet</h1>
-        <p class="lede">These are verified payment events that still cannot be trusted as paid content revenue because the creator-scoped attribution chain is incomplete.</p>
+        <h1>Why some payments stay outside totals</h1>
+        <p class="lede">These payment signals are real, but they stay outside paid totals until the creator-scoped booking and invoice chain is clear enough to trust as revenue.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -7020,37 +7073,54 @@ def _render_reports_unattributed_explanation_page(
     </header>
     {_render_shell_nav(current_path="/app/reports")}
     <section class="grid">
-      <article class="card stack">
-        <div>
-          <p class="eyebrow">Current backlog</p>
-          <h2>Unmatched payments stay separate from paid totals</h2>
-          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+      <article class="card stack report-focus-card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Diagnostic only</p>
+            <h2>These payment signals stay outside paid totals</h2>
+          </div>
+          <p class="pill-note">No revenue estimate</p>
         </div>
-        <p>This page is diagnostic only. It shows counts, causes, and next steps, but it does not estimate revenue for unmatched events.</p>
-        <p><strong>Current unmatched backlog</strong>: {html.escape(_unmatched_payment_backlog_copy(backlog.event_count))}</p>
-        <a href="{back_href}" class="inline-link">Back to reports</a>
+        <p class="report-toolbar-meta">Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+        <p class="report-scope-note">This page explains what is unresolved right now. It does not forecast future revenue or move anything into paid totals early.</p>
+        <div class="report-answer-strip report-answer-strip-compact">
+          <article class="stat-tile report-diagnostic-tile">
+            <p class="eyebrow">Current unmatched backlog</p>
+            <p class="stat-value">{html.escape(str(backlog.event_count))}</p>
+            <p>{html.escape(_count_copy(backlog.event_count, "event"))} currently stay outside paid totals.</p>
+          </article>
+          <article class="stat-tile">
+            <p class="eyebrow">Reasons visible</p>
+            <p class="stat-value">{html.escape(str(len(backlog.reasons)))}</p>
+            <p>{html.escape(_count_copy(len(backlog.reasons), "reason"))} currently explain this backlog.</p>
+          </article>
+        </div>
+        <div class="report-row-actions">
+          <a href="{back_href}" class="inline-link">Back to reports</a>
+        </div>
       </article>
       <article class="card accent stack">
         <div>
-          <p class="eyebrow">What happens next</p>
+          <p class="eyebrow">When this can change</p>
           <h2>Only repaired chains move into paid totals</h2>
         </div>
-        <p>Some unmatched reasons are creator-fixable, like missing tracked-link setup. Others stay ambiguous because the provider or local system never produced enough booking or invoice context to trust them as revenue yet.</p>
-        <p>Only repaired chains move into paid totals, CSV export, and the main paid-results table. Until then, this backlog stays diagnostic only.</p>
+        <p>Some unmatched reasons are creator-fixable, like missing tracked-link setup. Others need later provider or system reconciliation before they can be trusted.</p>
+        <p>Until the booking and invoice chain is clear enough to trust, these events stay outside paid totals, CSV export, and the main paid-results views.</p>
       </article>
     </section>
     <section class="card stack">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Reason summary</p>
-          <h2>Why payments are still unmatched</h2>
+          <p class="eyebrow">Current unmatched reasons</p>
+          <h2>What is keeping payments outside totals</h2>
         </div>
         <p>{html.escape(_count_copy(len(backlog.reasons), "reason"))} visible</p>
       </div>
+      <p class="report-section-intro">Each card explains what happened, whether the chain can still recover, and what to do next.</p>
       {_render_reports_unattributed_reason_cards(summary)}
     </section>
     """
-    return _page_layout(title="Why some payments are not counted yet", body=body)
+    return _page_layout(title="Why some payments stay outside totals", body=body)
 
 
 def _render_reports_unattributed_reason_cards(summary: CreatorReportsSummary) -> str:
@@ -7058,9 +7128,9 @@ def _render_reports_unattributed_reason_cards(summary: CreatorReportsSummary) ->
     if backlog.event_count == 0:
         return """
         <section class="empty-state">
-          <p class="eyebrow">No backlog</p>
-          <h2>No unmatched payments are waiting right now</h2>
-          <p>Your current paid totals do not have a separate unmatched payment backlog attached to them.</p>
+          <p class="eyebrow">Clear</p>
+          <h2>No payment signals are outside totals right now</h2>
+          <p>Your current paid totals do not have a separate unmatched-payment backlog attached to them.</p>
         </section>
         """
 
@@ -7077,14 +7147,15 @@ def _render_reports_unattributed_reason_card(*, reason: str | None, event_count:
         <article class="content-card stack">
           <div class="content-card-header">
             <div>
-              <p class="eyebrow">Unmatched reason</p>
+              <p class="eyebrow">Diagnostic reason</p>
               <h2>{html.escape(reason_copy.label)}</h2>
             </div>
             <p class="pill-note">{html.escape(_count_copy(event_count, "event"))}</p>
           </div>
-          <p>{html.escape(reason_copy.summary)}</p>
-          <p><strong>Likely cause</strong>: {html.escape(reason_copy.likely_cause)}</p>
-          <p><strong>What to do next</strong>: {html.escape(reason_copy.next_step)}</p>
+          <p><strong>What happened</strong>: {html.escape(reason_copy.summary)}</p>
+          <p><strong>Most likely cause</strong>: {html.escape(reason_copy.likely_cause)}</p>
+          <p><strong>Can this recover?</strong>: {html.escape(_reports_unmatched_recovery_outlook(reason))}</p>
+          <p><strong>What to do now</strong>: {html.escape(reason_copy.next_step)}</p>
         </article>
         """
 
@@ -8618,6 +8689,28 @@ def _unmatched_payment_reason_copy(reason: str | None) -> _DiagnosticCopy:
     )
 
 
+def _reports_unmatched_recovery_outlook(reason: str | None) -> str:
+    if reason == UNATTRIBUTED_REASON_MISSING_TID:
+        return (
+            "Sometimes. This can move into paid totals only if enough booking or invoice context "
+            "is later recovered for the missing tracking ID."
+        )
+    if reason == UNATTRIBUTED_REASON_UNKNOWN_BOOKING_UUID:
+        return (
+            "Sometimes. It can move into paid totals only if the missing booking is later "
+            "recovered in canonical local data."
+        )
+    if reason == UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID:
+        return (
+            "Sometimes. It can move into paid totals only if the missing invoice link is later "
+            "recovered in canonical local data."
+        )
+    return (
+        "Only if the missing canonical booking or invoice chain is later recovered. Until then, "
+        "it stays diagnostic only."
+    )
+
+
 def _blocked_billing_reason_copy(reason_code: str) -> _DiagnosticCopy:
     if reason_code == BLOCKED_BILLING_REASON_CREATOR_NOT_BILLABLE:
         return _DiagnosticCopy(
@@ -9212,6 +9305,18 @@ def _page_layout(*, title: str, body: str) -> str:
       .report-inline-proof {{
         display: grid;
         gap: 10px;
+      }}
+
+      .report-proof-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }}
+
+      .report-proof-block h3 {{
+        margin: 0;
+        font-size: 1.05rem;
+        line-height: 1.35;
       }}
 
       .topic-summary {{

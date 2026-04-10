@@ -335,8 +335,10 @@ def test_phase14_launch_surfaces_cover_warm_creator_and_operator_paths():
 
     assert home_response.status_code == 200
     assert "Setup Home" in home_response.text
-    assert "4 of 4 setup steps done" in home_response.text
-    assert "Review attention items" in home_response.text
+    assert "Current milestone" in home_response.text
+    assert "First paid result is already landing" in home_response.text
+    assert "4 of 4 setup milestones done" in home_response.text
+    assert "Review paid results" in home_response.text
     assert "Review 1 attention item" in home_response.text
     assert 'href="/app/attention"' in home_response.text
 

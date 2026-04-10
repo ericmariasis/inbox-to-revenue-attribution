@@ -1327,9 +1327,11 @@ def test_setup_home_pending_billing_state_keeps_provider_choice_for_allowlisted_
 
     assert response.status_code == 200
     assert "Setup Home" in response.text
-    assert "0 of 4 setup steps done" in response.text
-    assert "Billing setup is still pending" in response.text
+    assert "0 of 4 setup milestones done" in response.text
+    assert "Current milestone" in response.text
     assert "Choose billing provider" in response.text
+    assert "What do I need to do first?" in response.text
+    assert "No provider is connected yet" in response.text
     assert "No billing provider is preselected for this workspace." in response.text
     assert "Start Stripe setup" in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
@@ -1454,10 +1456,17 @@ def test_setup_home_missing_billing_defaults_state_shows_blocked_next_action():
         response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "2 of 4 setup steps done" in response.text
-    assert "Billing-ready links" in response.text
-    assert "At least one saved booking link still needs both amount and currency before this workspace is billable now." in response.text
+    assert "2 of 4 setup milestones done" in response.text
+    assert "Connected, but not billable now" in response.text
+    assert (
+        "A billing provider is connected, but this workspace still needs amount and currency on at least one saved booking link."
+        in response.text
+    )
     assert "Become billable now" in response.text
+    assert (
+        "The workspace has moved beyond connection. The remaining gap is making one saved link usable for creator billing."
+        in response.text
+    )
     assert 'href="/app/booking-links"' in response.text
 
 
@@ -1547,11 +1556,14 @@ def test_setup_and_account_pages_reuse_connected_but_not_billable_now_vocabulary
     assert account_response.status_code == 200
     assert "Connected, but not billable now" in setup_response.text
     assert "Connected, but not billable now" in account_response.text
-    assert "Connected</strong>: Done. A billing provider is connected to this workspace." in setup_response.text
+    assert "What is keeping this workspace from becoming billable now?" in setup_response.text
+    assert (
+        "The workspace has moved beyond connection. The remaining gap is making one saved link usable for creator billing."
+        in setup_response.text
+    )
+    assert "Become billable now" in setup_response.text
     assert "Connected</strong>: Done. A billing provider is connected to this workspace." in account_response.text
-    assert "Billable now</strong>: Not yet. Add amount and currency to at least one saved booking link." in setup_response.text
     assert "Billable now</strong>: Not yet. Add amount and currency to at least one saved booking link." in account_response.text
-    assert "Ready to track</strong>: Not yet. This milestone starts after the workspace is billable now." in setup_response.text
     assert "Ready to track</strong>: Not yet. This milestone starts after the workspace is billable now." in account_response.text
 
 
@@ -1586,9 +1598,12 @@ def test_setup_and_account_pages_keep_fullscope_sources_out_of_billable_now():
     assert account_response.status_code == 200
     assert "Connected, but not billable now" in setup_response.text
     assert "Connected, but not billable now" in account_response.text
-    assert "Saved booking sources are not active for creator-tracked workflows right now. Add a currently supported booking link." in setup_response.text
+    assert (
+        "Saved booking sources are not active for creator-tracked workflows right now, so this workspace is still not billable now."
+        in setup_response.text
+    )
     assert "Saved booking sources are not active for creator-tracked workflows right now. Add a currently supported booking link." in account_response.text
-    assert "Creator setup still needs a currently supported booking link before this workspace can become billable now." in setup_response.text
+    assert "The workspace has moved beyond connection. The remaining gap is making one saved link usable for creator billing." in setup_response.text
     assert "Those booking sources stay saved, but they are not active in creator-tracked workflows right now." in account_response.text
 
 
@@ -1687,7 +1702,8 @@ def test_setup_and_account_pages_collapse_paypal_readiness_failures_into_blocked
 
     assert setup_response.status_code == 200
     assert account_response.status_code == 200
-    assert "Connected, but billing setup is blocked" in setup_response.text
+    assert "Billing setup needs review" in setup_response.text
+    assert "Is something wrong before this workspace becomes billable now?" in setup_response.text
     assert (
         "PayPal is connected, but its invoice readiness could not be verified right now. Try again later before relying on new bookings."
         in setup_response.text
@@ -4783,7 +4799,8 @@ def test_setup_home_disconnected_stripe_state_shows_reconnect_cta():
         response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Billing connection is disconnected" in response.text
+    assert "Reconnect billing setup" in response.text
+    assert "What do I need to restore before new bookings can move into invoicing?" in response.text
     assert "Reconnect Stripe" in response.text
     assert "Reconnect it before new bookings can move into invoicing." in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
@@ -4813,7 +4830,7 @@ def test_setup_home_disconnected_paypal_state_keeps_reconnect_for_allowlisted_op
             response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Billing connection is disconnected" in response.text
+    assert "Reconnect billing setup" in response.text
     assert "This workspace was connected to PayPal before, but it is disconnected now." in response.text
     assert "Reconnect PayPal" in response.text
     assert 'action="/app/paypal/connect/start"' in response.text
@@ -4842,7 +4859,7 @@ def test_setup_home_disconnected_paypal_state_hides_reconnect_for_non_operator_l
             response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Billing connection is disconnected" in response.text
+    assert "Reconnect billing setup" in response.text
     assert "PayPal setup is not yet available for general creators." in response.text
     assert "Reconnect PayPal" not in response.text
     assert 'action="/app/paypal/connect/start"' not in response.text
@@ -4869,7 +4886,8 @@ def test_setup_home_connected_stripe_state_shows_connected_details():
         response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Billing provider is connected" in response.text
+    assert "Connected, but not billable now" in response.text
+    assert "Add your first booking link" in response.text
     assert "acct_ui_connected" in response.text
     assert 'action="/app/stripe/connect/start"' not in response.text
     assert "Billing account" in response.text
@@ -5536,11 +5554,16 @@ def test_setup_and_account_pages_reuse_waiting_for_first_paid_result_vocabulary(
     assert setup_response.status_code == 200
     assert account_response.status_code == 200
     assert reports_response.status_code == 200
-    assert "Ready to track and waiting for first paid result" in setup_response.text
+    assert "Ready to track" in setup_response.text
+    assert "Am I set up correctly?" in setup_response.text
+    assert "Copy or share a tracked link" in setup_response.text
+    assert "1 tracked link ready to share" in setup_response.text
+    assert (
+        "Tracking is ready. No booking has landed yet, which is different from the setup being broken."
+        in setup_response.text
+    )
     assert "Ready to track and waiting for first paid result" in account_response.text
-    assert "Ready to track</strong>: Done. At least one tracked link is ready to share on a billable setup." in setup_response.text
     assert "Ready to track</strong>: Done. At least one tracked link is ready to share on a billable setup." in account_response.text
-    assert "Waiting for first paid result</strong>: Current. This workspace is ready to track; first value lands after a tracked booking leads to a paid invoice." in setup_response.text
     assert "Waiting for first paid result</strong>: Current. This workspace is ready to track; first value lands after a tracked booking leads to a paid invoice." in account_response.text
     assert "Content funnel summary" in reports_response.text
     assert "waiting-first-paid" in reports_response.text
@@ -5548,6 +5571,114 @@ def test_setup_and_account_pages_reuse_waiting_for_first_paid_result_vocabulary(
     assert "This content is tracked, but no booking has landed yet." in reports_response.text
     assert "No invoice-backed paid result is counted for this content yet." in reports_response.text
     assert "Illustrative preview" not in reports_response.text
+
+
+def test_setup_home_bookings_without_paid_result_promotes_reports_review():
+    inserted = _insert_creator_user(
+        email=f"ui_bookings_waiting_paid_{uuid.uuid4().hex}@example.com",
+        name="Bookings Waiting Paid Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_bookings_waiting_paid",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Bookings Waiting Paid Call",
+        calendly_url="https://calendly.com/example/bookings-waiting-paid",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    tid = f"uibookingswaitingpaid{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/bookings-waiting-paid",
+        tid=tid,
+    )
+    _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=tid,
+        calendly_booking_uuid=f"BOOK_{uuid.uuid4().hex[:12]}",
+        booked_at=datetime.now(timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Bookings are landing; paid proof is next" in response.text
+    assert "Why do bookings show up before revenue?" in response.text
+    assert "1 tracked booking already recorded" in response.text
+    assert "The product is already capturing activity. Canonical paid truth just has not landed yet." in response.text
+    assert 'href="/app/reports"' in response.text
+    assert "Open Reports" in response.text
+
+
+def test_setup_home_first_paid_result_promotes_reports_review():
+    inserted = _insert_creator_user(
+        email=f"ui_first_paid_shell_{uuid.uuid4().hex}@example.com",
+        name="First Paid Shell Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_first_paid_shell",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="First Paid Shell Call",
+        calendly_url="https://calendly.com/example/first-paid-shell",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    tid = f"uifirstpaidshell{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/first-paid-shell",
+        tid=tid,
+    )
+    booking_id = _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=tid,
+        calendly_booking_uuid=f"BOOK_{uuid.uuid4().hex[:12]}",
+        booked_at=datetime.now(timezone.utc),
+    )
+    _insert_invoice(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=tid,
+        stripe_account_id="acct_ui_first_paid_shell",
+        stripe_invoice_id=f"in_{uuid.uuid4().hex[:12]}",
+        amount_cents=19500,
+        paid_at=datetime.now(timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "First paid result is already landing" in response.text
+    assert "What is working and where should I look next?" in response.text
+    assert "1 paid result already counted" in response.text
+    assert (
+        "Canonical paid invoices are already landing, so this workspace has moved beyond the first-value wait."
+        in response.text
+    )
+    assert 'href="/app/reports"' in response.text
+    assert "Open Reports" in response.text
 
 
 def test_account_page_disconnected_state_renders_reconnect_copy_without_destructive_forms():
@@ -6121,7 +6252,8 @@ def test_setup_home_connect_cta_redirects_to_stripe_and_callback_returns_to_app(
         ).mappings().one()
 
     assert app_response.status_code == 200
-    assert "Billing provider is connected" in app_response.text
+    assert "Connected, but not billable now" in app_response.text
+    assert "Add your first booking link" in app_response.text
     assert "acct_story38_browser" in app_response.text
     assert creator_row["billing_provider"] == "stripe"
     assert creator_row["billing_connect_status"] == "connected"

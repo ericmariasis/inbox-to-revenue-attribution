@@ -497,6 +497,7 @@ def creator_app_shell(
         _render_app_shell(
             current_user=current_user,
             workspace_state=workspace_state,
+            reports_summary=summary,
             status_value=status_value,
             paypal_available_to_creator=paypal_available_to_creator,
         )
@@ -2278,60 +2279,28 @@ def _render_app_shell(
     *,
     current_user: AuthUser,
     workspace_state: CreatorWorkspaceState,
+    reports_summary: CreatorReportsSummary,
     status_value: str | None,
     paypal_available_to_creator: bool,
 ) -> str:
     readiness = workspace_state.readiness
-    creator_name = html.escape(current_user.creator.name)
-    creator_email = html.escape(current_user.email)
     show_provider_choice = _creator_needs_initial_billing_provider_choice(
         creator=current_user.creator,
         readiness=readiness,
-    )
-    billing_status = _billing_setup_home_state(
-        readiness=readiness,
-        show_provider_choice=show_provider_choice,
-        paypal_available_to_creator=paypal_available_to_creator,
     )
     setup_progress = _build_setup_home_progress(
         workspace_state=workspace_state,
         show_provider_choice=show_provider_choice,
         paypal_available_to_creator=paypal_available_to_creator,
     )
-
-    billing_detail_lines = []
-    if current_user.creator.resolved_billing_account_id:
-        billing_detail_lines.append(
-            f"<p><strong>Billing provider</strong>: "
-            f"{html.escape(_billing_provider_label(current_user.creator.resolved_billing_provider))}</p>"
-        )
-        billing_detail_lines.append(
-            f"<p><strong>Billing account</strong>: "
-            f"{html.escape(current_user.creator.resolved_billing_account_id)}</p>"
-        )
-    if current_user.creator.resolved_billing_connected_at:
-        billing_detail_lines.append(
-            f"<p><strong>Connected on</strong>: "
-            f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
-        )
-    billing_action = ""
-    if show_provider_choice:
-        billing_action = _render_billing_provider_choice_actions(
-            paypal_available_to_creator=paypal_available_to_creator
-        )
-    elif billing_status["button_label"]:
-        billing_action = f"""
-        <form action="{html.escape(billing_status['button_href'])}" method="post">
-          <button type="submit">{html.escape(billing_status["button_label"])}</button>
-        </form>
-        """
+    tracked_booking_count = sum(row.booking_count for row in reports_summary.rows)
 
     body = f"""
     <header class="shell-header">
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Setup Home</h1>
-        <p class="lede">See what is done, what still needs attention, and what to finish next before new bookings can turn into attributed revenue.</p>
+        <p class="lede">See the current milestone, the next action that matters, and the proof that this workspace is or is not moving toward first value.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -2339,44 +2308,59 @@ def _render_app_shell(
     </header>
     {_render_shell_nav(current_path="/app")}
     {_render_setup_home_notice(status_value=status_value)}
+    {_render_setup_home_milestone_section(
+        current_user=current_user,
+        workspace_state=workspace_state,
+        setup_progress=setup_progress,
+        tracked_booking_count=tracked_booking_count,
+        show_provider_choice=show_provider_choice,
+        paypal_available_to_creator=paypal_available_to_creator,
+    )}
     <section class="grid">
-      <article class="card">
-        <p class="eyebrow">Account</p>
-        <h2 class="wrap-anywhere">{creator_name}</h2>
-        <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong></p>
-        <p>This workspace holds your billing connection, booking links, tracked content, and any blocked or unresolved items that still need review.</p>
-      </article>
-      <article class="card accent">
-        <p class="eyebrow">Billing status</p>
-        <div class="status-row">
-          <h2>{html.escape(billing_status['heading'])}</h2>
-          <span class="status-pill {html.escape(billing_status['badge_class'])}">{html.escape(billing_status['label'])}</span>
+      <article class="card stack">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Milestone path</p>
+            <h2>{html.escape(str(setup_progress['completed_count']))} of {html.escape(str(setup_progress['total_steps']))} setup milestones done</h2>
+          </div>
+          <p>{html.escape(str(setup_progress['progress_copy']))}</p>
         </div>
-        <p>{html.escape(billing_status['description'])}</p>
-        {"".join(billing_detail_lines)}
-        {_render_readiness_summary(readiness=readiness)}
-        {billing_action}
-      </article>
-    </section>
-    {_render_setup_progress_section(setup_progress=setup_progress)}
-    <section class="grid">
-      <article class="card">
-        <p class="eyebrow">Setup checklist</p>
-        <h2>What still needs to happen</h2>
         <ul class="checklist">
           {_render_setup_checklist_items(setup_progress['steps'])}
         </ul>
       </article>
-        <article class="card accent stack">
+      <article class="card accent stack">
         <div>
-          <p class="eyebrow">Next step</p>
-          <h2>{html.escape(setup_progress['next_action']['title'])}</h2>
+          <p class="eyebrow">Workspace proof</p>
+          <h2>What is already true in this workspace</h2>
         </div>
-        <p>{setup_progress['next_action']['copy_html']}</p>
-        {_render_setup_next_action_cta(
-            setup_progress['next_action'],
-            paypal_available_to_creator=paypal_available_to_creator,
-        )}
+        <div class="stat-grid">
+          <article class="stat-tile">
+            <p class="eyebrow">Booking links</p>
+            <p class="stat-value">{html.escape(str(setup_progress['booking_links_count']))}</p>
+            <p>Saved destinations in this workspace.</p>
+          </article>
+          <article class="stat-tile">
+            <p class="eyebrow">Billable links</p>
+            <p class="stat-value">{html.escape(str(setup_progress['billing_ready_count']))}</p>
+            <p>Links with amount and currency saved.</p>
+          </article>
+          <article class="stat-tile">
+            <p class="eyebrow">Tracked links</p>
+            <p class="stat-value">{html.escape(str(setup_progress['tracked_content_count']))}</p>
+            <p>Creator-visible links ready to share.</p>
+          </article>
+          <article class="stat-tile">
+            <p class="eyebrow">Tracked bookings</p>
+            <p class="stat-value">{html.escape(str(tracked_booking_count))}</p>
+            <p>Bookings already visible in the funnel.</p>
+          </article>
+          <article class="stat-tile">
+            <p class="eyebrow">Paid results</p>
+            <p class="stat-value">{html.escape(str(readiness.paid_invoice_count))}</p>
+            <p>Canonical paid invoices counted so far.</p>
+          </article>
+        </div>
         <p class="footnote">{_setup_attention_copy(setup_progress['attention_count'])}</p>
       </article>
     </section>
@@ -2950,6 +2934,405 @@ def _render_setup_next_action_cta(
         f'<p><a href="{html.escape(next_action["action_href"])}" class="inline-link">'
         f"{html.escape(next_action['action_label'])}</a></p>"
     )
+
+
+def _render_setup_home_milestone_section(
+    *,
+    current_user: AuthUser,
+    workspace_state: CreatorWorkspaceState,
+    setup_progress: dict[str, object],
+    tracked_booking_count: int,
+    show_provider_choice: bool,
+    paypal_available_to_creator: bool,
+) -> str:
+    readiness = workspace_state.readiness
+    milestone = _build_setup_home_milestone(
+        readiness=readiness,
+        attention_count=workspace_state.attention_count,
+        tracked_booking_count=tracked_booking_count,
+        show_provider_choice=show_provider_choice,
+        paypal_available_to_creator=paypal_available_to_creator,
+    )
+
+    billing_detail_lines = []
+    if current_user.creator.resolved_billing_account_id:
+        billing_detail_lines.append(
+            f"<p><strong>Billing provider</strong>: "
+            f"{html.escape(_billing_provider_label(current_user.creator.resolved_billing_provider))}</p>"
+        )
+        billing_detail_lines.append(
+            f"<p><strong>Billing account</strong>: "
+            f"{html.escape(current_user.creator.resolved_billing_account_id)}</p>"
+        )
+    if current_user.creator.resolved_billing_connected_at:
+        billing_detail_lines.append(
+            f"<p><strong>Connected on</strong>: "
+            f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
+        )
+
+    return f"""
+    <section class="hero milestone-hero stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Current milestone</p>
+          <h2>{html.escape(milestone['title'])}</h2>
+        </div>
+        <span class="status-pill {html.escape(milestone['badge_class'])}">{html.escape(milestone['badge_label'])}</span>
+      </div>
+      <div class="milestone-copy">
+        <p class="milestone-question"><strong>Main question</strong>: {html.escape(milestone['question'])}</p>
+        <p>{html.escape(milestone['body'])}</p>
+      </div>
+      <div class="milestone-grid">
+        <article class="topic-summary stack">
+          <div>
+            <p class="eyebrow">What to do next</p>
+            <h2>{html.escape(milestone['next_title'])}</h2>
+          </div>
+          <p>{html.escape(milestone['next_copy'])}</p>
+          {_render_setup_next_action_cta(
+              milestone['action'],
+              paypal_available_to_creator=paypal_available_to_creator,
+          )}
+        </article>
+        <article class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Proof this is real</p>
+            <h2>{html.escape(milestone['proof_title'])}</h2>
+          </div>
+          <p>{html.escape(milestone['proof_copy'])}</p>
+          <p class="milestone-note">{html.escape(str(setup_progress['progress_copy']))}</p>
+        </article>
+        <article class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Workspace</p>
+            <h2 class="wrap-anywhere">{html.escape(current_user.creator.name)}</h2>
+          </div>
+          <p>Signed in as <strong class="wrap-anywhere">{html.escape(current_user.email)}</strong></p>
+          {"".join(billing_detail_lines)}
+          <p><a href="/app/account" class="inline-link">Open account</a></p>
+        </article>
+      </div>
+    </section>
+    """
+
+
+def _build_setup_home_milestone(
+    *,
+    readiness: CreatorWorkspaceReadiness,
+    attention_count: int,
+    tracked_booking_count: int,
+    show_provider_choice: bool,
+    paypal_available_to_creator: bool,
+) -> dict[str, object]:
+    if readiness.paid_invoice_count > 0:
+        return {
+            "title": "First paid result is already landing",
+            "badge_label": "Paid",
+            "badge_class": "connected",
+            "question": "What is working and where should I look next?",
+            "body": (
+                "This workspace has moved past setup. Reports already includes canonical paid results, "
+                "and the next job is understanding what is working."
+            ),
+            "next_title": "Review paid results",
+            "next_copy": "Open reports to review the counted paid results already attached to this workspace.",
+            "proof_title": f"{_count_copy(readiness.paid_invoice_count, 'paid result')} already counted",
+            "proof_copy": (
+                "Canonical paid invoices are already landing, so this workspace has moved beyond the first-value wait."
+            ),
+            "action": {
+                "title": "Review paid results",
+                "copy_html": "Open reports to review the counted paid results already attached to this workspace.",
+                "action_label": "Open Reports",
+                "action_href": "/app/reports",
+                "action_method": "get",
+            },
+        }
+
+    if readiness.waiting_for_first_paid_result and tracked_booking_count > 0:
+        return {
+            "title": "Bookings are landing; paid proof is next",
+            "badge_label": "Current",
+            "badge_class": "pending",
+            "question": "Why do bookings show up before revenue?",
+            "body": (
+                "The tracked funnel is already capturing real bookings. Revenue stays empty until the matching invoice chain is "
+                "clear enough to count as paid truth."
+            ),
+            "next_title": "Review the content funnel",
+            "next_copy": "Open reports to review the bookings already recorded and see why paid results have not landed yet.",
+            "proof_title": f"{_count_copy(tracked_booking_count, 'tracked booking')} already recorded",
+            "proof_copy": "The product is already capturing activity. Canonical paid truth just has not landed yet.",
+            "action": {
+                "title": "Review the content funnel",
+                "copy_html": "Open reports to review the bookings already recorded and see why paid results have not landed yet.",
+                "action_label": "Open Reports",
+                "action_href": "/app/reports",
+                "action_method": "get",
+            },
+        }
+
+    if readiness.waiting_for_first_paid_result:
+        return {
+            "title": "Ready to track",
+            "badge_label": "Current",
+            "badge_class": "connected",
+            "question": "Am I set up correctly?",
+            "body": (
+                "This workspace is ready to track. The next real milestone is a tracked booking and then a matching paid invoice."
+            ),
+            "next_title": "Copy or share a tracked link",
+            "next_copy": "Open content to copy the tracked link that is ready to share from this billable setup.",
+            "proof_title": f"{_count_copy(readiness.tracked_content_count, 'tracked link')} ready to share",
+            "proof_copy": "Tracking is ready. No booking has landed yet, which is different from the setup being broken.",
+            "action": {
+                "title": "Copy or share a tracked link",
+                "copy_html": "Open content to copy the tracked link that is ready to share from this billable setup.",
+                "action_label": "Open content",
+                "action_href": "/app/content",
+                "action_method": "get",
+            },
+        }
+
+    if readiness.billable_now:
+        return {
+            "title": "Billable now",
+            "badge_label": "Current",
+            "badge_class": "connected",
+            "question": "How do I start tracking real activity?",
+            "body": (
+                "Billing is ready. The next milestone is creating tracked content so the links you share can carry attribution into bookings."
+            ),
+            "next_title": "Create tracked content",
+            "next_copy": "Open content and create the first tracked link for this billable setup.",
+            "proof_title": f"{_count_copy(readiness.billing_ready_count, 'saved link')} already billable now",
+            "proof_copy": "At least one saved booking link already has amount and currency, so invoicing can be trusted once activity arrives.",
+            "action": {
+                "title": "Create tracked content",
+                "copy_html": "Open content and create the first tracked link for this billable setup.",
+                "action_label": "Open content",
+                "action_href": "/app/content",
+                "action_method": "get",
+            },
+        }
+
+    if _billing_provider_is_connected_but_blocked(readiness):
+        return {
+            "title": "Billing setup needs review",
+            "badge_label": "Blocked",
+            "badge_class": "disconnected",
+            "question": "Is something wrong before this workspace becomes billable now?",
+            "body": _billing_provider_blocked_copy(provider_name=readiness.billing_provider),
+            "next_title": "Review billing connection",
+            "next_copy": "Open account to review the connected provider and the readiness issue before relying on new bookings.",
+            "proof_title": "A billing provider is connected",
+            "proof_copy": "The connection exists, but invoice readiness could not be verified cleanly for future billing.",
+            "action": {
+                "title": "Review billing connection",
+                "copy_html": "Open account to review the connected provider and the readiness issue before relying on new bookings.",
+                "action_label": "Open account",
+                "action_href": "/app/account",
+                "action_method": "get",
+            },
+        }
+
+    if _billing_provider_is_connected_but_not_ready(readiness):
+        return {
+            "title": "Connected, but not billable now",
+            "badge_label": "Current",
+            "badge_class": "pending",
+            "question": "What is keeping this workspace from becoming billable now?",
+            "body": _billing_provider_not_ready_copy(readiness),
+            "next_title": "Review billing readiness",
+            "next_copy": "Open account to review the connected provider and the setup work still needed before invoicing can start.",
+            "proof_title": "A billing provider is already connected",
+            "proof_copy": "The workspace is past the first connection step, but the provider still is not ready to create invoices.",
+            "action": {
+                "title": "Review billing readiness",
+                "copy_html": "Open account to review the connected provider and the setup work still needed before invoicing can start.",
+                "action_label": "Open account",
+                "action_href": "/app/account",
+                "action_method": "get",
+            },
+        }
+
+    if readiness.billing_connect_status == "disconnected":
+        provider_action = _billing_provider_connect_action(
+            provider_name=readiness.billing_provider,
+            reconnect=True,
+            paypal_available_to_creator=paypal_available_to_creator,
+        )
+        if provider_action is None:
+            return {
+                "title": "Reconnect billing setup",
+                "badge_label": "Blocked",
+                "badge_class": "disconnected",
+                "question": "How do I restore billing safely?",
+                "body": (
+                    f"This workspace was connected to {_billing_provider_label(readiness.billing_provider)} before, but it is disconnected now. "
+                    f"{_PAYPAL_UNAVAILABLE_CREATOR_COPY}"
+                ),
+                "next_title": "Review billing connection",
+                "next_copy": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
+                "proof_title": "Historical workspace data stays here",
+                "proof_copy": "Reconnection affects future billing readiness. Existing local history remains attached to this workspace.",
+                "action": {
+                    "title": "Review billing connection",
+                    "copy_html": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
+                    "action_label": "Open account",
+                    "action_href": "/app/account",
+                    "action_method": "get",
+                },
+            }
+        return {
+            "title": "Reconnect billing setup",
+            "badge_label": "Blocked",
+            "badge_class": "disconnected",
+            "question": "What do I need to restore before new bookings can move into invoicing?",
+            "body": (
+                f"This workspace was connected to {_billing_provider_label(readiness.billing_provider)} before, but it is disconnected now. "
+                "Reconnect it before you rely on new bookings."
+            ),
+            "next_title": provider_action["label"],
+            "next_copy": "Reconnect billing so the workspace can return to the billable-now path.",
+            "proof_title": "Historical workspace data stays here",
+            "proof_copy": "Reconnection affects future billing readiness. Existing local history remains attached to this workspace.",
+            "action": {
+                "title": provider_action["label"],
+                "copy_html": "Reconnect billing so the workspace can return to the billable-now path.",
+                "action_label": provider_action["label"],
+                "action_href": provider_action["href"],
+                "action_method": "post",
+            },
+        }
+
+    if readiness.billing_connected:
+        if readiness.booking_links_count == 0:
+            return {
+                "title": "Connected, but not billable now",
+                "badge_label": "Current",
+                "badge_class": "pending",
+                "question": "What does this workspace need before it can bill real activity?",
+                "body": "A billing provider is connected. The next milestone is saving a booking link and adding billing defaults.",
+                "next_title": "Add your first booking link",
+                "next_copy": "Open booking links and save the destination this creator actually uses.",
+                "proof_title": "The billing connection step is already done",
+                "proof_copy": "The next blocker is configuration, not connection.",
+                "action": {
+                    "title": "Add your first booking link",
+                    "copy_html": "Open booking links and save the destination this creator actually uses.",
+                    "action_label": "Open booking links",
+                    "action_href": "/app/booking-links",
+                    "action_method": "get",
+                },
+            }
+        if _has_limited_tracking_only_booking_links(readiness):
+            next_copy = "Open booking links and add a creator-visible tracked-content-ready link before relying on billable-now state."
+            body = (
+                "Saved booking sources can generate tracked redirects now, but billable-now readiness still waits for end-to-end provider support."
+            )
+        elif _has_inactive_creator_booking_links(readiness):
+            next_copy = "Open booking links and add a currently supported booking link for creator-tracked setup."
+            body = (
+                "Saved booking sources are not active for creator-tracked workflows right now, so this workspace is still not billable now."
+            )
+        else:
+            next_copy = "Open booking links and add amount and currency so at least one saved link becomes billable now."
+            body = "A billing provider is connected, but this workspace still needs amount and currency on at least one saved booking link."
+        return {
+            "title": "Connected, but not billable now",
+            "badge_label": "Current",
+            "badge_class": "pending",
+            "question": "What is keeping this workspace from becoming billable now?",
+            "body": body,
+            "next_title": "Become billable now",
+            "next_copy": next_copy,
+            "proof_title": f"{_count_copy(readiness.booking_links_count, 'booking link')} already saved",
+            "proof_copy": "The workspace has moved beyond connection. The remaining gap is making one saved link usable for creator billing.",
+            "action": {
+                "title": "Become billable now",
+                "copy_html": next_copy,
+                "action_label": "Open booking links",
+                "action_href": "/app/booking-links",
+                "action_method": "get",
+            },
+        }
+
+    if show_provider_choice:
+        next_copy = (
+            "Choose Stripe or PayPal to start billing setup. This release still keeps one active billing provider per workspace."
+            if paypal_available_to_creator
+            else "Choose Stripe to start billing setup. PayPal setup is not yet available for general creators."
+        )
+        proof_copy = (
+            "Nothing is broken yet. This workspace is simply still before the first billing milestone."
+            if attention_count == 0
+            else "Billing has not started yet, and blocked or unresolved items will stay separate if they appear later."
+        )
+        return {
+            "title": "Choose billing provider",
+            "badge_label": "Start here",
+            "badge_class": "pending",
+            "question": "What do I need to do first?",
+            "body": (
+                "A billing provider must be connected before this workspace can turn new bookings into invoices."
+            ),
+            "next_title": "Start billing setup",
+            "next_copy": next_copy,
+            "proof_title": "No provider is connected yet",
+            "proof_copy": proof_copy,
+            "action": {
+                "title": "Start billing setup",
+                "copy_html": next_copy,
+                "action_label": "",
+                "action_href": "",
+                "action_method": "provider-choice",
+            },
+        }
+
+    provider_action = _billing_provider_connect_action(
+        provider_name=readiness.billing_provider,
+        reconnect=False,
+        paypal_available_to_creator=paypal_available_to_creator,
+    )
+    if provider_action is None:
+        return {
+            "title": "Review billing setup",
+            "badge_label": "Start here",
+            "badge_class": "pending",
+            "question": "What do I need to do first?",
+            "body": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
+            "next_title": "Review billing options",
+            "next_copy": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
+            "proof_title": "No provider is connected yet",
+            "proof_copy": "This workspace is still before the first billing milestone.",
+            "action": {
+                "title": "Review billing options",
+                "copy_html": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
+                "action_label": "Open account",
+                "action_href": "/app/account",
+                "action_method": "get",
+            },
+        }
+    return {
+        "title": "Start billing setup",
+        "badge_label": "Start here",
+        "badge_class": "pending",
+        "question": "What do I need to do first?",
+        "body": "A billing provider is required before this workspace can turn new bookings into invoices.",
+        "next_title": provider_action["label"],
+        "next_copy": "Finish billing setup so the rest of the shell can move toward a billable workspace.",
+        "proof_title": "No provider is connected yet",
+        "proof_copy": "The workspace is still before the first billing milestone, not in a broken state.",
+        "action": {
+            "title": provider_action["label"],
+            "copy_html": "Finish billing setup so the rest of the shell can move toward a billable workspace.",
+            "action_label": provider_action["label"],
+            "action_href": provider_action["href"],
+            "action_method": "post",
+        },
+    }
 
 
 def _setup_attention_copy(attention_count: int) -> str:
@@ -8914,6 +9297,12 @@ def _page_layout(*, title: str, body: str) -> str:
         padding: 32px;
       }}
 
+      .milestone-hero {{
+        margin-bottom: 16px;
+        background:
+          linear-gradient(155deg, rgba(255, 249, 239, 0.98), rgba(243, 223, 212, 0.72));
+      }}
+
       .card {{
         padding: 24px;
       }}
@@ -8983,6 +9372,26 @@ def _page_layout(*, title: str, body: str) -> str:
         max-width: 40rem;
         margin: 16px 0 24px;
         font-size: 1.08rem;
+      }}
+
+      .milestone-copy {{
+        display: grid;
+        gap: 10px;
+        max-width: 52rem;
+      }}
+
+      .milestone-question {{
+        color: var(--ink);
+      }}
+
+      .milestone-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }}
+
+      .milestone-note {{
+        font-size: 0.95rem;
       }}
 
       .notice {{

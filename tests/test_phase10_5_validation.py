@@ -431,8 +431,10 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
 
     assert initial_home_response.status_code == 200
     assert "Setup Home" in initial_home_response.text
-    assert "0 of 4 setup steps done" in initial_home_response.text
-    assert "Finish billing setup" in initial_home_response.text
+    assert "Current milestone" in initial_home_response.text
+    assert "Choose billing provider" in initial_home_response.text
+    assert "0 of 4 setup milestones done" in initial_home_response.text
+    assert "Start billing setup" in initial_home_response.text
     assert "Blocked billing and unresolved payments will appear" in initial_home_response.text
 
     assert invalid_link_response.status_code == 303
@@ -459,9 +461,11 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert "Amount and currency set: USD 195.00" in booking_links_page_response.text
 
     assert booking_link_setup_response.status_code == 200
-    assert "2 of 4 setup steps done" in booking_link_setup_response.text
-    assert "Finish billing setup" in booking_link_setup_response.text
-    assert "Billing-ready links" in booking_link_setup_response.text
+    assert "Current milestone" in booking_link_setup_response.text
+    assert "Choose billing provider" in booking_link_setup_response.text
+    assert "2 of 4 setup milestones done" in booking_link_setup_response.text
+    assert "Start billing setup" in booking_link_setup_response.text
+    assert "Billable links" in booking_link_setup_response.text
 
     assert content_page_response.status_code == 200
     assert 'action="/app/content"' in content_page_response.text
@@ -475,8 +479,10 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert created_tid in content_success_page_response.text
 
     assert content_setup_response.status_code == 200
-    assert "3 of 4 setup steps done" in content_setup_response.text
-    assert "Finish billing setup" in content_setup_response.text
+    assert "Current milestone" in content_setup_response.text
+    assert "Choose billing provider" in content_setup_response.text
+    assert "3 of 4 setup milestones done" in content_setup_response.text
+    assert "Start billing setup" in content_setup_response.text
 
     assert connect_start_response.status_code == 303
     assert connect_start_response.headers["location"].startswith(
@@ -486,10 +492,12 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert connect_callback_response.headers["location"] == "/app"
 
     assert setup_complete_response.status_code == 200
-    assert "4 of 4 setup steps done" in setup_complete_response.text
-    assert "This workspace is ready to track and waiting for the first paid result." in setup_complete_response.text
-    assert "Ready to track and waiting for first paid result" in setup_complete_response.text
-    assert "Waiting for first paid result" in setup_complete_response.text
+    assert "Current milestone" in setup_complete_response.text
+    assert "Ready to track" in setup_complete_response.text
+    assert "4 of 4 setup milestones done" in setup_complete_response.text
+    assert "This workspace is ready to track. The next real milestone is a tracked booking and then a matching paid invoice." in setup_complete_response.text
+    assert "Copy or share a tracked link" in setup_complete_response.text
+    assert "1 tracked link ready to share" in setup_complete_response.text
     assert "Billing account" in setup_complete_response.text
     assert provider.account_id in setup_complete_response.text
 
@@ -503,8 +511,10 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert unmatched_paid_response.json() == {"status": "ok"}
 
     assert trust_home_response.status_code == 200
-    assert "4 of 4 setup steps done" in trust_home_response.text
-    assert "Review attention items" in trust_home_response.text
+    assert "Current milestone" in trust_home_response.text
+    assert "First paid result is already landing" in trust_home_response.text
+    assert "4 of 4 setup milestones done" in trust_home_response.text
+    assert "Review paid results" in trust_home_response.text
     assert "Review 2 attention items" in trust_home_response.text
     assert 'href="/app/attention"' in trust_home_response.text
 

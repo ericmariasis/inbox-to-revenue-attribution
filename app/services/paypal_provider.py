@@ -2,6 +2,7 @@ import base64
 import json
 from datetime import date, datetime, time, timezone
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -23,6 +24,10 @@ from app.services.billing_provider import (
 )
 
 DEFAULT_PAYPAL_PARTNER_REFERRALS_RETURN_URL_DESCRIPTION = "Creator Compass PayPal onboarding"
+PAYPAL_SELLER_ONBOARDING_FEATURES = (
+    "INVOICE_READ_WRITE",
+    "ACCESS_MERCHANT_INFORMATION",
+)
 
 
 class PayPalProviderError(BillingProviderError):
@@ -33,6 +38,7 @@ class PayPalProviderError(BillingProviderError):
         operation: str,
         http_status: int | None = None,
         error_code: str | None = None,
+        debug_id: str | None = None,
     ):
         super().__init__(
             message,
@@ -41,6 +47,7 @@ class PayPalProviderError(BillingProviderError):
             http_status=http_status,
             error_code=error_code,
         )
+        self.debug_id = debug_id
 
 
 @dataclass(frozen=True)
@@ -77,10 +84,60 @@ class PayPalInvoicePaidSnapshot:
 
 
 @dataclass(frozen=True)
+class PayPalApiResponse:
+    payload: dict[str, Any]
+    http_status: int | None = None
+    debug_id: str | None = None
+
+
+@dataclass(frozen=True)
 class PayPalApiRequestError(Exception):
     operation: str
     http_status: int | None = None
     error_code: str | None = None
+    debug_id: str | None = None
+    payload: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class PayPalApiTraceRecord:
+    recorded_at: str
+    operation: str
+    method: str
+    url: str
+    http_status: int | None
+    debug_id: str | None
+    error_code: str | None
+    summary: dict[str, Any]
+
+
+class FilePayPalApiTraceRecorder:
+    def __init__(self, *, path: str):
+        self._path = Path(path)
+
+    @property
+    def path(self) -> str:
+        return str(self._path)
+
+    def __call__(self, record: PayPalApiTraceRecord) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with self._path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "recorded_at": record.recorded_at,
+                        "operation": record.operation,
+                        "method": record.method,
+                        "url": record.url,
+                        "http_status": record.http_status,
+                        "debug_id": record.debug_id,
+                        "error_code": record.error_code,
+                        "summary": record.summary,
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
 
 
 class PayPalProvider(Protocol):
@@ -154,7 +211,7 @@ class UrllibPayPalHttpTransport:
         headers: Mapping[str, str] | None = None,
         json_body: Mapping[str, Any] | None = None,
         form_body: Mapping[str, str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> PayPalApiResponse:
         resolved_method = method.upper()
         request_headers = dict(headers or {})
         request_data: bytes | None = None
@@ -178,13 +235,19 @@ class UrllibPayPalHttpTransport:
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:
                 payload = response.read().decode("utf-8")
+                http_status = response.status
+                debug_id = _paypal_debug_id_from_headers(response.headers)
         except HTTPError as exc:
             raise _paypal_api_request_error_from_http_error(exc, operation=resolved_method) from exc
         except URLError as exc:
             raise PayPalApiRequestError(operation=resolved_method) from exc
 
         if not payload:
-            return {}
+            return PayPalApiResponse(
+                payload={},
+                http_status=http_status,
+                debug_id=debug_id,
+            )
 
         try:
             parsed_payload = json.loads(payload)
@@ -194,7 +257,11 @@ class UrllibPayPalHttpTransport:
         if not isinstance(parsed_payload, dict):
             raise PayPalApiRequestError(operation=resolved_method)
 
-        return parsed_payload
+        return PayPalApiResponse(
+            payload=parsed_payload,
+            http_status=http_status,
+            debug_id=debug_id,
+        )
 
 
 class PayPalSellerOnboardingProvider:
@@ -211,6 +278,7 @@ class PayPalSellerOnboardingProvider:
         partner_attribution_id: str = "",
         transport: UrllibPayPalHttpTransport | None = None,
         booking_email_lookup: Callable[[str | None, str], str | None] | None = None,
+        request_trace_recorder: Callable[[PayPalApiTraceRecord], None] | None = None,
     ):
         self._environment = environment.strip().lower() or "sandbox"
         self._client_id = client_id.strip()
@@ -220,6 +288,7 @@ class PayPalSellerOnboardingProvider:
         self._partner_attribution_id = partner_attribution_id.strip()
         self._transport = transport or UrllibPayPalHttpTransport()
         self._booking_email_lookup = booking_email_lookup or _lookup_booking_email
+        self._request_trace_recorder = request_trace_recorder
 
     def create_connect_onboarding(
         self,
@@ -238,10 +307,7 @@ class PayPalSellerOnboardingProvider:
                             "integration_method": "PAYPAL",
                             "integration_type": "THIRD_PARTY",
                             "third_party_details": {
-                                "features": [
-                                    "PAYMENT",
-                                    "REFUND",
-                                ]
+                                "features": list(PAYPAL_SELLER_ONBOARDING_FEATURES)
                             },
                         }
                     },
@@ -631,24 +697,46 @@ class PayPalSellerOnboardingProvider:
                 f"paypal {self._environment} credentials are not configured",
                 operation="paypal_configuration",
             )
+        oauth_url = f"{self._api_base_url}/v1/oauth2/token"
 
         try:
-            response = self._transport.request(
-                method="POST",
-                url=f"{self._api_base_url}/v1/oauth2/token",
-                headers={
-                    "Authorization": f"Basic {_basic_auth_token(self._client_id, self._client_secret)}",
-                },
-                form_body={"grant_type": "client_credentials"},
+            response = _coerce_paypal_api_response(
+                self._transport.request(
+                    method="POST",
+                    url=oauth_url,
+                    headers={
+                        "Authorization": f"Basic {_basic_auth_token(self._client_id, self._client_secret)}",
+                    },
+                    form_body={"grant_type": "client_credentials"},
+                )
             )
         except PayPalApiRequestError as exc:
+            self._record_api_trace(
+                operation="paypal_oauth_token",
+                method="POST",
+                url=oauth_url,
+                payload=exc.payload or {},
+                http_status=exc.http_status,
+                debug_id=exc.debug_id,
+                error_code=exc.error_code,
+            )
             raise PayPalProviderError(
                 "paypal oauth token request failed",
                 operation="paypal_oauth_token",
                 http_status=exc.http_status,
                 error_code=exc.error_code,
+                debug_id=exc.debug_id,
             ) from exc
-        access_token = response.get("access_token")
+        self._record_api_trace(
+            operation="paypal_oauth_token",
+            method="POST",
+            url=oauth_url,
+            payload=response.payload,
+            http_status=response.http_status,
+            debug_id=response.debug_id,
+            error_code=None,
+        )
+        access_token = response.payload.get("access_token")
         if not isinstance(access_token, str) or not access_token:
             raise PayPalProviderError(
                 "paypal oauth token request failed",
@@ -675,19 +763,67 @@ class PayPalSellerOnboardingProvider:
             request_headers.update(headers)
 
         try:
-            return self._transport.request(
-                method=method,
-                url=url,
-                headers=request_headers,
-                json_body=json_body,
+            response = _coerce_paypal_api_response(
+                self._transport.request(
+                    method=method,
+                    url=url,
+                    headers=request_headers,
+                    json_body=json_body,
+                )
             )
         except PayPalApiRequestError as exc:
+            self._record_api_trace(
+                operation=operation,
+                method=method,
+                url=url,
+                payload=exc.payload or {},
+                http_status=exc.http_status,
+                debug_id=exc.debug_id,
+                error_code=exc.error_code,
+            )
             raise PayPalProviderError(
                 _operation_message(operation),
                 operation=operation,
                 http_status=exc.http_status,
                 error_code=exc.error_code,
+                debug_id=exc.debug_id,
             ) from exc
+        self._record_api_trace(
+            operation=operation,
+            method=method,
+            url=url,
+            payload=response.payload,
+            http_status=response.http_status,
+            debug_id=response.debug_id,
+            error_code=None,
+        )
+        return response.payload
+
+    def _record_api_trace(
+        self,
+        *,
+        operation: str,
+        method: str,
+        url: str,
+        payload: Mapping[str, Any],
+        http_status: int | None,
+        debug_id: str | None,
+        error_code: str | None,
+    ) -> None:
+        if self._request_trace_recorder is None:
+            return
+        self._request_trace_recorder(
+            PayPalApiTraceRecord(
+                recorded_at=datetime.now(timezone.utc).isoformat(),
+                operation=operation,
+                method=method.upper(),
+                url=url,
+                http_status=http_status,
+                debug_id=debug_id,
+                error_code=error_code,
+                summary=_paypal_trace_summary(operation=operation, payload=payload),
+            )
+        )
 
     def _get_seller_status_by_merchant_id(
         self,
@@ -748,7 +884,101 @@ def build_default_paypal_provider(*, settings: Settings | None = None) -> PayPal
         partner_id=resolved_settings.selected_paypal_partner_id(),
         api_base_url=resolved_settings.selected_paypal_api_base_url(),
         partner_attribution_id=resolved_settings.paypal_partner_attribution_id,
+        request_trace_recorder=_build_paypal_api_trace_recorder(settings=resolved_settings),
     )
+
+
+def _build_paypal_api_trace_recorder(
+    *,
+    settings: Settings,
+) -> Callable[[PayPalApiTraceRecord], None] | None:
+    trace_path = settings.paypal_api_trace_path.strip()
+    if not trace_path:
+        return None
+    return FilePayPalApiTraceRecorder(path=trace_path)
+
+
+def _coerce_paypal_api_response(response: Any) -> PayPalApiResponse:
+    if isinstance(response, PayPalApiResponse):
+        return response
+    if isinstance(response, dict):
+        return PayPalApiResponse(payload=response)
+    raise PayPalApiRequestError(operation="unsupported_transport_response")
+
+
+def _paypal_debug_id_from_headers(headers: Mapping[str, Any] | None) -> str | None:
+    if headers is None:
+        return None
+    for header_name in ("PayPal-Debug-Id", "paypal-debug-id", "Paypal-Debug-Id"):
+        header_value = headers.get(header_name)
+        if isinstance(header_value, str) and header_value:
+            return header_value
+    return None
+
+
+def _paypal_trace_summary(
+    *,
+    operation: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {"keys": sorted(payload.keys())}
+    error_name = _optional_string(payload, field_name="name")
+    error_message = _optional_string(payload, field_name="message")
+    error_details = _paypal_error_details_summary(payload)
+    if error_name is not None:
+        summary["name"] = error_name
+    if error_message is not None:
+        summary["message"] = error_message
+    if error_details:
+        summary["details"] = error_details
+
+    if operation == "paypal_partner_referral_create":
+        summary["link_rels"] = _paypal_link_rels(payload)
+        summary["action_url"] = _optional_link_href(payload, rel="action_url")
+        return summary
+
+    if operation == "paypal_oauth_token":
+        summary["token_type"] = _optional_string(payload, field_name="token_type")
+        summary["scope"] = _optional_string(payload, field_name="scope")
+        summary["expires_in"] = _optional_int(payload, field_name="expires_in")
+        return summary
+
+    if operation in {"paypal_merchant_lookup_by_tracking_id", "paypal_merchant_status"}:
+        summary["merchant_id"] = _optional_string(payload, field_name="merchant_id")
+        summary["tracking_id"] = _optional_string(payload, field_name="tracking_id")
+        summary["payments_receivable"] = _optional_bool(payload, field_name="payments_receivable")
+        summary["primary_email_confirmed"] = _optional_bool(
+            payload,
+            field_name="primary_email_confirmed",
+        )
+        return summary
+
+    if operation == "paypal_webhook_verify":
+        verification_status = _optional_string(payload, field_name="verification_status")
+        if verification_status is not None:
+            summary["verification_status"] = verification_status
+        return summary
+
+    if operation in {
+        "paypal_invoice_create",
+        "paypal_invoice_send",
+        "paypal_invoice_get",
+        "paypal_invoice_cancel",
+    }:
+        payment_transaction = _first_paypal_payment_transaction(payload)
+        summary["invoice_id"] = _trace_invoice_id(payload)
+        summary["status"] = _optional_string(payload, field_name="status")
+        summary["link_rels"] = _paypal_link_rels(payload)
+        summary["payment_id"] = _optional_string(payment_transaction, field_name="payment_id")
+        summary["payment_type"] = _optional_string(payment_transaction, field_name="type")
+        summary["payment_method"] = _optional_string(payment_transaction, field_name="method")
+        summary["transaction_status"] = _optional_string(
+            payment_transaction,
+            field_name="transaction_status",
+        )
+        return summary
+
+    return summary
 
 
 def _basic_auth_token(client_id: str, client_secret: str) -> str:
@@ -776,6 +1006,7 @@ def _paypal_api_request_error_from_http_error(
     operation: str,
 ) -> PayPalApiRequestError:
     error_code: str | None = None
+    debug_id = _paypal_debug_id_from_headers(exc.headers)
     try:
         raw_body = exc.read().decode("utf-8")
         parsed_body = json.loads(raw_body)
@@ -791,6 +1022,8 @@ def _paypal_api_request_error_from_http_error(
         operation=operation,
         http_status=exc.code,
         error_code=error_code,
+        debug_id=debug_id,
+        payload=parsed_body if isinstance(parsed_body, dict) else None,
     )
 
 
@@ -829,7 +1062,7 @@ def _required_invoice_id(
 
     href = payload.get("href")
     if isinstance(href, str) and href:
-        return href.rstrip("/").rsplit("/", 1)[-1]
+        return _invoice_id_from_href(href)
 
     links = payload.get("links")
     if isinstance(links, list):
@@ -840,7 +1073,7 @@ def _required_invoice_id(
                 continue
             link_href = link.get("href")
             if isinstance(link_href, str) and link_href:
-                return link_href.rstrip("/").rsplit("/", 1)[-1]
+                return _invoice_id_from_href(link_href)
 
     raise PayPalProviderError(message, operation=operation)
 
@@ -898,6 +1131,99 @@ def _optional_string(payload: Mapping[str, Any] | None, *, field_name: str) -> s
     if isinstance(value, str) and value:
         return value
     return None
+
+
+def _optional_bool(payload: Mapping[str, Any] | None, *, field_name: str) -> bool | None:
+    if payload is None:
+        return None
+    value = payload.get(field_name)
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _optional_int(payload: Mapping[str, Any] | None, *, field_name: str) -> int | None:
+    if payload is None:
+        return None
+    value = payload.get(field_name)
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _optional_link_href(payload: Mapping[str, Any], *, rel: str) -> str | None:
+    links = payload.get("links")
+    if not isinstance(links, list):
+        return None
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        if link.get("rel") != rel:
+            continue
+        href = link.get("href")
+        if isinstance(href, str) and href:
+            return href
+    return None
+
+
+def _paypal_link_rels(payload: Mapping[str, Any]) -> list[str]:
+    links = payload.get("links")
+    if not isinstance(links, list):
+        return []
+    rels: list[str] = []
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        rel = link.get("rel")
+        if isinstance(rel, str) and rel:
+            rels.append(rel)
+    return rels
+
+
+def _paypal_error_details_summary(payload: Mapping[str, Any]) -> list[dict[str, str | None]]:
+    raw_details = payload.get("details")
+    if not isinstance(raw_details, list):
+        return []
+    details: list[dict[str, str | None]] = []
+    for entry in raw_details:
+        if not isinstance(entry, dict):
+            continue
+        details.append(
+            {
+                "issue": _optional_string(entry, field_name="issue"),
+                "field": _optional_string(entry, field_name="field"),
+                "location": _optional_string(entry, field_name="location"),
+                "description": _optional_string(entry, field_name="description"),
+            }
+        )
+    return details
+
+
+def _trace_invoice_id(payload: Mapping[str, Any]) -> str | None:
+    invoice_id = _optional_string(payload, field_name="id")
+    if invoice_id is not None:
+        return invoice_id
+
+    href = _optional_string(payload, field_name="href")
+    if href is not None:
+        return _invoice_id_from_href(href)
+
+    links = payload.get("links")
+    if not isinstance(links, list):
+        return None
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        if link.get("rel") not in {"self", "payer-view"}:
+            continue
+        link_href = link.get("href")
+        if isinstance(link_href, str) and link_href:
+            return _invoice_id_from_href(link_href)
+    return None
+
+
+def _invoice_id_from_href(href: str) -> str:
+    return href.rstrip("/").rsplit("/", 1)[-1].lstrip("#")
 
 
 def _first_paypal_payment_transaction(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:

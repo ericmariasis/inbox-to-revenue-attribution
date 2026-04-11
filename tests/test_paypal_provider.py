@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -10,8 +11,12 @@ from app.services.billing_provider import (
     BillingAccountReadiness,
 )
 from app.services.paypal_provider import (
+    FilePayPalApiTraceRecorder,
+    PayPalApiResponse,
     PayPalApiRequestError,
+    PayPalApiTraceRecord,
     PayPalInvoicePaidSnapshot,
+    PAYPAL_SELLER_ONBOARDING_FEATURES,
     PayPalProviderError,
     PayPalSellerOnboardingProvider,
     PayPalSandboxSellerOnboardingProvider,
@@ -32,11 +37,13 @@ class _StubPayPalTransport:
     def __init__(
         self,
         *,
-        responses: list[dict[str, object]] | None = None,
+        responses: list[object] | None = None,
         errors: list[PayPalApiRequestError] | None = None,
+        outcomes: list[object] | None = None,
     ):
         self._responses = list(responses or [])
         self._errors = list(errors or [])
+        self._outcomes = list(outcomes or [])
         self.calls: list[_TransportCall] = []
 
     def request(
@@ -47,7 +54,7 @@ class _StubPayPalTransport:
         headers: dict[str, str] | None = None,
         json_body: dict[str, object] | None = None,
         form_body: dict[str, str] | None = None,
-    ) -> dict[str, object]:
+    ) -> object:
         self.calls.append(
             _TransportCall(
                 method=method,
@@ -57,6 +64,11 @@ class _StubPayPalTransport:
                 form_body=form_body,
             )
         )
+        if self._outcomes:
+            next_outcome = self._outcomes.pop(0)
+            if isinstance(next_outcome, Exception):
+                raise next_outcome
+            return next_outcome
         if self._errors:
             raise self._errors.pop(0)
         if not self._responses:
@@ -68,6 +80,7 @@ def _provider(
     *,
     transport: _StubPayPalTransport,
     booking_email: str | None = None,
+    request_trace_recorder=None,
 ) -> PayPalSandboxSellerOnboardingProvider:
     return PayPalSandboxSellerOnboardingProvider(
         client_id="client_story_pp7",
@@ -81,7 +94,45 @@ def _provider(
             if booking_provider in {None, "calendly"} and booking_uuid == "BOOK_story_pp7"
             else None
         ),
+        request_trace_recorder=request_trace_recorder,
     )
+
+
+def test_file_paypal_api_trace_recorder_appends_json_lines(tmp_path):
+    trace_path = tmp_path / "paypal-api-trace.jsonl"
+    recorder = FilePayPalApiTraceRecorder(path=str(trace_path))
+
+    recorder(
+        PayPalApiTraceRecord(
+            recorded_at="2026-04-08T12:00:00+00:00",
+            operation="paypal_invoice_get",
+            method="GET",
+            url="https://api-m.sandbox.paypal.com/v2/invoicing/invoices/INV2-story-pp7",
+            http_status=200,
+            debug_id="debug-story-pp7",
+            error_code=None,
+            summary={"invoice_id": "INV2-story-pp7", "status": "PAID"},
+        )
+    )
+
+    written_records = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert written_records == [
+        {
+            "debug_id": "debug-story-pp7",
+            "error_code": None,
+            "http_status": 200,
+            "method": "GET",
+            "operation": "paypal_invoice_get",
+            "recorded_at": "2026-04-08T12:00:00+00:00",
+            "summary": {"invoice_id": "INV2-story-pp7", "status": "PAID"},
+            "url": "https://api-m.sandbox.paypal.com/v2/invoicing/invoices/INV2-story-pp7",
+        }
+    ]
 
 
 def test_build_default_paypal_provider_uses_selected_live_settings():
@@ -108,6 +159,236 @@ def test_build_default_paypal_provider_uses_selected_live_settings():
     assert provider._client_secret == "live-secret"
     assert provider._partner_id == "live-partner"
     assert provider._api_base_url == "https://api-m.paypal.com"
+
+
+def test_create_connect_onboarding_requests_paypal_invoicing_features():
+    transport = _StubPayPalTransport(
+        responses=[
+            {"access_token": "oauth_story_pp7"},
+            {
+                "links": [
+                    {"rel": "self", "href": "https://api-m.sandbox.paypal.com/v2/customer/partner-referrals/REF-story-pp7"},
+                    {"rel": "action_url", "href": "https://www.sandbox.paypal.com/bizsignup/partner/entry?referralToken=story-pp7"},
+                ]
+            },
+        ]
+    )
+    provider = _provider(transport=transport)
+
+    result = provider.create_connect_onboarding(
+        tracking_id="tracking_story_pp7",
+        return_url="https://example.ngrok-free.dev/paypal/connect/callback",
+    )
+
+    assert result.onboarding_url == "https://www.sandbox.paypal.com/bizsignup/partner/entry?referralToken=story-pp7"
+    assert result.tracking_id == "tracking_story_pp7"
+    assert transport.calls[1].method == "POST"
+    assert transport.calls[1].url == "https://api-m.sandbox.paypal.com/v2/customer/partner-referrals"
+    assert transport.calls[1].json_body is not None
+    third_party_details = transport.calls[1].json_body["operations"][0]["api_integration_preference"]["rest_api_integration"]["third_party_details"]
+    assert third_party_details["features"] == list(PAYPAL_SELLER_ONBOARDING_FEATURES)
+    assert transport.calls[1].json_body["products"] == ["EXPRESS_CHECKOUT"]
+    assert transport.calls[1].json_body["partner_config_override"]["return_url"] == "https://example.ngrok-free.dev/paypal/connect/callback"
+
+
+def test_create_billing_invoice_records_sanitized_paypal_api_trace():
+    transport = _StubPayPalTransport(
+        responses=[
+            PayPalApiResponse(
+                payload={
+                    "access_token": "oauth_story_pp7",
+                    "token_type": "Bearer",
+                    "scope": "openid",
+                    "expires_in": 32400,
+                },
+                http_status=200,
+                debug_id="debug-oauth-story-pp7",
+            ),
+            PayPalApiResponse(
+                payload={
+                    "href": "https://api-m.sandbox.paypal.com/v2/invoicing/invoices/INV2-story-pp7"
+                },
+                http_status=201,
+                debug_id="debug-create-story-pp7",
+            ),
+            PayPalApiResponse(
+                payload={
+                    "href": "https://www.sandbox.paypal.com/invoice/p/#INV2-story-pp7"
+                },
+                http_status=202,
+                debug_id="debug-send-story-pp7",
+            ),
+            PayPalApiResponse(
+                payload={
+                    "id": "INV2-story-pp7",
+                    "status": "UNPAID",
+                },
+                http_status=200,
+                debug_id="debug-get-story-pp7",
+            ),
+        ]
+    )
+    trace_records: list[PayPalApiTraceRecord] = []
+    provider = _provider(
+        transport=transport,
+        booking_email="booked@example.com",
+        request_trace_recorder=trace_records.append,
+    )
+
+    result = provider.create_billing_invoice(
+        provider_account_id="merchant_story_pp7",
+        amount_cents=19500,
+        currency="USD",
+        metadata={
+            "creator_id": "creator_story_pp7",
+            "booking_provider": "calendly",
+            "provider_booking_id": "BOOK_story_pp7",
+            "booking_uuid": "BOOK_story_pp7",
+            "tid": "story_pp7_tid",
+        },
+        idempotency_key="billing:create:calendly:BOOK_story_pp7",
+    )
+
+    assert result.provider_invoice_id == "INV2-story-pp7"
+    assert [record.operation for record in trace_records] == [
+        "paypal_oauth_token",
+        "paypal_invoice_create",
+        "paypal_invoice_send",
+        "paypal_invoice_get",
+    ]
+    assert trace_records[0].debug_id == "debug-oauth-story-pp7"
+    assert trace_records[0].summary == {
+        "expires_in": 32400,
+        "keys": ["access_token", "expires_in", "scope", "token_type"],
+        "scope": "openid",
+        "token_type": "Bearer",
+    }
+    assert trace_records[1].summary["invoice_id"] == "INV2-story-pp7"
+    assert trace_records[1].debug_id == "debug-create-story-pp7"
+    assert trace_records[2].summary["invoice_id"] == "INV2-story-pp7"
+    assert trace_records[2].debug_id == "debug-send-story-pp7"
+    assert trace_records[3].summary["invoice_id"] == "INV2-story-pp7"
+    assert trace_records[3].summary["status"] == "UNPAID"
+    assert trace_records[3].debug_id == "debug-get-story-pp7"
+
+
+def test_verify_webhook_event_records_paypal_debug_id_on_error_before_raising():
+    transport = _StubPayPalTransport(
+        outcomes=[
+            PayPalApiResponse(
+                payload={"access_token": "oauth_story_pp8"},
+                http_status=200,
+                debug_id="debug-oauth-story-pp8",
+            ),
+            PayPalApiRequestError(
+                operation="POST",
+                http_status=422,
+                error_code="INVALID_REQUEST",
+                debug_id="debug-webhook-story-pp8",
+            ),
+        ]
+    )
+    trace_records: list[PayPalApiTraceRecord] = []
+    provider = _provider(
+        transport=transport,
+        request_trace_recorder=trace_records.append,
+    )
+
+    with pytest.raises(PayPalProviderError) as exc_info:
+        provider.verify_webhook_event(
+            webhook_id="WH_story_pp8",
+            auth_algo="SHA256withRSA",
+            cert_url="https://api.sandbox.paypal.com/v1/notifications/certs/CERT-story-pp8",
+            transmission_id="transmission_story_pp8",
+            transmission_sig="sig_story_pp8",
+            transmission_time="2026-03-20T04:52:23Z",
+            webhook_event={
+                "id": "WH-PP8-STORY",
+                "event_type": "INVOICING.INVOICE.PAID",
+            },
+        )
+
+    assert str(exc_info.value) == "paypal webhook verification failed"
+    assert exc_info.value.operation == "paypal_webhook_verify"
+    assert exc_info.value.http_status == 422
+    assert exc_info.value.error_code == "INVALID_REQUEST"
+    assert exc_info.value.debug_id == "debug-webhook-story-pp8"
+    assert [record.operation for record in trace_records] == [
+        "paypal_oauth_token",
+        "paypal_webhook_verify",
+    ]
+    assert trace_records[1].debug_id == "debug-webhook-story-pp8"
+    assert trace_records[1].http_status == 422
+    assert trace_records[1].error_code == "INVALID_REQUEST"
+    assert trace_records[1].summary == {"keys": []}
+
+
+def test_create_connect_onboarding_records_partner_referral_error_payload_in_trace():
+    transport = _StubPayPalTransport(
+        outcomes=[
+            PayPalApiResponse(
+                payload={"access_token": "oauth_story_pp14c"},
+                http_status=200,
+                debug_id="debug-oauth-story-pp14c",
+            ),
+            PayPalApiRequestError(
+                operation="POST",
+                http_status=422,
+                error_code="UNPROCESSABLE_ENTITY",
+                debug_id="debug-referral-story-pp14c",
+                payload={
+                    "name": "UNPROCESSABLE_ENTITY",
+                    "message": "Request is not well-formed, syntactically incorrect, or violates schema.",
+                    "details": [
+                        {
+                            "issue": "INVALID_PARAMETER_VALUE",
+                            "field": "/operations/0/api_integration_preference/rest_api_integration/third_party_details/features/0",
+                            "description": "Value is not supported for this partner configuration.",
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+    trace_records: list[PayPalApiTraceRecord] = []
+    provider = _provider(
+        transport=transport,
+        request_trace_recorder=trace_records.append,
+    )
+
+    with pytest.raises(PayPalProviderError) as exc_info:
+        provider.create_connect_onboarding(
+            tracking_id="tracking_story_pp14c",
+            return_url="https://example.ngrok-free.dev/paypal/connect/callback",
+        )
+
+    assert str(exc_info.value) == "paypal onboarding start failed"
+    assert exc_info.value.operation == "paypal_partner_referral_create"
+    assert exc_info.value.http_status == 422
+    assert exc_info.value.error_code == "UNPROCESSABLE_ENTITY"
+    assert exc_info.value.debug_id == "debug-referral-story-pp14c"
+    assert [record.operation for record in trace_records] == [
+        "paypal_oauth_token",
+        "paypal_partner_referral_create",
+    ]
+    assert trace_records[1].debug_id == "debug-referral-story-pp14c"
+    assert trace_records[1].http_status == 422
+    assert trace_records[1].error_code == "UNPROCESSABLE_ENTITY"
+    assert trace_records[1].summary == {
+        "action_url": None,
+        "details": [
+            {
+                "description": "Value is not supported for this partner configuration.",
+                "field": "/operations/0/api_integration_preference/rest_api_integration/third_party_details/features/0",
+                "issue": "INVALID_PARAMETER_VALUE",
+                "location": None,
+            }
+        ],
+        "keys": ["details", "message", "name"],
+        "link_rels": [],
+        "message": "Request is not well-formed, syntactically incorrect, or violates schema.",
+        "name": "UNPROCESSABLE_ENTITY",
+    }
 
 
 def test_get_billing_account_readiness_maps_paypal_seller_status_to_can_create_invoices():

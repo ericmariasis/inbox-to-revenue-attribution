@@ -219,6 +219,7 @@ class Settings(BaseSettings):
     paypal_connect_redirect_uri: str = DEFAULT_PAYPAL_CONNECT_REDIRECT_URI
     paypal_sandbox_webhook_id: str = ""
     paypal_live_webhook_id: str = ""
+    paypal_api_trace_path: str = ""
     paypal_creator_access: str = ""
     paypal_live_creator_access: str = ""
     stripe_webhook_tolerance_seconds: int = 300

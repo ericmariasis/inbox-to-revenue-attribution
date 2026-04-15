@@ -25,8 +25,8 @@ from app.services.billing_provider import (
 
 DEFAULT_PAYPAL_PARTNER_REFERRALS_RETURN_URL_DESCRIPTION = "Creator Compass PayPal onboarding"
 PAYPAL_SELLER_ONBOARDING_FEATURES = (
-    "INVOICE_READ_WRITE",
-    "ACCESS_MERCHANT_INFORMATION",
+    "PAYMENT",
+    "REFUND",
 )
 
 

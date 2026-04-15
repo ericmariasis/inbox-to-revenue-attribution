@@ -161,7 +161,7 @@ def test_build_default_paypal_provider_uses_selected_live_settings():
     assert provider._api_base_url == "https://api-m.paypal.com"
 
 
-def test_create_connect_onboarding_requests_paypal_invoicing_features():
+def test_create_connect_onboarding_requests_paypal_partner_features():
     transport = _StubPayPalTransport(
         responses=[
             {"access_token": "oauth_story_pp7"},

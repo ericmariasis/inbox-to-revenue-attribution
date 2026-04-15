@@ -15,6 +15,8 @@ from app.services.paypal_provider import (
     PayPalApiResponse,
     PayPalApiRequestError,
     PayPalApiTraceRecord,
+    PayPalCheckoutCaptureResult,
+    PayPalCheckoutOrderResult,
     PayPalInvoicePaidSnapshot,
     PAYPAL_SELLER_ONBOARDING_FEATURES,
     PayPalProviderError,
@@ -579,6 +581,217 @@ def test_get_invoice_paid_snapshot_reads_hosted_buyer_paid_shape():
             form_body=None,
         ),
     ]
+
+
+def test_create_checkout_order_posts_expected_multiparty_payload_and_returns_approval_url():
+    transport = _StubPayPalTransport(
+        responses=[
+            {"access_token": "oauth_story_pp17"},
+            {
+                "id": "ORDER-story-pp17",
+                "status": "PAYER_ACTION_REQUIRED",
+                "links": [
+                    {
+                        "rel": "self",
+                        "href": "https://api-m.sandbox.paypal.com/v2/checkout/orders/ORDER-story-pp17",
+                    },
+                    {
+                        "rel": "payer-action",
+                        "href": "https://www.sandbox.paypal.com/checkoutnow?token=ORDER-story-pp17",
+                    },
+                ],
+            },
+        ]
+    )
+    provider = _provider(transport=transport)
+
+    result = provider.create_checkout_order(
+        provider_account_id="merchant_story_pp17",
+        amount_cents=15000,
+        currency="USD",
+        return_url="https://example.ngrok-free.dev/paypal/orders/callback?state=story-pp17",
+        cancel_url="https://example.ngrok-free.dev/paypal/orders/callback?state=story-pp17&cancel=true",
+        idempotency_key="paypal:order:start:story-pp17",
+        custom_id="booking-story-pp17",
+        payer_email="buyer@example.com",
+    )
+
+    assert result == PayPalCheckoutOrderResult(
+        order_id="ORDER-story-pp17",
+        status="PAYER_ACTION_REQUIRED",
+        approval_url="https://www.sandbox.paypal.com/checkoutnow?token=ORDER-story-pp17",
+    )
+    assert transport.calls == [
+        _TransportCall(
+            method="POST",
+            url="https://api-m.sandbox.paypal.com/v1/oauth2/token",
+            headers={
+                "Authorization": "Basic Y2xpZW50X3N0b3J5X3BwNzpzZWNyZXRfc3RvcnlfcHA3",
+            },
+            json_body=None,
+            form_body={"grant_type": "client_credentials"},
+        ),
+        _TransportCall(
+            method="POST",
+            url="https://api-m.sandbox.paypal.com/v2/checkout/orders",
+            headers={
+                "Authorization": "Bearer oauth_story_pp17",
+                "PayPal-Partner-Attribution-Id": "pp_partner_story_pp7",
+                "PayPal-Auth-Assertion": "eyJhbGciOiJub25lIn0.eyJpc3MiOiJjbGllbnRfc3RvcnlfcHA3IiwicGF5ZXJfaWQiOiJtZXJjaGFudF9zdG9yeV9wcDE3In0.",
+                "PayPal-Request-Id": "paypal:order:start:story-pp17",
+            },
+            json_body={
+                "intent": "CAPTURE",
+                "purchase_units": [
+                    {
+                        "amount": {
+                            "currency_code": "USD",
+                            "value": "150.00",
+                        },
+                        "payee": {
+                            "merchant_id": "merchant_story_pp17",
+                        },
+                        "custom_id": "booking-story-pp17",
+                        "reference_id": "booking-story-pp17",
+                    }
+                ],
+                "payment_source": {
+                    "paypal": {
+                        "email_address": "buyer@example.com",
+                        "payment_method_preference": "IMMEDIATE_PAYMENT_REQUIRED",
+                        "experience_context": {
+                            "return_url": "https://example.ngrok-free.dev/paypal/orders/callback?state=story-pp17",
+                            "cancel_url": "https://example.ngrok-free.dev/paypal/orders/callback?state=story-pp17&cancel=true",
+                            "shipping_preference": "NO_SHIPPING",
+                            "user_action": "PAY_NOW",
+                        },
+                    }
+                },
+            },
+            form_body=None,
+        ),
+    ]
+
+
+def test_capture_checkout_order_returns_capture_identity_and_paid_at():
+    transport = _StubPayPalTransport(
+        responses=[
+            {"access_token": "oauth_story_pp17"},
+            {
+                "id": "ORDER-story-pp17",
+                "status": "COMPLETED",
+                "purchase_units": [
+                    {
+                        "payments": {
+                            "captures": [
+                                {
+                                    "id": "CAPTURE-story-pp17",
+                                    "status": "COMPLETED",
+                                    "update_time": "2026-04-14T20:52:07Z",
+                                }
+                            ]
+                        }
+                    }
+                ],
+            },
+        ]
+    )
+    provider = _provider(transport=transport)
+
+    result = provider.capture_checkout_order(
+        provider_account_id="merchant_story_pp17",
+        provider_order_id="ORDER-story-pp17",
+        idempotency_key="paypal:order:capture:ORDER-story-pp17",
+    )
+
+    assert result == PayPalCheckoutCaptureResult(
+        order_id="ORDER-story-pp17",
+        status="COMPLETED",
+        capture_id="CAPTURE-story-pp17",
+        capture_status="COMPLETED",
+        paid_at=datetime(2026, 4, 14, 20, 52, 7, tzinfo=timezone.utc),
+    )
+    assert transport.calls == [
+        _TransportCall(
+            method="POST",
+            url="https://api-m.sandbox.paypal.com/v1/oauth2/token",
+            headers={
+                "Authorization": "Basic Y2xpZW50X3N0b3J5X3BwNzpzZWNyZXRfc3RvcnlfcHA3",
+            },
+            json_body=None,
+            form_body={"grant_type": "client_credentials"},
+        ),
+        _TransportCall(
+            method="POST",
+            url="https://api-m.sandbox.paypal.com/v2/checkout/orders/ORDER-story-pp17/capture",
+            headers={
+                "Authorization": "Bearer oauth_story_pp17",
+                "PayPal-Partner-Attribution-Id": "pp_partner_story_pp7",
+                "PayPal-Auth-Assertion": "eyJhbGciOiJub25lIn0.eyJpc3MiOiJjbGllbnRfc3RvcnlfcHA3IiwicGF5ZXJfaWQiOiJtZXJjaGFudF9zdG9yeV9wcDE3In0.",
+                "PayPal-Request-Id": "paypal:order:capture:ORDER-story-pp17",
+            },
+            json_body={},
+            form_body=None,
+        ),
+    ]
+
+
+def test_create_checkout_order_records_sanitized_trace_summary():
+    transport = _StubPayPalTransport(
+        responses=[
+            PayPalApiResponse(
+                payload={
+                    "access_token": "oauth_story_pp17",
+                    "token_type": "Bearer",
+                },
+                http_status=200,
+                debug_id="debug-oauth-story-pp17",
+            ),
+            PayPalApiResponse(
+                payload={
+                    "id": "ORDER-story-pp17",
+                    "status": "PAYER_ACTION_REQUIRED",
+                    "links": [
+                        {
+                            "rel": "payer-action",
+                            "href": "https://www.sandbox.paypal.com/checkoutnow?token=ORDER-story-pp17",
+                        }
+                    ],
+                },
+                http_status=200,
+                debug_id="debug-order-story-pp17",
+            ),
+        ]
+    )
+    trace_records: list[PayPalApiTraceRecord] = []
+    provider = _provider(
+        transport=transport,
+        request_trace_recorder=trace_records.append,
+    )
+
+    result = provider.create_checkout_order(
+        provider_account_id="merchant_story_pp17",
+        amount_cents=15000,
+        currency="USD",
+        return_url="https://example.ngrok-free.dev/paypal/orders/callback?state=story-pp17",
+        cancel_url="https://example.ngrok-free.dev/paypal/orders/callback?state=story-pp17&cancel=true",
+        idempotency_key="paypal:order:start:story-pp17",
+        custom_id="booking-story-pp17",
+    )
+
+    assert result.order_id == "ORDER-story-pp17"
+    assert [record.operation for record in trace_records] == [
+        "paypal_oauth_token",
+        "paypal_order_create",
+    ]
+    assert trace_records[1].debug_id == "debug-order-story-pp17"
+    assert trace_records[1].summary == {
+        "approval_url": "https://www.sandbox.paypal.com/checkoutnow?token=ORDER-story-pp17",
+        "keys": ["id", "links", "status"],
+        "link_rels": ["payer-action"],
+        "order_id": "ORDER-story-pp17",
+        "status": "PAYER_ACTION_REQUIRED",
+    }
 
 
 def test_create_billing_invoice_creates_sends_and_reads_paypal_invoice():

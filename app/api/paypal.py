@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_auth_user
 from app.core.config import Settings, get_settings
+from app.db.session import SessionLocal
 from app.db.session import get_db
 from app.models.auth_user import AuthUser
 from app.models.billing_provider import (
@@ -19,7 +20,11 @@ from app.models.billing_provider import (
 )
 from app.models.creator import Creator
 from app.schemas.auth import GenericOkResponse
-from app.schemas.paypal import PayPalConnectStartResponse
+from app.schemas.paypal import (
+    PayPalConnectStartResponse,
+    PayPalOrderStartRequest,
+    PayPalOrderStartResponse,
+)
 from app.services.billing_provider_switch import (
     BILLING_PROVIDER_SWITCH_REASON_SWITCH_TARGET_ALREADY_CONNECTED,
     BillingProviderSwitchError,
@@ -32,6 +37,12 @@ from app.services.paypal_connect import (
     build_paypal_connect_state,
     build_paypal_tracking_id,
     decode_paypal_connect_state,
+)
+from app.services.paypal_order_checkout import decode_paypal_order_checkout_state
+from app.services.paypal_orders import (
+    PAYPAL_ORDER_FLOW_REASON_PROVIDER_ERROR,
+    PayPalOrderFlowError,
+    PayPalOrdersService,
 )
 from app.services.paypal_provider import (
     PayPalProvider,
@@ -47,6 +58,10 @@ INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL = "invalid paypal connect callback"
 PAYPAL_CONNECT_UNAVAILABLE_DETAIL = "paypal connect unavailable"
 PAYPAL_CONNECT_ALREADY_CONNECTED_DETAIL = "billing provider already connected"
 PAYPAL_CONNECT_NOT_FOUND_DETAIL = "paypal connect not found"
+INVALID_PAYPAL_ORDER_CALLBACK_DETAIL = "invalid paypal order callback"
+PAYPAL_ORDER_START_UNAVAILABLE_DETAIL = "paypal order start unavailable"
+PAYPAL_ORDER_START_NOT_FOUND_DETAIL = "paypal order start not found"
+PAYPAL_ORDER_START_NOT_FOUND_PAGE_TITLE = "PayPal payment could not be started"
 
 
 def _settings(request: Request) -> Settings:
@@ -55,6 +70,14 @@ def _settings(request: Request) -> Settings:
 
 def _paypal_provider(request: Request) -> PayPalProvider:
     return getattr(request.app.state, "paypal_provider", build_default_paypal_provider(settings=_settings(request)))
+
+
+def _paypal_orders_service(request: Request) -> PayPalOrdersService:
+    return PayPalOrdersService(
+        session_factory=SessionLocal,
+        provider=_paypal_provider(request),
+        settings=_settings(request),
+    )
 
 
 def _append_query_params(url: str, **params: str) -> str:
@@ -205,6 +228,12 @@ def _query_param_is_explicit_false(value: str | None) -> bool:
     return value.strip().lower() in {"false", "0", "no"}
 
 
+def _query_param_is_explicit_true(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"true", "1", "yes"}
+
+
 def _callback_indicates_denied_permissions(
     *,
     permissions_granted: str | None,
@@ -227,6 +256,22 @@ def _verified_callback_matches_state(
     if callback_merchant_id is not None and callback_merchant_id != verified_status.merchant_id:
         return False
     return verified_status.payments_receivable and verified_status.primary_email_confirmed
+
+
+def _browser_order_failure_response() -> HTMLResponse:
+    return _connect_result_page(
+        title="PayPal payment could not be completed",
+        body="This PayPal payment return could not be verified. Start the order again if you still need approval and capture.",
+        status_code=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _browser_order_canceled_response() -> HTMLResponse:
+    return _connect_result_page(
+        title="PayPal payment was not completed",
+        body="The buyer left PayPal before approving the payment. The local PayPal order remains open until you restart or reuse the approval link.",
+        status_code=status.HTTP_200_OK,
+    )
 
 
 @router.post("/connect/start", response_model=PayPalConnectStartResponse)
@@ -439,6 +484,142 @@ def paypal_connect_callback(
             body=(
                 "The PayPal seller was verified server-side and connected for billing. "
                 f"Merchant ID: {verified_status.merchant_id}."
+            ),
+            status_code=status.HTTP_200_OK,
+        )
+
+    return GenericOkResponse()
+
+
+@router.post("/orders/start", response_model=PayPalOrderStartResponse)
+def paypal_order_start(
+    request: Request,
+    payload: PayPalOrderStartRequest,
+    current_user: AuthUser = Depends(get_current_auth_user),
+) -> PayPalOrderStartResponse:
+    if not _paypal_available_to_current_user(
+        request=request,
+        current_user=current_user,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=PAYPAL_CONNECT_NOT_FOUND_DETAIL,
+        )
+
+    service = _paypal_orders_service(request)
+    try:
+        result = service.start_order(
+            creator_id=current_user.creator_id,
+            booking_id=payload.booking_id,
+        )
+    except PayPalOrderFlowError as exc:
+        if exc.reason_code == PAYPAL_ORDER_FLOW_REASON_PROVIDER_ERROR:
+            logger.warning(
+                "paypal_order_start_provider_error creator_id=%s booking_id=%s operation=%s http_status=%s error_code=%s",
+                current_user.creator_id,
+                payload.booking_id,
+                exc.provider_operation,
+                exc.provider_http_status,
+                exc.provider_error_code,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=PAYPAL_ORDER_START_UNAVAILABLE_DETAIL,
+            ) from exc
+        if exc.reason_code == "booking_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=PAYPAL_ORDER_START_NOT_FOUND_DETAIL,
+            ) from exc
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.reason_code,
+        ) from exc
+
+    return PayPalOrderStartResponse(
+        invoice_id=result.invoice_id,
+        provider_order_id=result.provider_order_id,
+        approval_url=result.approval_url,
+        state=result.state,
+    )
+
+
+@router.get("/orders/callback", response_model=GenericOkResponse)
+def paypal_order_callback(
+    request: Request,
+    state: str | None = Query(default=None),
+    token: str | None = Query(default=None),
+    cancel: str | None = Query(default=None),
+) -> GenericOkResponse | HTMLResponse:
+    prefers_html = request_prefers_html(request)
+    if not state:
+        if prefers_html:
+            return _browser_order_failure_response()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INVALID_PAYPAL_ORDER_CALLBACK_DETAIL,
+        )
+
+    try:
+        decoded_state = decode_paypal_order_checkout_state(
+            state,
+            settings=_settings(request),
+        )
+        creator_id = uuid.UUID(decoded_state["sub"])
+        booking_id = uuid.UUID(decoded_state["booking_id"])
+    except (JWTError, KeyError, TypeError, ValueError):
+        if prefers_html:
+            return _browser_order_failure_response()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INVALID_PAYPAL_ORDER_CALLBACK_DETAIL,
+        )
+
+    if _query_param_is_explicit_true(cancel):
+        return _browser_order_canceled_response()
+
+    if token is None:
+        if prefers_html:
+            return _browser_order_failure_response()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INVALID_PAYPAL_ORDER_CALLBACK_DETAIL,
+        )
+
+    service = _paypal_orders_service(request)
+    try:
+        result = service.capture_order(
+            creator_id=creator_id,
+            booking_id=booking_id,
+            provider_order_id=token,
+        )
+    except PayPalOrderFlowError as exc:
+        if exc.reason_code == PAYPAL_ORDER_FLOW_REASON_PROVIDER_ERROR:
+            logger.warning(
+                "paypal_order_capture_provider_error creator_id=%s booking_id=%s operation=%s http_status=%s error_code=%s",
+                creator_id,
+                booking_id,
+                exc.provider_operation,
+                exc.provider_http_status,
+                exc.provider_error_code,
+            )
+        if prefers_html:
+            return _browser_order_failure_response()
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=(
+                PAYPAL_ORDER_START_UNAVAILABLE_DETAIL
+                if exc.reason_code == PAYPAL_ORDER_FLOW_REASON_PROVIDER_ERROR
+                else INVALID_PAYPAL_ORDER_CALLBACK_DETAIL
+            ),
+        ) from exc
+
+    if prefers_html:
+        return _connect_result_page(
+            title="PayPal payment completed",
+            body=(
+                "The PayPal order was captured server-side and the local invoice was marked paid. "
+                f"Order ID: {result.provider_order_id}."
             ),
             status_code=status.HTTP_200_OK,
         )

@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from jose import jwt
 from sqlalchemy import select
@@ -44,6 +46,8 @@ def main() -> int:
         return _run_show_config(args)
     if args.command == "prepare-proof":
         return _run_prepare_proof(args)
+    if args.command == "start-order":
+        return _run_start_order(args)
     if args.command == "create-invoice":
         return _run_create_invoice(args)
     if args.command == "void-invoice":
@@ -153,6 +157,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     create_invoice.add_argument("--booking-id", required=True, help="Booking UUID to invoice.")
     create_invoice.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON instead of key=value lines.",
+    )
+
+    start_order = subparsers.add_parser(
+        "start-order",
+        help="Call the auth-protected /paypal/orders/start route for one seeded booking.",
+    )
+    start_order.add_argument("--booking-id", required=True, help="Booking UUID to start.")
+    start_order.add_argument(
+        "--base-url",
+        default=DEFAULT_APP_BASE_URL,
+        help=f"Base URL for the local API route. Default: {DEFAULT_APP_BASE_URL}",
+    )
+    start_order.add_argument(
         "--json",
         action="store_true",
         help="Emit JSON instead of key=value lines.",
@@ -324,6 +344,10 @@ def _run_prepare_proof(args: argparse.Namespace) -> int:
         ".venv\\Scripts\\python.exe scripts\\paypal_live_validation.py "
         f"create-invoice --booking-id {booking_id} --json"
     )
+    start_order_command = (
+        ".venv\\Scripts\\python.exe scripts\\paypal_live_validation.py "
+        f"start-order --booking-id {booking_id} --base-url {args.base_url} --json"
+    )
     void_invoice_command = (
         ".venv\\Scripts\\python.exe scripts\\paypal_live_validation.py "
         f"void-invoice --booking-id {booking_id} --json"
@@ -365,9 +389,44 @@ def _run_prepare_proof(args: argparse.Namespace) -> int:
             f"-Headers @{{ Authorization = 'Bearer {access_token}'; Accept = 'application/json' }}"
         ),
         "show_state_command": show_state_command,
+        "start_order_command": start_order_command,
         "create_invoice_command": create_invoice_command,
         "void_invoice_command": void_invoice_command,
     }
+    _emit(payload, as_json=args.json)
+    return 0
+
+
+def _run_start_order(args: argparse.Namespace) -> int:
+    booking_id = _parse_uuid(args.booking_id, field_name="booking-id")
+    with SessionLocal() as session:
+        booking = session.get(Booking, booking_id)
+        if booking is None:
+            raise PayPalLiveValidationError(f"booking {booking_id} was not found")
+        auth_user = session.scalar(
+            select(AuthUser).where(AuthUser.creator_id == booking.creator_id)
+        )
+        if auth_user is None:
+            raise PayPalLiveValidationError(
+                f"creator {booking.creator_id} is missing an auth user for route auth"
+            )
+        auth_user_id = str(auth_user.id)
+        creator_id = str(auth_user.creator_id)
+        auth_user_email = auth_user.email
+
+    settings = get_settings()
+    access_token = _create_access_token(
+        user_id=auth_user_id,
+        creator_id=creator_id,
+        email=auth_user_email,
+        settings=settings,
+    )
+    start_url = _append_path(args.base_url, "/paypal/orders/start")
+    payload = _post_json(
+        url=start_url,
+        access_token=access_token,
+        body={"booking_id": str(booking_id)},
+    )
     _emit(payload, as_json=args.json)
     return 0
 
@@ -543,6 +602,7 @@ def _run_show_state(args: argparse.Namespace) -> int:
                 "payment_provider": invoice.resolved_payment_provider,
                 "provider_account_id": invoice.resolved_provider_account_id,
                 "provider_invoice_id": invoice.resolved_provider_invoice_id,
+                "provider_action_url": invoice.provider_action_url,
                 "status": invoice.status,
                 "amount_cents": invoice.amount_cents,
                 "currency": invoice.currency,
@@ -684,6 +744,42 @@ def _append_path(base_url: str, path: str) -> str:
     normalized_base_url = base_url.rstrip("/")
     normalized_path = path if path.startswith("/") else f"/{path}"
     return f"{normalized_base_url}{normalized_path}"
+
+
+def _post_json(*, url: str, access_token: str, body: dict[str, Any]) -> dict[str, Any]:
+    request = Request(
+        url=url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            raw_payload = response.read().decode("utf-8")
+    except HTTPError as exc:
+        try:
+            error_payload = exc.read().decode("utf-8")
+        except OSError as inner_exc:
+            raise PayPalLiveValidationError(
+                f"local route call failed with status {exc.code}"
+            ) from inner_exc
+        raise PayPalLiveValidationError(error_payload) from exc
+    except URLError as exc:
+        raise PayPalLiveValidationError("could not reach the local app route") from exc
+
+    if not raw_payload:
+        return {}
+    try:
+        parsed_payload = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        raise PayPalLiveValidationError("local route returned non-JSON response") from exc
+    if not isinstance(parsed_payload, dict):
+        raise PayPalLiveValidationError("local route returned unexpected JSON shape")
+    return parsed_payload
 
 
 def _resolved_trace_path(

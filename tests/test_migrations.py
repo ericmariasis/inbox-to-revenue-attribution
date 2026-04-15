@@ -64,6 +64,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "payment_provider" in invoice_columns
             assert "provider_account_id" in invoice_columns
             assert "provider_invoice_id" in invoice_columns
+            assert "provider_action_url" in invoice_columns
             assert "payment_provider" in blocked_billing_columns
             assert "provider_account_id" in blocked_billing_columns
             assert "payment_provider" in payment_event_columns
@@ -88,6 +89,25 @@ def test_migrations_upgrade_and_downgrade():
             assert "billing_currency" in booking_link_columns
             assert "provider" in booking_link_columns
             assert "destination_url" in booking_link_columns
+
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            invoice_columns = {column["name"] for column in inspector.get_columns("invoices")}
+            blocked_billing_columns = {
+                column["name"] for column in inspector.get_columns("blocked_billing_cases")
+            }
+            payment_event_columns = {
+                column["name"] for column in inspector.get_columns("invoice_payment_events")
+            }
+            assert "payment_provider" in invoice_columns
+            assert "provider_account_id" in invoice_columns
+            assert "provider_invoice_id" in invoice_columns
+            assert "provider_action_url" not in invoice_columns
+            assert "payment_provider" in blocked_billing_columns
+            assert "provider_account_id" in blocked_billing_columns
+            assert "payment_provider" in payment_event_columns
+            assert "provider_invoice_id" in payment_event_columns
 
         command.downgrade(cfg, "-1")
         with engine.connect() as conn:
@@ -138,6 +158,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "payment_provider" in invoice_columns
             assert "provider_account_id" in invoice_columns
             assert "provider_invoice_id" in invoice_columns
+            assert "provider_action_url" not in invoice_columns
             assert "payment_provider" not in blocked_billing_columns
             assert "provider_account_id" not in blocked_billing_columns
             assert "payment_provider" in payment_event_columns
@@ -1826,6 +1847,7 @@ def test_invoices_table_has_expected_columns_fk_indexes_and_unique_constraints()
             "payment_provider",
             "provider_account_id",
             "provider_invoice_id",
+            "provider_action_url",
             "stripe_account_id",
             "stripe_invoice_id",
             "amount_cents",
@@ -1838,6 +1860,7 @@ def test_invoices_table_has_expected_columns_fk_indexes_and_unique_constraints()
         assert columns_by_name["payment_provider"]["nullable"] is False
         assert columns_by_name["provider_account_id"]["nullable"] is True
         assert columns_by_name["provider_invoice_id"]["nullable"] is True
+        assert columns_by_name["provider_action_url"]["nullable"] is True
         assert columns_by_name["stripe_account_id"]["nullable"] is True
         assert columns_by_name["stripe_invoice_id"]["nullable"] is True
 

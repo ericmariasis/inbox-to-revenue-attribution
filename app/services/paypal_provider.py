@@ -84,6 +84,22 @@ class PayPalInvoicePaidSnapshot:
 
 
 @dataclass(frozen=True)
+class PayPalCheckoutOrderResult:
+    order_id: str
+    status: str
+    approval_url: str
+
+
+@dataclass(frozen=True)
+class PayPalCheckoutCaptureResult:
+    order_id: str
+    status: str
+    capture_id: str
+    capture_status: str
+    paid_at: datetime | None
+
+
+@dataclass(frozen=True)
 class PayPalApiResponse:
     payload: dict[str, Any]
     http_status: int | None = None
@@ -180,6 +196,27 @@ class PayPalProvider(Protocol):
         provider_account_id: str,
         provider_invoice_id: str,
     ) -> PayPalInvoicePaidSnapshot: ...
+
+    def create_checkout_order(
+        self,
+        *,
+        provider_account_id: str,
+        amount_cents: int,
+        currency: str,
+        return_url: str,
+        cancel_url: str,
+        idempotency_key: str,
+        custom_id: str | None = None,
+        payer_email: str | None = None,
+    ) -> PayPalCheckoutOrderResult: ...
+
+    def capture_checkout_order(
+        self,
+        *,
+        provider_account_id: str,
+        provider_order_id: str,
+        idempotency_key: str,
+    ) -> PayPalCheckoutCaptureResult: ...
 
     def create_billing_invoice(
         self,
@@ -511,6 +548,142 @@ class PayPalSellerOnboardingProvider:
             payment_method=_optional_string(first_transaction, field_name="method"),
             transaction_status=_optional_string(first_transaction, field_name="transaction_status"),
             paid_at=_optional_paypal_payment_timestamp(first_transaction),
+        )
+
+    def create_checkout_order(
+        self,
+        *,
+        provider_account_id: str,
+        amount_cents: int,
+        currency: str,
+        return_url: str,
+        cancel_url: str,
+        idempotency_key: str,
+        custom_id: str | None = None,
+        payer_email: str | None = None,
+    ) -> PayPalCheckoutOrderResult:
+        access_token = self._oauth_access_token()
+        auth_assertion = _paypal_auth_assertion(
+            client_id=self._client_id,
+            merchant_id=provider_account_id,
+        )
+        order_response = self._request(
+            operation="paypal_order_create",
+            method="POST",
+            url=f"{self._api_base_url}/v2/checkout/orders",
+            access_token=access_token,
+            headers={
+                "PayPal-Auth-Assertion": auth_assertion,
+                "PayPal-Request-Id": idempotency_key,
+            },
+            json_body=_paypal_checkout_order_payload(
+                provider_account_id=provider_account_id,
+                amount_cents=amount_cents,
+                currency=currency,
+                return_url=return_url,
+                cancel_url=cancel_url,
+                custom_id=custom_id,
+                payer_email=payer_email,
+            ),
+        )
+        order_id = _required_string(
+            order_response,
+            field_name="id",
+            operation="paypal_order_create",
+            message="paypal order creation failed",
+        )
+        order_status = _required_string(
+            order_response,
+            field_name="status",
+            operation="paypal_order_create",
+            message="paypal order creation failed",
+        )
+        approval_url = _required_link_href_any(
+            order_response,
+            rels=("payer-action", "approve"),
+            operation="paypal_order_create",
+            message="paypal order creation failed",
+        )
+        return PayPalCheckoutOrderResult(
+            order_id=order_id,
+            status=order_status,
+            approval_url=approval_url,
+        )
+
+    def capture_checkout_order(
+        self,
+        *,
+        provider_account_id: str,
+        provider_order_id: str,
+        idempotency_key: str,
+    ) -> PayPalCheckoutCaptureResult:
+        access_token = self._oauth_access_token()
+        auth_assertion = _paypal_auth_assertion(
+            client_id=self._client_id,
+            merchant_id=provider_account_id,
+        )
+        capture_response = self._request(
+            operation="paypal_order_capture",
+            method="POST",
+            url=f"{self._api_base_url}/v2/checkout/orders/{quote(provider_order_id, safe='')}/capture",
+            access_token=access_token,
+            headers={
+                "PayPal-Auth-Assertion": auth_assertion,
+                "PayPal-Request-Id": idempotency_key,
+            },
+            json_body={},
+        )
+        order_id = _required_string(
+            capture_response,
+            field_name="id",
+            operation="paypal_order_capture",
+            message="paypal order capture failed",
+        )
+        if order_id != provider_order_id:
+            raise PayPalProviderError(
+                "paypal order capture failed",
+                operation="paypal_order_capture",
+            )
+        order_status = _required_string(
+            capture_response,
+            field_name="status",
+            operation="paypal_order_capture",
+            message="paypal order capture failed",
+        )
+        capture = _required_first_paypal_order_capture(
+            capture_response,
+            operation="paypal_order_capture",
+            message="paypal order capture failed",
+        )
+        capture_id = _required_string(
+            capture,
+            field_name="id",
+            operation="paypal_order_capture",
+            message="paypal order capture failed",
+        )
+        capture_status = _required_string(
+            capture,
+            field_name="status",
+            operation="paypal_order_capture",
+            message="paypal order capture failed",
+        )
+        if order_status != "COMPLETED" or capture_status != "COMPLETED":
+            error_code = (
+                f"order_status_{order_status.lower()}"
+                if order_status != "COMPLETED"
+                else f"capture_status_{capture_status.lower()}"
+            )
+            raise PayPalProviderError(
+                "paypal order capture failed",
+                operation="paypal_order_capture",
+                error_code=error_code,
+            )
+        return PayPalCheckoutCaptureResult(
+            order_id=order_id,
+            status=order_status,
+            capture_id=capture_id,
+            capture_status=capture_status,
+            paid_at=_optional_paypal_capture_timestamp(capture),
         )
 
     def create_billing_invoice(
@@ -953,6 +1126,24 @@ def _paypal_trace_summary(
         )
         return summary
 
+    if operation == "paypal_order_create":
+        summary["order_id"] = _optional_string(payload, field_name="id")
+        summary["status"] = _optional_string(payload, field_name="status")
+        summary["link_rels"] = _paypal_link_rels(payload)
+        summary["approval_url"] = (
+            _optional_link_href(payload, rel="payer-action")
+            or _optional_link_href(payload, rel="approve")
+        )
+        return summary
+
+    if operation == "paypal_order_capture":
+        capture = _first_paypal_order_capture(payload)
+        summary["order_id"] = _optional_string(payload, field_name="id")
+        summary["status"] = _optional_string(payload, field_name="status")
+        summary["capture_id"] = _optional_string(capture, field_name="id")
+        summary["capture_status"] = _optional_string(capture, field_name="status")
+        return summary
+
     if operation == "paypal_webhook_verify":
         verification_status = _optional_string(payload, field_name="verification_status")
         if verification_status is not None:
@@ -1042,6 +1233,30 @@ def _required_link_href(
         if not isinstance(link, dict):
             continue
         if link.get("rel") != rel:
+            continue
+        href = link.get("href")
+        if isinstance(href, str) and href:
+            return href
+
+    raise PayPalProviderError(message, operation=operation)
+
+
+def _required_link_href_any(
+    payload: dict[str, Any],
+    *,
+    rels: tuple[str, ...],
+    operation: str,
+    message: str,
+) -> str:
+    links = payload.get("links")
+    if not isinstance(links, list):
+        raise PayPalProviderError(message, operation=operation)
+
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        rel = link.get("rel")
+        if rel not in rels:
             continue
         href = link.get("href")
         if isinstance(href, str) and href:
@@ -1239,6 +1454,37 @@ def _first_paypal_payment_transaction(payload: Mapping[str, Any]) -> Mapping[str
     return None
 
 
+def _required_first_paypal_order_capture(
+    payload: Mapping[str, Any],
+    *,
+    operation: str,
+    message: str,
+) -> Mapping[str, Any]:
+    capture = _first_paypal_order_capture(payload)
+    if capture is None:
+        raise PayPalProviderError(message, operation=operation)
+    return capture
+
+
+def _first_paypal_order_capture(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    purchase_units = payload.get("purchase_units")
+    if not isinstance(purchase_units, list):
+        return None
+    for purchase_unit in purchase_units:
+        if not isinstance(purchase_unit, dict):
+            continue
+        payments = purchase_unit.get("payments")
+        if not isinstance(payments, dict):
+            continue
+        captures = payments.get("captures")
+        if not isinstance(captures, list):
+            continue
+        for capture in captures:
+            if isinstance(capture, dict):
+                return capture
+    return None
+
+
 def _optional_paypal_payment_timestamp(payload: Mapping[str, Any] | None) -> datetime | None:
     payment_date_time = _optional_string(payload, field_name="payment_date_time")
     parsed_payment_date_time = _parse_paypal_timestamp(payment_date_time)
@@ -1253,6 +1499,16 @@ def _optional_paypal_payment_timestamp(payload: Mapping[str, Any] | None) -> dat
     except ValueError:
         return None
     return datetime.combine(parsed_payment_date, time.min, tzinfo=timezone.utc)
+
+
+def _optional_paypal_capture_timestamp(payload: Mapping[str, Any] | None) -> datetime | None:
+    update_time = _optional_string(payload, field_name="update_time")
+    parsed_update_time = _parse_paypal_timestamp(update_time)
+    if parsed_update_time is not None:
+        return parsed_update_time
+
+    create_time = _optional_string(payload, field_name="create_time")
+    return _parse_paypal_timestamp(create_time)
 
 
 def _parse_paypal_timestamp(value: str | None) -> datetime | None:
@@ -1275,6 +1531,10 @@ def _operation_message(operation: str) -> str:
         return "paypal oauth token request failed"
     if operation == "paypal_webhook_verify":
         return "paypal webhook verification failed"
+    if operation == "paypal_order_create":
+        return "paypal order creation failed"
+    if operation == "paypal_order_capture":
+        return "paypal order capture failed"
     if operation == "paypal_invoice_recipient_lookup":
         return "paypal invoice recipient lookup failed"
     if operation == "paypal_invoice_create":
@@ -1327,6 +1587,50 @@ def _paypal_invoice_payload(
                 },
             }
         ],
+    }
+
+
+def _paypal_checkout_order_payload(
+    *,
+    provider_account_id: str,
+    amount_cents: int,
+    currency: str,
+    return_url: str,
+    cancel_url: str,
+    custom_id: str | None,
+    payer_email: str | None,
+) -> dict[str, Any]:
+    purchase_unit: dict[str, Any] = {
+        "amount": {
+            "currency_code": currency.upper(),
+            "value": f"{amount_cents / 100:.2f}",
+        },
+        "payee": {
+            "merchant_id": provider_account_id,
+        },
+    }
+    if custom_id is not None:
+        purchase_unit["custom_id"] = custom_id[:127]
+        purchase_unit["reference_id"] = custom_id[:256]
+
+    payment_source: dict[str, Any] = {
+        "paypal": {
+            "payment_method_preference": "IMMEDIATE_PAYMENT_REQUIRED",
+            "experience_context": {
+                "return_url": return_url,
+                "cancel_url": cancel_url,
+                "shipping_preference": "NO_SHIPPING",
+                "user_action": "PAY_NOW",
+            },
+        }
+    }
+    if payer_email is not None:
+        payment_source["paypal"]["email_address"] = payer_email
+
+    return {
+        "intent": "CAPTURE",
+        "purchase_units": [purchase_unit],
+        "payment_source": payment_source,
     }
 
 

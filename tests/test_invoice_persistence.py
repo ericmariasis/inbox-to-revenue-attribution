@@ -420,6 +420,7 @@ def test_provider_neutral_payment_event_can_persist_without_legacy_stripe_identi
 
 def test_provider_neutral_invoice_can_persist_without_legacy_stripe_identity():
     engine = create_engine(os.environ["TEST_DATABASE_URL"])
+    approval_url = "https://www.sandbox.paypal.com/checkoutnow?token=INV-PP2-PROVIDER-ONLY"
 
     with Session(engine) as session:
         creator, _, content, booking = _create_creator_booking_link_content_and_booking(
@@ -436,6 +437,7 @@ def test_provider_neutral_invoice_can_persist_without_legacy_stripe_identity():
                 payment_provider="paypal",
                 provider_account_id="merchant_pp2_provider_only",
                 provider_invoice_id="INV-PP2-PROVIDER-ONLY",
+                provider_action_url=approval_url,
                 amount_cents=21000,
                 currency="USD",
                 status="open",
@@ -452,6 +454,7 @@ def test_provider_neutral_invoice_can_persist_without_legacy_stripe_identity():
         assert fetched.payment_provider == "paypal"
         assert fetched.provider_account_id == "merchant_pp2_provider_only"
         assert fetched.provider_invoice_id == "INV-PP2-PROVIDER-ONLY"
+        assert fetched.provider_action_url == approval_url
         assert fetched.stripe_account_id is None
         assert fetched.stripe_invoice_id is None
         assert fetched.resolved_payment_provider == "paypal"

@@ -48,6 +48,7 @@ class Invoice(Base):
     )
     provider_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider_invoice_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_action_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     stripe_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     stripe_invoice_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)

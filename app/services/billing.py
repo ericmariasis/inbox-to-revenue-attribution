@@ -13,6 +13,7 @@ from app.models.booking_provider import BOOKING_PROVIDER_CALENDLY
 from app.models.billing_provider import BILLING_PROVIDER_STRIPE
 from app.models.invoice import Invoice
 from app.services.billing_lifecycle import resolve_billing_account_freeze
+from app.services.billing_terms import resolve_booking_billing_terms
 from app.services.billing_provider import (
     BillingProvider,
     BillingProviderError,
@@ -155,7 +156,7 @@ class BillingOrchestrator:
                     reason="booking_unattributed",
                 )
 
-            amount_cents, currency = _resolve_booking_billing_terms(booking=booking)
+            amount_cents, currency = resolve_booking_billing_terms(booking=booking)
             if amount_cents is None or currency is None:
                 logger.info(
                     "billing_invoice_create_deferred_missing_billing_defaults booking_id=%s creator_id=%s booking_link_id=%s missing_amount=%s missing_currency=%s",
@@ -593,37 +594,6 @@ def _billing_provider_metadata(
     if tid is not None:
         metadata["tid"] = tid
     return metadata
-
-
-def _resolve_booking_billing_terms(*, booking: Booking) -> tuple[int | None, str | None]:
-    frozen_amount_cents = booking.frozen_billing_amount_cents
-    frozen_currency = booking.frozen_billing_currency
-    if frozen_amount_cents is not None and frozen_currency is not None:
-        return frozen_amount_cents, frozen_currency.upper()
-
-    blocked_case = booking.blocked_billing_case
-    if blocked_case is not None:
-        booking.frozen_billing_amount_cents = blocked_case.frozen_amount_cents
-        booking.frozen_billing_currency = blocked_case.frozen_currency.upper()
-        return booking.frozen_billing_amount_cents, booking.frozen_billing_currency
-
-    if frozen_amount_cents is not None or frozen_currency is not None:
-        logger.warning(
-            "billing_booking_frozen_billing_partial booking_id=%s creator_id=%s amount_present=%s currency_present=%s",
-            booking.id,
-            booking.creator_id,
-            frozen_amount_cents is not None,
-            frozen_currency is not None,
-        )
-
-    billing_amount_cents = booking.booking_link.billing_amount_cents
-    billing_currency = booking.booking_link.billing_currency
-    if billing_amount_cents is None or billing_currency is None:
-        return billing_amount_cents, billing_currency.upper() if billing_currency else None
-
-    booking.frozen_billing_amount_cents = billing_amount_cents
-    booking.frozen_billing_currency = billing_currency.upper()
-    return booking.frozen_billing_amount_cents, booking.frozen_billing_currency
 
 
 def _validate_created_invoice_status(*, provider_name: str, invoice_status: str) -> None:

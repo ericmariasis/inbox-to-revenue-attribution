@@ -3,8 +3,11 @@ import json
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from jose import jwt
 from sqlalchemy import select
@@ -43,10 +46,14 @@ def main() -> int:
         return _run_show_config(args)
     if args.command == "prepare-proof":
         return _run_prepare_proof(args)
+    if args.command == "start-order":
+        return _run_start_order(args)
     if args.command == "create-invoice":
         return _run_create_invoice(args)
     if args.command == "void-invoice":
         return _run_void_invoice(args)
+    if args.command == "show-trace":
+        return _run_show_trace(args)
     if args.command == "show-state":
         return _run_show_state(args)
 
@@ -155,12 +162,42 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit JSON instead of key=value lines.",
     )
 
+    start_order = subparsers.add_parser(
+        "start-order",
+        help="Call the auth-protected /paypal/orders/start route for one seeded booking.",
+    )
+    start_order.add_argument("--booking-id", required=True, help="Booking UUID to start.")
+    start_order.add_argument(
+        "--base-url",
+        default=DEFAULT_APP_BASE_URL,
+        help=f"Base URL for the local API route. Default: {DEFAULT_APP_BASE_URL}",
+    )
+    start_order.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON instead of key=value lines.",
+    )
+
     void_invoice = subparsers.add_parser(
         "void-invoice",
         help="Run BillingOrchestrator.void_open_invoice_for_booking for one seeded booking.",
     )
     void_invoice.add_argument("--booking-id", required=True, help="Booking UUID to void.")
     void_invoice.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON instead of key=value lines.",
+    )
+
+    show_trace = subparsers.add_parser(
+        "show-trace",
+        help="Print the currently configured PayPal API trace records used for sandbox or live packet evidence.",
+    )
+    show_trace.add_argument(
+        "--trace-path",
+        help="Optional explicit trace path. Defaults to PAYPAL_API_TRACE_PATH from settings.",
+    )
+    show_trace.add_argument(
         "--json",
         action="store_true",
         help="Emit JSON instead of key=value lines.",
@@ -307,6 +344,10 @@ def _run_prepare_proof(args: argparse.Namespace) -> int:
         ".venv\\Scripts\\python.exe scripts\\paypal_live_validation.py "
         f"create-invoice --booking-id {booking_id} --json"
     )
+    start_order_command = (
+        ".venv\\Scripts\\python.exe scripts\\paypal_live_validation.py "
+        f"start-order --booking-id {booking_id} --base-url {args.base_url} --json"
+    )
     void_invoice_command = (
         ".venv\\Scripts\\python.exe scripts\\paypal_live_validation.py "
         f"void-invoice --booking-id {booking_id} --json"
@@ -333,6 +374,7 @@ def _run_prepare_proof(args: argparse.Namespace) -> int:
         "billing_amount_cents": billing_amount_cents,
         "billing_currency": billing_currency,
         "paypal_environment": settings.paypal_environment_value(),
+        "paypal_api_trace_path": _resolved_trace_path(settings=settings),
         "paypal_connect_redirect_uri": settings.paypal_connect_redirect_uri,
         "connect_start_url": connect_start_url,
         "authorization_header": f"Bearer {access_token}",
@@ -347,9 +389,44 @@ def _run_prepare_proof(args: argparse.Namespace) -> int:
             f"-Headers @{{ Authorization = 'Bearer {access_token}'; Accept = 'application/json' }}"
         ),
         "show_state_command": show_state_command,
+        "start_order_command": start_order_command,
         "create_invoice_command": create_invoice_command,
         "void_invoice_command": void_invoice_command,
     }
+    _emit(payload, as_json=args.json)
+    return 0
+
+
+def _run_start_order(args: argparse.Namespace) -> int:
+    booking_id = _parse_uuid(args.booking_id, field_name="booking-id")
+    with SessionLocal() as session:
+        booking = session.get(Booking, booking_id)
+        if booking is None:
+            raise PayPalLiveValidationError(f"booking {booking_id} was not found")
+        auth_user = session.scalar(
+            select(AuthUser).where(AuthUser.creator_id == booking.creator_id)
+        )
+        if auth_user is None:
+            raise PayPalLiveValidationError(
+                f"creator {booking.creator_id} is missing an auth user for route auth"
+            )
+        auth_user_id = str(auth_user.id)
+        creator_id = str(auth_user.creator_id)
+        auth_user_email = auth_user.email
+
+    settings = get_settings()
+    access_token = _create_access_token(
+        user_id=auth_user_id,
+        creator_id=creator_id,
+        email=auth_user_email,
+        settings=settings,
+    )
+    start_url = _append_path(args.base_url, "/paypal/orders/start")
+    payload = _post_json(
+        url=start_url,
+        access_token=access_token,
+        body={"booking_id": str(booking_id)},
+    )
     _emit(payload, as_json=args.json)
     return 0
 
@@ -401,6 +478,40 @@ def _run_void_invoice(args: argparse.Namespace) -> int:
         "provider_account_id": result.provider_account_id,
         "provider_invoice_id": result.provider_invoice_id,
         "invoice_status": result.invoice_status,
+    }
+    _emit(payload, as_json=args.json)
+    return 0
+
+
+def _run_show_trace(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    trace_path = _resolved_trace_path(explicit_path=args.trace_path, settings=settings)
+    if trace_path is None:
+        raise PayPalLiveValidationError(
+            "PAYPAL_API_TRACE_PATH is not configured; set it first or pass --trace-path"
+        )
+
+    resolved_path = Path(trace_path)
+    if not resolved_path.exists():
+        payload = {
+            "trace_path": str(resolved_path),
+            "record_count": 0,
+            "records": [],
+        }
+        _emit(payload, as_json=args.json)
+        return 0
+
+    records: list[dict[str, Any]] = []
+    for raw_line in resolved_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        records.append(json.loads(line))
+
+    payload = {
+        "trace_path": str(resolved_path),
+        "record_count": len(records),
+        "records": records,
     }
     _emit(payload, as_json=args.json)
     return 0
@@ -491,6 +602,7 @@ def _run_show_state(args: argparse.Namespace) -> int:
                 "payment_provider": invoice.resolved_payment_provider,
                 "provider_account_id": invoice.resolved_provider_account_id,
                 "provider_invoice_id": invoice.resolved_provider_invoice_id,
+                "provider_action_url": invoice.provider_action_url,
                 "status": invoice.status,
                 "amount_cents": invoice.amount_cents,
                 "currency": invoice.currency,
@@ -552,6 +664,7 @@ def _config_summary(
     require_live: bool,
 ) -> dict[str, Any]:
     errors: list[str] = []
+    selected_environment_errors: list[str] = []
     selected_environment = settings.paypal_environment_value()
     client_id = settings.selected_paypal_client_id().strip()
     client_secret = settings.selected_paypal_client_secret().strip()
@@ -559,23 +672,34 @@ def _config_summary(
     webhook_id = settings.selected_paypal_webhook_id().strip()
     redirect_uri = settings.paypal_connect_redirect_uri.strip()
 
-    if selected_environment != PAYPAL_ENVIRONMENT_LIVE:
+    if require_live and selected_environment != PAYPAL_ENVIRONMENT_LIVE:
         errors.append("paypal_environment must be live for provider-backed PP-14 proof")
-    if selected_environment == PAYPAL_ENVIRONMENT_LIVE or require_live:
-        if not client_id:
-            errors.append("PAYPAL_LIVE_CLIENT_ID is not configured")
-        if not client_secret:
-            errors.append("PAYPAL_LIVE_CLIENT_SECRET is not configured")
-        if not partner_id:
-            errors.append("PAYPAL_LIVE_PARTNER_ID is not configured")
-        if not webhook_id:
-            errors.append("PAYPAL_LIVE_WEBHOOK_ID is not configured")
-        if not _is_public_https_url(redirect_uri):
-            errors.append("PAYPAL_CONNECT_REDIRECT_URI must be a public https callback URL for live proof")
+    if not client_id:
+        selected_environment_errors.append(
+            f"selected PayPal client id is not configured for environment={selected_environment}"
+        )
+    if not client_secret:
+        selected_environment_errors.append(
+            f"selected PayPal client secret is not configured for environment={selected_environment}"
+        )
+    if not partner_id:
+        selected_environment_errors.append(
+            f"selected PayPal partner id is not configured for environment={selected_environment}"
+        )
+    if not webhook_id:
+        selected_environment_errors.append(
+            f"selected PayPal webhook id is not configured for environment={selected_environment}"
+        )
+    if not _is_public_https_url(redirect_uri):
+        selected_environment_errors.append(
+            "PAYPAL_CONNECT_REDIRECT_URI must be a public https callback URL"
+        )
+    errors.extend(selected_environment_errors)
 
     payload = {
         "paypal_environment": selected_environment,
         "selected_api_base_url": settings.selected_paypal_api_base_url(),
+        "paypal_api_trace_path": _resolved_trace_path(settings=settings),
         "paypal_connect_redirect_uri": redirect_uri,
         "selected_client_id_configured": bool(client_id),
         "selected_client_secret_configured": bool(client_secret),
@@ -588,7 +712,10 @@ def _config_summary(
             if creator_email
             else None
         ),
-        "ready_for_live_proof": len(errors) == 0,
+        "ready_for_selected_environment": len(selected_environment_errors) == 0,
+        "ready_for_live_proof": (
+            selected_environment == PAYPAL_ENVIRONMENT_LIVE and len(errors) == 0
+        ),
         "errors": errors,
     }
     return payload
@@ -617,6 +744,55 @@ def _append_path(base_url: str, path: str) -> str:
     normalized_base_url = base_url.rstrip("/")
     normalized_path = path if path.startswith("/") else f"/{path}"
     return f"{normalized_base_url}{normalized_path}"
+
+
+def _post_json(*, url: str, access_token: str, body: dict[str, Any]) -> dict[str, Any]:
+    request = Request(
+        url=url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            raw_payload = response.read().decode("utf-8")
+    except HTTPError as exc:
+        try:
+            error_payload = exc.read().decode("utf-8")
+        except OSError as inner_exc:
+            raise PayPalLiveValidationError(
+                f"local route call failed with status {exc.code}"
+            ) from inner_exc
+        raise PayPalLiveValidationError(error_payload) from exc
+    except URLError as exc:
+        raise PayPalLiveValidationError("could not reach the local app route") from exc
+
+    if not raw_payload:
+        return {}
+    try:
+        parsed_payload = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        raise PayPalLiveValidationError("local route returned non-JSON response") from exc
+    if not isinstance(parsed_payload, dict):
+        raise PayPalLiveValidationError("local route returned unexpected JSON shape")
+    return parsed_payload
+
+
+def _resolved_trace_path(
+    *,
+    explicit_path: str | None = None,
+    settings=None,
+) -> str | None:
+    if explicit_path is not None:
+        cleaned_explicit_path = explicit_path.strip()
+        return cleaned_explicit_path or None
+    resolved_settings = settings or get_settings()
+    cleaned_trace_path = resolved_settings.paypal_api_trace_path.strip()
+    return cleaned_trace_path or None
 
 
 def _is_public_https_url(value: str) -> bool:

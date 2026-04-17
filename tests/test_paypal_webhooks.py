@@ -146,6 +146,42 @@ def _paypal_invoice_paid_payload(
     ).encode("utf-8")
 
 
+def _paypal_capture_completed_payload(
+    *,
+    paypal_event_id: str,
+    provider_order_id: str,
+    capture_id: str,
+) -> bytes:
+    return json.dumps(
+        {
+            "id": paypal_event_id,
+            "event_type": "PAYMENT.CAPTURE.COMPLETED",
+            "create_time": "2026-03-20T04:52:16.277Z",
+            "resource": {
+                "id": capture_id,
+                "status": "COMPLETED",
+                "supplementary_data": {
+                    "related_ids": {
+                        "order_id": provider_order_id,
+                    }
+                },
+                "links": [
+                    {
+                        "rel": "self",
+                        "href": f"https://api-m.sandbox.paypal.com/v2/payments/captures/{capture_id}",
+                        "method": "GET",
+                    },
+                    {
+                        "rel": "up",
+                        "href": f"https://api-m.sandbox.paypal.com/v2/checkout/orders/{provider_order_id}",
+                        "method": "GET",
+                    },
+                ],
+            },
+        }
+    ).encode("utf-8")
+
+
 def _persist_open_paypal_invoice(
     *,
     provider_account_id: str,
@@ -296,6 +332,179 @@ def test_paypal_webhook_invoice_paid_marks_matched_paypal_invoice_paid_and_persi
     assert payment_events[0].unattributed_reason is None
     assert payment_events[0].paid_at == paid_at
     assert payment_events[0].processed_at == paid_at
+
+
+def test_paypal_webhook_capture_completed_marks_matched_paypal_order_paid_and_persists_payment_event():
+    invoice = _persist_open_paypal_invoice(
+        provider_account_id="merchant_story_pp18_capture",
+        provider_invoice_id="ORDER_story_pp18_capture",
+        booking_uuid="BOOK_story_pp18_capture",
+        tid="story_pp18_tid_capture",
+    )
+    provider = _StubPayPalProvider()
+    router = build_default_paypal_webhook_router(
+        session_factory=lambda: Session(_engine()),
+        provider=provider,
+    )
+    payload = _paypal_capture_completed_payload(
+        paypal_event_id="WH_story_pp18_capture",
+        provider_order_id="ORDER_story_pp18_capture",
+        capture_id="CAPTURE_story_pp18_capture",
+    )
+    paid_at = datetime(2026, 3, 20, 4, 52, 16, 277000, tzinfo=timezone.utc)
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("paypal_provider", provider):
+                with _override_app_state("paypal_webhook_router", router):
+                    response = client.post(
+                        "/webhooks/paypal",
+                        content=payload,
+                        headers=_paypal_headers(),
+                    )
+
+    with Session(_engine()) as session:
+        persisted_invoice = session.get(Invoice, invoice.id)
+        payment_events = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.payment_provider == "paypal",
+                InvoicePaymentEvent.provider_event_id == "CAPTURE_story_pp18_capture",
+            )
+        ).all()
+
+    assert response.status_code == 200
+    assert provider.snapshot_calls == []
+    assert persisted_invoice is not None
+    assert persisted_invoice.status == "paid"
+    assert persisted_invoice.paid_at == paid_at
+    assert len(payment_events) == 1
+    assert payment_events[0].provider_event_type == "PAYMENT.CAPTURE.COMPLETED"
+    assert payment_events[0].provider_account_id == "merchant_story_pp18_capture"
+    assert payment_events[0].provider_invoice_id == "ORDER_story_pp18_capture"
+    assert payment_events[0].invoice_id == invoice.id
+    assert payment_events[0].creator_id == invoice.creator_id
+    assert payment_events[0].booking_id == invoice.booking_id
+    assert payment_events[0].tid == "story_pp18_tid_capture"
+    assert payment_events[0].status == "applied"
+    assert payment_events[0].unattributed_reason is None
+    assert payment_events[0].paid_at == paid_at
+    assert payment_events[0].processed_at is not None
+
+
+def test_paypal_webhook_capture_completed_verified_unmatched_order_persists_unmatched_payment_event():
+    provider = _StubPayPalProvider()
+    router = build_default_paypal_webhook_router(
+        session_factory=lambda: Session(_engine()),
+        provider=provider,
+    )
+    payload = _paypal_capture_completed_payload(
+        paypal_event_id="WH_story_pp18_capture_unmatched",
+        provider_order_id="ORDER_story_pp18_capture_unmatched",
+        capture_id="CAPTURE_story_pp18_capture_unmatched",
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("paypal_provider", provider):
+                with _override_app_state("paypal_webhook_router", router):
+                    response = client.post(
+                        "/webhooks/paypal",
+                        content=payload,
+                        headers=_paypal_headers(),
+                    )
+
+    with Session(_engine()) as session:
+        payment_events = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.payment_provider == "paypal",
+                InvoicePaymentEvent.provider_event_id
+                == "CAPTURE_story_pp18_capture_unmatched",
+            )
+        ).all()
+
+    assert response.status_code == 200
+    assert provider.snapshot_calls == []
+    assert len(payment_events) == 1
+    assert payment_events[0].status == "unmatched"
+    assert payment_events[0].provider_account_id is None
+    assert payment_events[0].provider_invoice_id == "ORDER_story_pp18_capture_unmatched"
+    assert payment_events[0].creator_id is None
+    assert payment_events[0].booking_id is None
+    assert payment_events[0].tid is None
+    assert payment_events[0].unattributed_reason == UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID
+
+
+def test_paypal_webhook_capture_completed_after_server_capture_is_idempotent():
+    invoice = _persist_open_paypal_invoice(
+        provider_account_id="merchant_story_pp18_duplicate",
+        provider_invoice_id="ORDER_story_pp18_duplicate",
+        booking_uuid="BOOK_story_pp18_duplicate",
+        tid="story_pp18_tid_duplicate",
+    )
+    paid_at = datetime(2026, 3, 20, 5, 2, 7, tzinfo=timezone.utc)
+
+    with Session(_engine()) as session:
+        persisted_invoice = session.get(Invoice, invoice.id)
+        assert persisted_invoice is not None
+        persisted_invoice.status = "paid"
+        persisted_invoice.paid_at = paid_at
+        session.add(
+            InvoicePaymentEvent(
+                payment_provider="paypal",
+                provider_event_id="CAPTURE_story_pp18_duplicate",
+                provider_event_type="PAYMENT.CAPTURE.COMPLETED",
+                provider_account_id="merchant_story_pp18_duplicate",
+                provider_invoice_id="ORDER_story_pp18_duplicate",
+                invoice_id=persisted_invoice.id,
+                creator_id=persisted_invoice.creator_id,
+                booking_id=persisted_invoice.booking_id,
+                tid=persisted_invoice.tid,
+                status="applied",
+                paid_at=paid_at,
+                received_at=paid_at,
+                processed_at=paid_at,
+            )
+        )
+        session.commit()
+
+    provider = _StubPayPalProvider()
+    router = build_default_paypal_webhook_router(
+        session_factory=lambda: Session(_engine()),
+        provider=provider,
+    )
+    payload = _paypal_capture_completed_payload(
+        paypal_event_id="WH_story_pp18_duplicate",
+        provider_order_id="ORDER_story_pp18_duplicate",
+        capture_id="CAPTURE_story_pp18_duplicate",
+    )
+
+    with TestClient(app) as client:
+        with _override_app_state("settings", _StubSettings()):
+            with _override_app_state("paypal_provider", provider):
+                with _override_app_state("paypal_webhook_router", router):
+                    response = client.post(
+                        "/webhooks/paypal",
+                        content=payload,
+                        headers=_paypal_headers(),
+                    )
+
+    with Session(_engine()) as session:
+        persisted_invoice = session.get(Invoice, invoice.id)
+        payment_events = session.scalars(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.payment_provider == "paypal",
+                InvoicePaymentEvent.provider_invoice_id == "ORDER_story_pp18_duplicate",
+            )
+        ).all()
+
+    assert response.status_code == 200
+    assert provider.snapshot_calls == []
+    assert persisted_invoice is not None
+    assert persisted_invoice.status == "paid"
+    assert persisted_invoice.paid_at == paid_at
+    assert len(payment_events) == 1
+    assert payment_events[0].provider_event_id == "CAPTURE_story_pp18_duplicate"
+    assert payment_events[0].paid_at == paid_at
 
 
 def test_paypal_webhook_uses_live_webhook_id_when_live_environment_selected():

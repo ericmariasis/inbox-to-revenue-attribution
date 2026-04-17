@@ -42,6 +42,7 @@ class PayPalWebhookEvent:
     paypal_event_id: str
     event_type: str
     provider_invoice_id: str | None
+    resource_id: str | None
     payload: dict[str, Any]
     created_at: datetime | None
 
@@ -219,15 +220,150 @@ class InvoicePaidPayPalWebhookHandler:
         return True
 
 
+class CaptureCompletedPayPalWebhookHandler:
+    def __init__(
+        self,
+        *,
+        session_factory: Callable[[], Session],
+        now_fn: Callable[[], datetime] | None = None,
+    ):
+        self._now_fn = now_fn or _utc_now
+        self._payment_event_service = InvoicePaymentEventService(
+            session_factory=session_factory,
+            now_fn=self._now_fn,
+        )
+        self._session_factory = session_factory
+
+    def handle_event(self, *, event: PayPalWebhookEvent) -> bool:
+        if event.event_type != "PAYMENT.CAPTURE.COMPLETED":
+            return False
+
+        if event.provider_invoice_id is None or event.resource_id is None:
+            logger.warning(
+                "paypal_webhook_capture_completed_unhandled_missing_identity paypal_event_id=%s provider_invoice_id=%s resource_id=%s",
+                event.paypal_event_id,
+                event.provider_invoice_id,
+                event.resource_id,
+            )
+            return True
+
+        handled_at = self._now_fn()
+        invoice_context = _load_paypal_invoice_context(
+            session_factory=self._session_factory,
+            provider_invoice_id=event.provider_invoice_id,
+        )
+        provider_account_id = (
+            invoice_context.provider_account_id if invoice_context is not None else None
+        )
+
+        result = self._payment_event_service.handle_provider_invoice_paid_event(
+            payment_provider=BILLING_PROVIDER_PAYPAL,
+            provider_event_id=event.resource_id,
+            provider_event_type=event.event_type,
+            provider_account_id=provider_account_id,
+            provider_invoice_id=event.provider_invoice_id,
+            paid_at=event.created_at or handled_at,
+            received_at=handled_at,
+            unmatched_reason_override=UNATTRIBUTED_REASON_UNKNOWN_PROVIDER_INVOICE_ID,
+        )
+
+        if result.outcome == "applied":
+            logger.info(
+                "paypal_webhook_capture_completed_applied paypal_event_id=%s capture_id=%s provider_order_id=%s provider_account_id=%s invoice_id=%s creator_id=%s booking_uuid=%s tid=%s payment_event_id=%s",
+                event.paypal_event_id,
+                event.resource_id,
+                event.provider_invoice_id,
+                provider_account_id,
+                result.invoice_id,
+                result.creator_id,
+                result.booking_uuid,
+                result.tid,
+                result.payment_event_id,
+            )
+            return True
+
+        if result.outcome == "reconciled":
+            logger.info(
+                "paypal_webhook_capture_completed_reconciled paypal_event_id=%s capture_id=%s provider_order_id=%s provider_account_id=%s invoice_id=%s creator_id=%s booking_uuid=%s tid=%s payment_event_id=%s",
+                event.paypal_event_id,
+                event.resource_id,
+                event.provider_invoice_id,
+                provider_account_id,
+                result.invoice_id,
+                result.creator_id,
+                result.booking_uuid,
+                result.tid,
+                result.payment_event_id,
+            )
+            return True
+
+        if result.outcome == "duplicate":
+            logger.info(
+                "paypal_webhook_capture_completed_duplicate_event paypal_event_id=%s capture_id=%s provider_order_id=%s provider_account_id=%s invoice_id=%s payment_event_id=%s unattributed_reason=%s",
+                event.paypal_event_id,
+                event.resource_id,
+                event.provider_invoice_id,
+                provider_account_id,
+                result.invoice_id,
+                result.payment_event_id,
+                result.unattributed_reason,
+            )
+            return True
+
+        if result.outcome == "noop_already_paid":
+            logger.info(
+                "paypal_webhook_capture_completed_noop_already_paid paypal_event_id=%s capture_id=%s provider_order_id=%s provider_account_id=%s invoice_id=%s",
+                event.paypal_event_id,
+                event.resource_id,
+                event.provider_invoice_id,
+                provider_account_id,
+                result.invoice_id,
+            )
+            return True
+
+        if result.outcome == "noop_non_open":
+            logger.info(
+                "paypal_webhook_capture_completed_noop_non_open paypal_event_id=%s capture_id=%s provider_order_id=%s provider_account_id=%s invoice_id=%s status=%s",
+                event.paypal_event_id,
+                event.resource_id,
+                event.provider_invoice_id,
+                provider_account_id,
+                result.invoice_id,
+                result.invoice_status,
+            )
+            return True
+
+        logger.info(
+            "paypal_webhook_capture_completed_unmatched paypal_event_id=%s capture_id=%s provider_order_id=%s outcome=%s payment_event_id=%s unattributed_reason=%s",
+            event.paypal_event_id,
+            event.resource_id,
+            event.provider_invoice_id,
+            result.outcome,
+            result.payment_event_id,
+            result.unattributed_reason,
+        )
+        return True
+
+
 class DefaultPayPalWebhookRouter:
     def __init__(
         self,
         *,
+        capture_completed_handler: CaptureCompletedPayPalWebhookHandler | None = None,
         invoice_paid_handler: InvoicePaidPayPalWebhookHandler | None = None,
+        now_fn: Callable[[], datetime] | None = None,
     ):
+        self._capture_completed_handler = (
+            capture_completed_handler
+            or CaptureCompletedPayPalWebhookHandler(
+                session_factory=SessionLocal,
+                now_fn=now_fn,
+            )
+        )
         self._invoice_paid_handler = invoice_paid_handler or InvoicePaidPayPalWebhookHandler(
             session_factory=SessionLocal,
             provider=build_default_paypal_provider(),
+            now_fn=now_fn,
         )
 
     def handle_event(self, *, event: PayPalWebhookEvent) -> None:
@@ -237,6 +373,8 @@ class DefaultPayPalWebhookRouter:
             event.event_type,
             event.provider_invoice_id,
         )
+        if self._capture_completed_handler.handle_event(event=event):
+            return
         if self._invoice_paid_handler.handle_event(event=event):
             return
         logger.info(
@@ -254,6 +392,10 @@ def build_default_paypal_webhook_router(
     now_fn: Callable[[], datetime] | None = None,
 ) -> DefaultPayPalWebhookRouter:
     return DefaultPayPalWebhookRouter(
+        capture_completed_handler=CaptureCompletedPayPalWebhookHandler(
+            session_factory=session_factory,
+            now_fn=now_fn,
+        ),
         invoice_paid_handler=InvoicePaidPayPalWebhookHandler(
             session_factory=session_factory,
             provider=provider or build_default_paypal_provider(),
@@ -282,9 +424,17 @@ def verify_and_parse_paypal_webhook(
 
     event_id = _required_string(parsed_payload, field_name="id")
     event_type = _required_string(parsed_payload, field_name="event_type")
-    provider_invoice_id = _extract_paypal_invoice_id(parsed_payload)
+    provider_invoice_id = _extract_paypal_provider_invoice_id(
+        parsed_payload,
+        event_type=event_type,
+    )
+    resource_id = _extract_paypal_resource_id(parsed_payload)
     if event_type == "INVOICING.INVOICE.PAID" and provider_invoice_id is None:
         raise PayPalWebhookPayloadError("missing paypal invoice id")
+    if event_type == "PAYMENT.CAPTURE.COMPLETED" and provider_invoice_id is None:
+        raise PayPalWebhookPayloadError("missing paypal order id")
+    if event_type == "PAYMENT.CAPTURE.COMPLETED" and resource_id is None:
+        raise PayPalWebhookPayloadError("missing paypal capture id")
 
     try:
         verified = provider.verify_webhook_event(
@@ -306,6 +456,7 @@ def verify_and_parse_paypal_webhook(
         paypal_event_id=event_id,
         event_type=event_type,
         provider_invoice_id=provider_invoice_id,
+        resource_id=resource_id,
         payload=parsed_payload,
         created_at=_optional_timestamp(parsed_payload, field_name="create_time"),
     )
@@ -325,6 +476,18 @@ def _required_string(payload: Mapping[str, Any], *, field_name: str) -> str:
     raise PayPalWebhookPayloadError(f"missing paypal {field_name}")
 
 
+def _extract_paypal_provider_invoice_id(
+    payload: Mapping[str, Any],
+    *,
+    event_type: str,
+) -> str | None:
+    if event_type == "INVOICING.INVOICE.PAID":
+        return _extract_paypal_invoice_id(payload)
+    if event_type == "PAYMENT.CAPTURE.COMPLETED":
+        return _extract_paypal_capture_order_id(payload)
+    return None
+
+
 def _extract_paypal_invoice_id(payload: Mapping[str, Any]) -> str | None:
     resource = payload.get("resource")
     if not isinstance(resource, dict):
@@ -335,6 +498,49 @@ def _extract_paypal_invoice_id(payload: Mapping[str, Any]) -> str | None:
     invoice_id = invoice.get("id")
     if isinstance(invoice_id, str) and invoice_id:
         return invoice_id
+    return None
+
+
+def _extract_paypal_capture_order_id(payload: Mapping[str, Any]) -> str | None:
+    resource = payload.get("resource")
+    if not isinstance(resource, dict):
+        return None
+
+    supplementary_data = resource.get("supplementary_data")
+    if isinstance(supplementary_data, dict):
+        related_ids = supplementary_data.get("related_ids")
+        if isinstance(related_ids, dict):
+            order_id = related_ids.get("order_id")
+            if isinstance(order_id, str) and order_id:
+                return order_id
+
+    links = resource.get("links")
+    if isinstance(links, list):
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            if link.get("rel") != "up":
+                continue
+            href = link.get("href")
+            if not isinstance(href, str) or not href:
+                continue
+            marker = "/v2/checkout/orders/"
+            if marker not in href:
+                continue
+            order_id = href.rsplit(marker, 1)[-1].strip("/")
+            if order_id:
+                return order_id
+
+    return None
+
+
+def _extract_paypal_resource_id(payload: Mapping[str, Any]) -> str | None:
+    resource = payload.get("resource")
+    if not isinstance(resource, dict):
+        return None
+    resource_id = resource.get("id")
+    if isinstance(resource_id, str) and resource_id:
+        return resource_id
     return None
 
 

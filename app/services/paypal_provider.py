@@ -17,6 +17,7 @@ from app.models.booking import Booking
 from app.services.billing_provider import (
     BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
     BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
+    BILLING_ACCOUNT_READINESS_ISSUE_GRANT_PAYPAL_THIRD_PARTY_PERMISSIONS,
     BillingAccountReadiness,
     BillingProviderError,
     BillingProviderInvoiceCreateResult,
@@ -27,6 +28,11 @@ DEFAULT_PAYPAL_PARTNER_REFERRALS_RETURN_URL_DESCRIPTION = "Creator Compass PayPa
 PAYPAL_SELLER_ONBOARDING_FEATURES = (
     "PAYMENT",
     "REFUND",
+)
+PAYPAL_REQUIRED_THIRD_PARTY_SCOPES = (
+    "https://uri.paypal.com/services/payments/realtimepayment",
+    "https://uri.paypal.com/services/payments/payment/authcapture",
+    "https://uri.paypal.com/services/payments/refund",
 )
 
 
@@ -62,6 +68,8 @@ class PayPalSellerStatus:
     tracking_id: str
     payments_receivable: bool
     primary_email_confirmed: bool
+    granted_third_party_scopes: tuple[str, ...] = ()
+    required_third_party_permissions_granted: bool = True
 
 
 @dataclass(frozen=True)
@@ -316,6 +324,7 @@ class PayPalSellerOnboardingProvider:
         transport: UrllibPayPalHttpTransport | None = None,
         booking_email_lookup: Callable[[str | None, str], str | None] | None = None,
         request_trace_recorder: Callable[[PayPalApiTraceRecord], None] | None = None,
+        mock_capture_application_code: str = "",
     ):
         self._environment = environment.strip().lower() or "sandbox"
         self._client_id = client_id.strip()
@@ -326,6 +335,7 @@ class PayPalSellerOnboardingProvider:
         self._transport = transport or UrllibPayPalHttpTransport()
         self._booking_email_lookup = booking_email_lookup or _lookup_booking_email
         self._request_trace_recorder = request_trace_recorder
+        self._mock_capture_application_code = mock_capture_application_code.strip()
 
     def create_connect_onboarding(
         self,
@@ -454,9 +464,13 @@ class PayPalSellerOnboardingProvider:
             issue_codes.append(BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL)
         if not seller_status.payments_receivable:
             issue_codes.append(BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE)
+        if not seller_status.required_third_party_permissions_granted:
+            issue_codes.append(BILLING_ACCOUNT_READINESS_ISSUE_GRANT_PAYPAL_THIRD_PARTY_PERMISSIONS)
         return BillingAccountReadiness(
             can_create_invoices=(
-                seller_status.payments_receivable and seller_status.primary_email_confirmed
+                seller_status.payments_receivable
+                and seller_status.primary_email_confirmed
+                and seller_status.required_third_party_permissions_granted
             ),
             creator_actionable_issue_codes=tuple(issue_codes),
         )
@@ -630,6 +644,10 @@ class PayPalSellerOnboardingProvider:
             headers={
                 "PayPal-Auth-Assertion": auth_assertion,
                 "PayPal-Request-Id": idempotency_key,
+                **_paypal_mock_capture_headers(
+                    environment=self._environment,
+                    mock_capture_application_code=self._mock_capture_application_code,
+                ),
             },
             json_body={},
         )
@@ -1037,11 +1055,16 @@ class PayPalSellerOnboardingProvider:
             operation="paypal_merchant_status",
             message="paypal merchant status lookup failed",
         )
+        granted_third_party_scopes = _paypal_oauth_third_party_scopes(seller_status_response)
         return PayPalSellerStatus(
             merchant_id=status_merchant_id,
             tracking_id=status_tracking_id,
             payments_receivable=payments_receivable,
             primary_email_confirmed=primary_email_confirmed,
+            granted_third_party_scopes=granted_third_party_scopes,
+            required_third_party_permissions_granted=_paypal_has_required_third_party_scopes(
+                granted_third_party_scopes
+            ),
         )
 
 
@@ -1058,6 +1081,7 @@ def build_default_paypal_provider(*, settings: Settings | None = None) -> PayPal
         api_base_url=resolved_settings.selected_paypal_api_base_url(),
         partner_attribution_id=resolved_settings.paypal_partner_attribution_id,
         request_trace_recorder=_build_paypal_api_trace_recorder(settings=resolved_settings),
+        mock_capture_application_code=resolved_settings.paypal_mock_capture_application_code,
     )
 
 
@@ -1205,9 +1229,7 @@ def _paypal_api_request_error_from_http_error(
         parsed_body = None
 
     if isinstance(parsed_body, dict):
-        raw_error_code = parsed_body.get("name")
-        if isinstance(raw_error_code, str) and raw_error_code:
-            error_code = raw_error_code
+        error_code = _paypal_error_code_from_payload(parsed_body)
 
     return PayPalApiRequestError(
         operation=operation,
@@ -1216,6 +1238,24 @@ def _paypal_api_request_error_from_http_error(
         debug_id=debug_id,
         payload=parsed_body if isinstance(parsed_body, dict) else None,
     )
+
+
+def _paypal_error_code_from_payload(payload: Mapping[str, Any]) -> str | None:
+    raw_error_code = payload.get("name")
+    error_code = raw_error_code if isinstance(raw_error_code, str) and raw_error_code else None
+
+    raw_details = payload.get("details")
+    if not isinstance(raw_details, list):
+        return error_code
+
+    for entry in raw_details:
+        if not isinstance(entry, dict):
+            continue
+        issue = entry.get("issue")
+        if issue == "INSTRUMENT_DECLINED":
+            return issue
+
+    return error_code
 
 
 def _required_link_href(
@@ -1412,6 +1452,53 @@ def _paypal_error_details_summary(payload: Mapping[str, Any]) -> list[dict[str, 
             }
         )
     return details
+
+
+def _paypal_mock_capture_headers(
+    *,
+    environment: str,
+    mock_capture_application_code: str,
+) -> dict[str, str]:
+    if environment != "sandbox" or not mock_capture_application_code:
+        return {}
+    return {
+        "PayPal-Mock-Response": json.dumps(
+            {"mock_application_codes": mock_capture_application_code},
+            separators=(",", ":"),
+        )
+    }
+
+
+def _paypal_oauth_third_party_scopes(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    raw_integrations = payload.get("oauth_integrations")
+    if not isinstance(raw_integrations, list):
+        return ()
+
+    scopes: list[str] = []
+    seen: set[str] = set()
+    for integration in raw_integrations:
+        if not isinstance(integration, dict):
+            continue
+        raw_third_party_entries = integration.get("oauth_third_party")
+        if not isinstance(raw_third_party_entries, list):
+            continue
+        for third_party_entry in raw_third_party_entries:
+            if not isinstance(third_party_entry, dict):
+                continue
+            raw_scopes = third_party_entry.get("scopes")
+            if not isinstance(raw_scopes, list):
+                continue
+            for scope in raw_scopes:
+                if not isinstance(scope, str) or not scope or scope in seen:
+                    continue
+                scopes.append(scope)
+                seen.add(scope)
+    return tuple(scopes)
+
+
+def _paypal_has_required_third_party_scopes(granted_scopes: tuple[str, ...]) -> bool:
+    granted_scope_set = set(granted_scopes)
+    return all(scope in granted_scope_set for scope in PAYPAL_REQUIRED_THIRD_PARTY_SCOPES)
 
 
 def _trace_invoice_id(payload: Mapping[str, Any]) -> str | None:

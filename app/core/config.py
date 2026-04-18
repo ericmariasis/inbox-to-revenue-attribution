@@ -214,6 +214,7 @@ class Settings(BaseSettings):
     paypal_live_client_secret: str = ""
     paypal_live_partner_id: str = ""
     paypal_partner_attribution_id: str = ""
+    paypal_mock_capture_application_code: str = ""
     paypal_sandbox_api_base_url: str = DEFAULT_PAYPAL_SANDBOX_API_BASE_URL
     paypal_live_api_base_url: str = DEFAULT_PAYPAL_LIVE_API_BASE_URL
     paypal_connect_redirect_uri: str = DEFAULT_PAYPAL_CONNECT_REDIRECT_URI

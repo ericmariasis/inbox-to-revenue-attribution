@@ -8,6 +8,7 @@ from app.core.config import Settings
 from app.services.billing_provider import (
     BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
     BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
+    BILLING_ACCOUNT_READINESS_ISSUE_GRANT_PAYPAL_THIRD_PARTY_PERMISSIONS,
     BillingAccountReadiness,
 )
 from app.services.paypal_provider import (
@@ -19,9 +20,11 @@ from app.services.paypal_provider import (
     PayPalCheckoutOrderResult,
     PayPalInvoicePaidSnapshot,
     PAYPAL_SELLER_ONBOARDING_FEATURES,
+    PAYPAL_REQUIRED_THIRD_PARTY_SCOPES,
     PayPalProviderError,
     PayPalSellerOnboardingProvider,
     PayPalSandboxSellerOnboardingProvider,
+    _paypal_error_code_from_payload,
     build_default_paypal_provider,
 )
 
@@ -83,6 +86,7 @@ def _provider(
     transport: _StubPayPalTransport,
     booking_email: str | None = None,
     request_trace_recorder=None,
+    mock_capture_application_code: str = "",
 ) -> PayPalSandboxSellerOnboardingProvider:
     return PayPalSandboxSellerOnboardingProvider(
         client_id="client_story_pp7",
@@ -97,6 +101,7 @@ def _provider(
             else None
         ),
         request_trace_recorder=request_trace_recorder,
+        mock_capture_application_code=mock_capture_application_code,
     )
 
 
@@ -402,6 +407,16 @@ def test_get_billing_account_readiness_maps_paypal_seller_status_to_can_create_i
                 "tracking_id": "tracking_story_pp7",
                 "payments_receivable": True,
                 "primary_email_confirmed": True,
+                "oauth_integrations": [
+                    {
+                        "integration_type": "OAUTH_THIRD_PARTY",
+                        "oauth_third_party": [
+                            {
+                                "scopes": list(PAYPAL_REQUIRED_THIRD_PARTY_SCOPES),
+                            }
+                        ],
+                    }
+                ],
             },
         ]
     )
@@ -448,6 +463,16 @@ def test_get_billing_account_readiness_maps_paypal_seller_gaps_to_creator_action
                 "tracking_id": "tracking_story_pp7",
                 "payments_receivable": False,
                 "primary_email_confirmed": False,
+                "oauth_integrations": [
+                    {
+                        "integration_type": "OAUTH_THIRD_PARTY",
+                        "oauth_third_party": [
+                            {
+                                "scopes": list(PAYPAL_REQUIRED_THIRD_PARTY_SCOPES),
+                            }
+                        ],
+                    }
+                ],
             },
         ]
     )
@@ -464,6 +489,59 @@ def test_get_billing_account_readiness_maps_paypal_seller_gaps_to_creator_action
             BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
         ),
     )
+
+
+def test_get_billing_account_readiness_requires_paypal_third_party_permissions():
+    transport = _StubPayPalTransport(
+        responses=[
+            {"access_token": "oauth_story_pp7"},
+            {
+                "merchant_id": "merchant_story_pp7",
+                "tracking_id": "tracking_story_pp7",
+                "payments_receivable": True,
+                "primary_email_confirmed": True,
+                "oauth_integrations": [
+                    {
+                        "integration_type": "OAUTH_THIRD_PARTY",
+                        "oauth_third_party": [
+                            {
+                                "scopes": [
+                                    "https://uri.paypal.com/services/payments/payment/authcapture",
+                                    "https://uri.paypal.com/services/payments/refund",
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        ]
+    )
+    provider = _provider(transport=transport)
+
+    readiness = provider.get_billing_account_readiness(
+        provider_account_id="merchant_story_pp7"
+    )
+
+    assert readiness == BillingAccountReadiness(
+        can_create_invoices=False,
+        creator_actionable_issue_codes=(
+            BILLING_ACCOUNT_READINESS_ISSUE_GRANT_PAYPAL_THIRD_PARTY_PERMISSIONS,
+        ),
+    )
+
+
+def test_paypal_error_code_from_payload_prefers_instrument_declined_detail_issue():
+    assert _paypal_error_code_from_payload(
+        {
+            "name": "UNPROCESSABLE_ENTITY",
+            "details": [
+                {
+                    "issue": "INSTRUMENT_DECLINED",
+                    "description": "The instrument presented was declined.",
+                }
+            ],
+        }
+    ) == "INSTRUMENT_DECLINED"
 
 
 def test_verify_webhook_event_posts_paypal_verification_payload_and_returns_true():
@@ -734,6 +812,46 @@ def test_capture_checkout_order_returns_capture_identity_and_paid_at():
             form_body=None,
         ),
     ]
+
+
+def test_capture_checkout_order_sends_mock_response_header_when_configured():
+    transport = _StubPayPalTransport(
+        responses=[
+            {"access_token": "oauth_story_pp17"},
+            {
+                "id": "ORDER-story-pp17",
+                "status": "COMPLETED",
+                "purchase_units": [
+                    {
+                        "payments": {
+                            "captures": [
+                                {
+                                    "id": "CAPTURE-story-pp17",
+                                    "status": "COMPLETED",
+                                }
+                            ]
+                        }
+                    }
+                ],
+            },
+        ]
+    )
+    provider = _provider(
+        transport=transport,
+        mock_capture_application_code="INSTRUMENT_DECLINED",
+    )
+
+    provider.capture_checkout_order(
+        provider_account_id="merchant_story_pp17",
+        provider_order_id="ORDER-story-pp17",
+        idempotency_key="paypal:order:capture:ORDER-story-pp17",
+    )
+
+    assert transport.calls[1].headers is not None
+    assert (
+        transport.calls[1].headers["PayPal-Mock-Response"]
+        == '{"mock_application_codes":"INSTRUMENT_DECLINED"}'
+    )
 
 
 def test_create_checkout_order_records_sanitized_trace_summary():

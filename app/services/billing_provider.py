@@ -36,6 +36,9 @@ BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL = "confirm_paypal_p
 BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE = (
     "enable_paypal_payments_receivable"
 )
+BILLING_ACCOUNT_READINESS_ISSUE_GRANT_PAYPAL_THIRD_PARTY_PERMISSIONS = (
+    "grant_paypal_third_party_permissions"
+)
 
 
 @dataclass(frozen=True)

@@ -62,6 +62,24 @@ def get_current_auth_user(
     return _get_auth_user_from_access_token(access_token=credentials.credentials, db=db)
 
 
+def get_current_request_auth_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> AuthUser:
+    if credentials is not None:
+        return _get_auth_user_from_access_token(access_token=credentials.credentials, db=db)
+
+    access_token = get_browser_session_token(request)
+    if access_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="not authenticated",
+        )
+
+    return _get_auth_user_from_access_token(access_token=access_token, db=db)
+
+
 def get_optional_browser_auth_user(
     request: Request,
     db: Session = Depends(get_db),

@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.main import app
 from app.models.invoice import Invoice
 from app.services.billing_provider import BillingAccountReadiness
+from app.services.browser_session import SESSION_COOKIE_NAME
 from app.services.paypal_provider import PayPalCheckoutOrderResult
 
 
@@ -244,6 +245,35 @@ def test_paypal_order_start_returns_approval_url_and_persists_open_invoice():
             == "https://www.sandbox.paypal.com/checkoutnow?token=ORDER-story-pp17-start"
         )
         assert invoice.status == "open"
+
+
+def test_paypal_order_start_accepts_browser_session_cookie_for_operator():
+    inserted = _insert_creator_with_booking(
+        email=f"paypal_order_start_browser_{uuid.uuid4().hex}@example.com"
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider()
+    settings = _paypal_operator_only_settings(inserted["email"])
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.post(
+                    "/paypal/orders/start",
+                    json={"booking_id": inserted["booking_id"]},
+                )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider_order_id"] == "ORDER-story-pp17-start"
+    assert provider.readiness_calls == ["merchant_story_pp17"]
+    assert provider.order_calls[0]["custom_id"] == inserted["booking_id"]
 
 
 def test_paypal_order_start_hides_path_for_non_operator_creator():

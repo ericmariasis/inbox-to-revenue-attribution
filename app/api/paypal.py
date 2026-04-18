@@ -13,12 +13,14 @@ from sqlalchemy.orm import Session
 from app.api.deps import (
     browser_auth_user_is_allowlisted_operator,
     get_current_auth_user,
+    get_current_request_auth_user,
     get_optional_browser_auth_user,
 )
 from app.core.config import Settings, get_settings
 from app.db.session import SessionLocal
 from app.db.session import get_db
 from app.models.auth_user import AuthUser
+from app.models.booking import Booking
 from app.models.invoice import Invoice
 from app.models.billing_provider import (
     BILLING_CONNECT_STATUS_CONNECTED,
@@ -40,6 +42,7 @@ from app.services.billing_provider_switch import (
     get_billing_provider_switch_attempt_by_id,
     record_billing_provider_switch_target_connection,
 )
+from app.services.billing_terms import resolve_booking_billing_terms
 from app.services.browser_session import request_prefers_html
 from app.services.paypal_connect import (
     build_paypal_connect_state,
@@ -288,7 +291,11 @@ def _verified_callback_matches_state(
         return False
     if callback_merchant_id is not None and callback_merchant_id != verified_status.merchant_id:
         return False
-    return verified_status.payments_receivable and verified_status.primary_email_confirmed
+    return (
+        verified_status.payments_receivable
+        and verified_status.primary_email_confirmed
+        and verified_status.required_third_party_permissions_granted
+    )
 
 
 def _browser_order_failure_response() -> HTMLResponse:
@@ -339,11 +346,12 @@ def _render_paypal_order_checkout_page(
     settings: Settings,
     current_user: AuthUser,
     booking_id: uuid.UUID,
-    invoice: Invoice,
+    merchant_id: str,
+    amount_cents: int,
+    currency: str,
 ) -> HTMLResponse:
-    merchant_id = invoice.resolved_provider_account_id or ""
-    currency = (invoice.currency or "USD").upper()
-    amount_dollars = f"{invoice.amount_cents / 100:.2f}"
+    currency = currency.upper()
+    amount_dollars = f"{amount_cents / 100:.2f}"
     sdk_src = _paypal_javascript_sdk_src(
         settings=settings,
         merchant_id=merchant_id,
@@ -479,7 +487,7 @@ def _render_paypal_order_checkout_page(
       <section class="hero stack">
         <p class="eyebrow">Operator-gated proof</p>
         <h1>PayPal checkout proof</h1>
-        <p>Use the documented JavaScript SDK buyer path for one existing booking. This page starts from a real server-created order and keeps final capture on the server so local paid truth stays canonical.</p>
+        <p>Use the documented JavaScript SDK buyer path for one existing booking. This page creates the order only after the buyer clicks PayPal and keeps final capture on the server so local paid truth stays canonical.</p>
       </section>
       <section class="grid">
         <article class="card stack">
@@ -500,8 +508,8 @@ def _render_paypal_order_checkout_page(
             <div><strong>Signed in as</strong>{creator_email}</div>
             <div><strong>Merchant ID</strong><code>{html.escape(merchant_id)}</code></div>
             <div><strong>Booking ID</strong><code>{html.escape(str(booking_id))}</code></div>
-            <div><strong>Invoice ID</strong><code>{html.escape(str(invoice.id))}</code></div>
-            <div><strong>Order ID</strong><code>{html.escape(invoice.resolved_provider_invoice_id or "")}</code></div>
+            <div><strong>Invoice ID</strong><code id="invoice-id">Pending until button click</code></div>
+            <div><strong>Order ID</strong><code id="order-id">Pending until button click</code></div>
             <div><strong>Amount</strong>{html.escape(currency)} {html.escape(amount_dollars)}</div>
           </div>
           <p><a href="/app/account">Return to account</a></p>
@@ -509,22 +517,81 @@ def _render_paypal_order_checkout_page(
       </section>
       <script>
         const bookingId = {json.dumps(str(booking_id))};
-        const orderId = {json.dumps(invoice.resolved_provider_invoice_id or "")};
         const statusNode = document.getElementById("status");
+        const invoiceIdNode = document.getElementById("invoice-id");
+        const orderIdNode = document.getElementById("order-id");
 
         function setStatus(message, cssClass) {{
           statusNode.textContent = message;
           statusNode.className = "status" + (cssClass ? " " + cssClass : "");
         }}
 
+        function setProofContext(payload) {{
+          if (payload.invoice_id) {{
+            invoiceIdNode.textContent = payload.invoice_id;
+          }}
+          if (payload.provider_order_id) {{
+            orderIdNode.textContent = payload.provider_order_id;
+          }}
+        }}
+
+        function parseErrorPayload(payload, fallbackMessage) {{
+          const detail = payload && payload.detail;
+          if (detail && typeof detail === "object") {{
+            return {{
+              message: detail.message || fallbackMessage,
+              errorCode: detail.error_code || payload.error_code || null,
+            }};
+          }}
+          if (typeof detail === "string" && detail) {{
+            return {{
+              message: detail,
+              errorCode: payload && payload.error_code ? payload.error_code : null,
+            }};
+          }}
+          return {{
+            message: fallbackMessage,
+            errorCode: payload && payload.error_code ? payload.error_code : null,
+          }};
+        }}
+
         if (!window.paypal) {{
           setStatus("PayPal JavaScript SDK did not load on this page.", "error");
         }} else {{
           window.paypal.Buttons({{
-            createOrder() {{
-              return orderId;
+            style: {{
+              layout: "vertical",
+              label: "paypal",
+              shape: "rect",
             }},
-            onApprove(data) {{
+            createOrder() {{
+              setStatus("Creating a PayPal order on the server.", "");
+              return fetch("/paypal/orders/start", {{
+                method: "POST",
+                headers: {{
+                  "Content-Type": "application/json",
+                  "Accept": "application/json",
+                }},
+                credentials: "same-origin",
+                body: JSON.stringify({{
+                  booking_id: bookingId,
+                }}),
+              }})
+                .then(async (response) => {{
+                  const payload = await response.json().catch(() => ({{}}));
+                  if (!response.ok) {{
+                    const failure = parseErrorPayload(
+                      payload,
+                      "Could not start the PayPal checkout flow."
+                    );
+                    throw new Error(failure.message);
+                  }}
+                  setProofContext(payload);
+                  setStatus("PayPal order created. Continue in the buyer approval flow.", "");
+                  return payload.provider_order_id;
+                }});
+            }},
+            onApprove(data, actions) {{
               setStatus("Buyer approved the order. Capturing server-side now.", "");
               return fetch("/paypal/orders/capture", {{
                 method: "POST",
@@ -541,12 +608,22 @@ def _render_paypal_order_checkout_page(
                 .then(async (response) => {{
                   const payload = await response.json().catch(() => ({{}}));
                   if (!response.ok) {{
-                    const detail = payload.detail || "Capture failed.";
-                    throw new Error(detail);
+                    const failure = parseErrorPayload(payload, "Capture failed.");
+                    if (failure.errorCode === "INSTRUMENT_DECLINED") {{
+                      setStatus(
+                        "PayPal asked the buyer to choose another funding source. Restarting checkout now.",
+                        ""
+                      );
+                      return actions.restart();
+                    }}
+                    throw new Error(failure.message);
                   }}
                   return payload;
                 }})
                 .then((payload) => {{
+                  if (!payload || !payload.capture_id) {{
+                    return;
+                  }}
                   const captureId = payload.capture_id || "capture recorded";
                   setStatus("Payment captured. Capture ID: " + captureId + ".", "success");
                 }})
@@ -794,7 +871,7 @@ def paypal_connect_callback(
 def paypal_order_start(
     request: Request,
     payload: PayPalOrderStartRequest,
-    current_user: AuthUser = Depends(get_current_auth_user),
+    current_user: AuthUser = Depends(get_current_request_auth_user),
 ) -> PayPalOrderStartResponse:
     if not _paypal_available_to_current_user(
         request=request,
@@ -861,33 +938,18 @@ def paypal_order_checkout_page(
     if isinstance(browser_user, RedirectResponse):
         return browser_user
 
-    service = _paypal_orders_service(request)
-    try:
-        result = service.start_order(
-            creator_id=browser_user.creator_id,
-            booking_id=booking_id,
-        )
-    except PayPalOrderFlowError as exc:
-        if exc.reason_code == PAYPAL_ORDER_FLOW_REASON_PROVIDER_ERROR:
-            logger.warning(
-                "paypal_order_checkout_page_provider_error creator_id=%s booking_id=%s operation=%s http_status=%s error_code=%s",
-                browser_user.creator_id,
-                booking_id,
-                exc.provider_operation,
-                exc.provider_http_status,
-                exc.provider_error_code,
-            )
+    booking = db.get(Booking, booking_id)
+    if booking is None or booking.creator_id != browser_user.creator_id:
         return _browser_order_checkout_page_error_response(
             body=(
-                "The PayPal checkout page could not be prepared for this booking. "
-                f"Current reason: {exc.reason_code}."
+                "The PayPal checkout page could not be prepared because the booking was not found "
+                "for the signed-in creator."
             )
         )
-
-    invoice = db.get(Invoice, result.invoice_id)
-    if invoice is None or invoice.creator_id != browser_user.creator_id:
+    amount_cents, currency = resolve_booking_billing_terms(booking=booking)
+    if amount_cents is None or currency is None:
         return _browser_order_checkout_page_error_response(
-            body="The PayPal checkout page was prepared, but the local invoice record could not be loaded afterward."
+            body="The PayPal checkout page could not be prepared because the booking is missing billing defaults."
         )
     if (
         browser_user.creator.resolved_billing_provider != BILLING_PROVIDER_PAYPAL
@@ -901,7 +963,9 @@ def paypal_order_checkout_page(
         settings=_settings(request),
         current_user=browser_user,
         booking_id=booking_id,
-        invoice=invoice,
+        merchant_id=browser_user.creator.billing_account_id,
+        amount_cents=amount_cents,
+        currency=currency,
     )
 
 
@@ -938,6 +1002,14 @@ def paypal_order_capture(
                 exc.provider_http_status,
                 exc.provider_error_code,
             )
+            if exc.provider_error_code == "INSTRUMENT_DECLINED":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "message": "PayPal asked the buyer to choose another funding source.",
+                        "error_code": "INSTRUMENT_DECLINED",
+                    },
+                ) from exc
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=PAYPAL_ORDER_START_UNAVAILABLE_DETAIL,

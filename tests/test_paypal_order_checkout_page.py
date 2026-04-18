@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.main import app
 from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
-from app.services.billing_provider import BillingAccountReadiness
+from app.services.billing_provider import BillingAccountReadiness, BillingProviderError
 from app.services.browser_session import SESSION_COOKIE_NAME
 from app.services.paypal_provider import PayPalCheckoutCaptureResult, PayPalCheckoutOrderResult
 
@@ -171,10 +171,11 @@ def _paypal_operator_only_settings(*emails: str, environment: str = "sandbox"):
 
 
 class _StubPayPalProvider:
-    def __init__(self):
+    def __init__(self, *, capture_error_code: str | None = None):
         self.readiness_calls: list[str] = []
         self.order_calls: list[dict[str, str]] = []
         self.capture_calls: list[dict[str, str]] = []
+        self.capture_error_code = capture_error_code
 
     def get_billing_account_readiness(self, *, provider_account_id: str) -> BillingAccountReadiness:
         self.readiness_calls.append(provider_account_id)
@@ -222,6 +223,14 @@ class _StubPayPalProvider:
                 "idempotency_key": idempotency_key,
             }
         )
+        if self.capture_error_code is not None:
+            raise BillingProviderError(
+                "paypal order capture unavailable",
+                provider_name="paypal",
+                operation="paypal_order_capture",
+                http_status=422,
+                error_code=self.capture_error_code,
+            )
         return PayPalCheckoutCaptureResult(
             order_id=provider_order_id,
             status="COMPLETED",
@@ -261,17 +270,18 @@ def test_paypal_order_checkout_page_renders_sdk_for_allowlisted_operator():
     assert "buyer-country=US" in response.text
     assert 'data-partner-attribution-id="BN-story-pp17a"' in response.text
     assert f'const bookingId = "{inserted["booking_id"]}";' in response.text
-    assert 'const orderId = "ORDER-story-pp17a-checkout";' in response.text
+    assert "/paypal/orders/start" in response.text
     assert "/paypal/orders/capture" in response.text
-    assert "ORDER-story-pp17a-checkout" in response.text
-    assert provider.readiness_calls == ["merchant_story_pp17a"]
-    assert provider.order_calls[0]["custom_id"] == inserted["booking_id"]
+    assert 'layout: "vertical"' in response.text
+    assert 'label: "paypal"' in response.text
+    assert "Pending until button click" in response.text
+    assert 'const orderId = "ORDER-story-pp17a-checkout";' not in response.text
+    assert provider.readiness_calls == []
+    assert provider.order_calls == []
 
     with Session(_engine()) as session:
         invoice = session.scalar(select(Invoice).where(Invoice.booking_id == uuid.UUID(inserted["booking_id"])))
-        assert invoice is not None
-        assert invoice.status == "open"
-        assert invoice.provider_invoice_id == "ORDER-story-pp17a-checkout"
+        assert invoice is None
 
 
 def test_paypal_order_checkout_page_hides_for_non_operator_browser_user():
@@ -325,6 +335,10 @@ def test_paypal_order_capture_browser_endpoint_marks_paid_for_allowlisted_operat
                     params={"booking_id": inserted["booking_id"]},
                     headers=HTML_ACCEPT_HEADERS,
                 )
+                start_response = client.post(
+                    "/paypal/orders/start",
+                    json={"booking_id": inserted["booking_id"]},
+                )
                 capture_response = client.post(
                     "/paypal/orders/capture",
                     json={
@@ -334,9 +348,18 @@ def test_paypal_order_capture_browser_endpoint_marks_paid_for_allowlisted_operat
                 )
 
     assert checkout_page_response.status_code == 200
+    assert start_response.status_code == 200
     assert capture_response.status_code == 200
     assert capture_response.json()["outcome"] == "captured"
     assert capture_response.json()["capture_id"] == "CAPTURE-story-pp17a-checkout"
+    assert len(provider.order_calls) == 1
+    assert provider.order_calls[0]["provider_account_id"] == "merchant_story_pp17a"
+    assert "/paypal/orders/callback?state=" in provider.order_calls[0]["return_url"]
+    assert "/paypal/orders/callback?state=" in provider.order_calls[0]["cancel_url"]
+    assert "cancel=true" in provider.order_calls[0]["cancel_url"]
+    assert provider.order_calls[0]["idempotency_key"] == f"paypal:order:start:{inserted['booking_id']}"
+    assert provider.order_calls[0]["custom_id"] == inserted["booking_id"]
+    assert provider.order_calls[0]["payer_email"] == "buyer@example.com"
     assert provider.capture_calls == [
         {
             "provider_account_id": "merchant_story_pp17a",
@@ -359,3 +382,56 @@ def test_paypal_order_capture_browser_endpoint_marks_paid_for_allowlisted_operat
         assert invoice.status == "paid"
         assert payment_event is not None
         assert payment_event.provider_invoice_id == "ORDER-story-pp17a-checkout"
+
+
+def test_paypal_order_capture_browser_endpoint_returns_instrument_declined_signal():
+    inserted = _insert_creator_with_booking(
+        email=f"paypal_order_capture_declined_{uuid.uuid4().hex}@example.com"
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider(capture_error_code="INSTRUMENT_DECLINED")
+    settings = _paypal_operator_only_settings(inserted["email"])
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                start_response = client.post(
+                    "/paypal/orders/start",
+                    json={"booking_id": inserted["booking_id"]},
+                )
+                capture_response = client.post(
+                    "/paypal/orders/capture",
+                    json={
+                        "booking_id": inserted["booking_id"],
+                        "provider_order_id": "ORDER-story-pp17a-checkout",
+                    },
+                )
+
+    assert start_response.status_code == 200
+    assert capture_response.status_code == 409
+    assert capture_response.json() == {
+        "detail": {
+            "message": "PayPal asked the buyer to choose another funding source.",
+            "error_code": "INSTRUMENT_DECLINED",
+        }
+    }
+
+    with Session(_engine()) as session:
+        invoice = session.scalar(
+            select(Invoice).where(Invoice.booking_id == uuid.UUID(inserted["booking_id"]))
+        )
+        payment_event = session.scalar(
+            select(InvoicePaymentEvent).where(
+                InvoicePaymentEvent.payment_provider == "paypal",
+                InvoicePaymentEvent.provider_event_id == "ORDER-story-pp17a-checkout",
+            )
+        )
+        assert invoice is not None
+        assert invoice.status == "open"
+        assert payment_event is None

@@ -62,6 +62,7 @@ from app.services.billing_provider import (
     BILLING_ACCOUNT_READINESS_ISSUE_COMPLETE_STRIPE_SETUP,
     BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
     BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
+    BILLING_ACCOUNT_READINESS_ISSUE_GRANT_PAYPAL_THIRD_PARTY_PERMISSIONS,
     BillingAccountReadiness,
     BillingProviderError,
     BillingProviderResolutionError,
@@ -8337,6 +8338,10 @@ def _billing_provider_actionable_issue_copy(
             (
                 BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
                 "finish the PayPal payments-receivable setup",
+            ),
+            (
+                BILLING_ACCOUNT_READINESS_ISSUE_GRANT_PAYPAL_THIRD_PARTY_PERMISSIONS,
+                "reconnect the PayPal business account and grant this platform the required PayPal permissions",
             ),
         )
         if issue_code in ordered_issue_codes

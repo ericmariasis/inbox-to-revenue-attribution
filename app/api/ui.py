@@ -3541,11 +3541,18 @@ def _render_setup_home_attention_summary(attention_count: int) -> str:
     if attention_count == 0:
         return f'<p class="footnote">{_setup_attention_copy(attention_count)}</p>'
 
+    review_count_copy = html.escape(_count_copy(attention_count, "attention item"))
+    review_heading = (
+        f"{review_count_copy} still needs review"
+        if attention_count == 1
+        else f"{review_count_copy} still need review"
+    )
+
     return f"""
     <section class="topic-summary stack">
       <div>
         <p class="eyebrow">Diagnostic summary</p>
-        <h2>{html.escape(_count_copy(attention_count, 'attention item'))} still need review</h2>
+        <h2>{review_heading}</h2>
       </div>
       <p>Blocked billing and unresolved payments stay outside paid totals until the repair or attribution issue is resolved. Review them separately so diagnostic backlog does not get mistaken for revenue truth.</p>
       <p><a href="/app/attention" class="inline-link">Open Attention</a></p>

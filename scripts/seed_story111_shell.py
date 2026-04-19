@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.core.config import get_settings
+from app.services.invoice_payment_events import UNATTRIBUTED_REASON_MISSING_TID
 
 
 STATE_ORDER = (
@@ -23,6 +24,7 @@ STATE_ORDER = (
     "tracked-no-bookings",
     "bookings-no-paid",
     "first-paid",
+    "diagnostic-review",
 )
 
 
@@ -31,6 +33,7 @@ class StateDefinition:
     title: str
     expectation: str
     reports_relevant: bool = False
+    attention_relevant: bool = False
 
 
 STATE_DEFINITIONS: dict[str, StateDefinition] = {
@@ -61,6 +64,12 @@ STATE_DEFINITIONS: dict[str, StateDefinition] = {
         expectation="Primary CTA points to reports; proof says a canonical paid result is already counted.",
         reports_relevant=True,
     ),
+    "diagnostic-review": StateDefinition(
+        title="Bookings are landing; paid proof is next",
+        expectation="Shell stays in the bookings-without-paid milestone, but a secondary diagnostic summary points to Attention for blocked billing and unmatched payment review.",
+        reports_relevant=True,
+        attention_relevant=True,
+    ),
 }
 
 
@@ -72,13 +81,14 @@ class SeededState:
     backup_login_url: str
     app_url: str
     reports_url: str | None
+    attention_url: str | None
     expected_title: str
     expectation: str
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Seed browser-login states for Story 111 /app milestone-shell verification.",
+        description="Seed browser-login states for Story 111 / Story 113 shell and attention verification.",
     )
     parser.add_argument(
         "--base-url",
@@ -316,6 +326,101 @@ def _insert_invoice(
     return invoice_id
 
 
+def _insert_blocked_billing_case(
+    *,
+    conn,
+    creator_id: str,
+    booking_id: str,
+    tid: str,
+    calendly_booking_uuid: str,
+    stripe_account_id: str,
+    first_blocked_at: datetime,
+) -> str:
+    case_id = str(uuid.uuid4())
+    conn.execute(
+        text(
+            "INSERT INTO blocked_billing_cases "
+            "(id, creator_id, booking_id, invoice_id, tid, provider, provider_booking_id, calendly_booking_uuid, stripe_account_id, "
+            "frozen_amount_cents, frozen_currency, status, reason_code, provider_operation, provider_http_status, provider_error_code, "
+            "first_blocked_at, last_blocked_at, last_retry_at, resolved_at, resolution_code) "
+            "VALUES "
+            "(:id, :creator_id, :booking_id, :invoice_id, :tid, :provider, :provider_booking_id, :calendly_booking_uuid, :stripe_account_id, "
+            ":frozen_amount_cents, :frozen_currency, :status, :reason_code, :provider_operation, :provider_http_status, :provider_error_code, "
+            ":first_blocked_at, :last_blocked_at, :last_retry_at, :resolved_at, :resolution_code)"
+        ),
+        {
+            "id": case_id,
+            "creator_id": creator_id,
+            "booking_id": booking_id,
+            "invoice_id": None,
+            "tid": tid,
+            "provider": "calendly",
+            "provider_booking_id": calendly_booking_uuid,
+            "calendly_booking_uuid": calendly_booking_uuid,
+            "stripe_account_id": stripe_account_id,
+            "frozen_amount_cents": 19500,
+            "frozen_currency": "USD",
+            "status": "open",
+            "reason_code": "creator_not_billable",
+            "provider_operation": None,
+            "provider_http_status": None,
+            "provider_error_code": None,
+            "first_blocked_at": first_blocked_at,
+            "last_blocked_at": first_blocked_at,
+            "last_retry_at": None,
+            "resolved_at": None,
+            "resolution_code": None,
+        },
+    )
+    return case_id
+
+
+def _insert_unmatched_payment_event(
+    *,
+    conn,
+    creator_id: str,
+    stripe_account_id: str,
+    stripe_event_id: str,
+    stripe_invoice_id: str,
+    paid_at: datetime,
+) -> str:
+    payment_event_id = str(uuid.uuid4())
+    conn.execute(
+        text(
+            "INSERT INTO invoice_payment_events "
+            "(id, payment_provider, provider_event_id, provider_event_type, provider_account_id, provider_invoice_id, "
+            "stripe_event_id, stripe_event_type, stripe_account_id, stripe_invoice_id, invoice_id, creator_id, booking_id, tid, "
+            "status, unattributed_reason, paid_at, received_at, processed_at) "
+            "VALUES "
+            "(:id, :payment_provider, :provider_event_id, :provider_event_type, :provider_account_id, :provider_invoice_id, "
+            ":stripe_event_id, :stripe_event_type, :stripe_account_id, :stripe_invoice_id, :invoice_id, :creator_id, :booking_id, :tid, "
+            ":status, :unattributed_reason, :paid_at, :received_at, :processed_at)"
+        ),
+        {
+            "id": payment_event_id,
+            "payment_provider": "stripe",
+            "provider_event_id": stripe_event_id,
+            "provider_event_type": "invoice.paid",
+            "provider_account_id": stripe_account_id,
+            "provider_invoice_id": stripe_invoice_id,
+            "stripe_event_id": stripe_event_id,
+            "stripe_event_type": "invoice.paid",
+            "stripe_account_id": stripe_account_id,
+            "stripe_invoice_id": stripe_invoice_id,
+            "invoice_id": None,
+            "creator_id": creator_id,
+            "booking_id": None,
+            "tid": None,
+            "status": "unmatched",
+            "unattributed_reason": UNATTRIBUTED_REASON_MISSING_TID,
+            "paid_at": paid_at,
+            "received_at": paid_at,
+            "processed_at": None,
+        },
+    )
+    return payment_event_id
+
+
 def _seed_state(*, conn, state: str, base_url: str) -> SeededState:
     suffix = uuid.uuid4().hex[:8]
     normalized_state = state.replace("-", "_")
@@ -341,6 +446,7 @@ def _seed_state(*, conn, state: str, base_url: str) -> SeededState:
         "tracked-no-bookings",
         "bookings-no-paid",
         "first-paid",
+        "diagnostic-review",
     }:
         booking_link_id = _insert_booking_link(
             conn=conn,
@@ -351,7 +457,7 @@ def _seed_state(*, conn, state: str, base_url: str) -> SeededState:
             billing_currency=None if state == "connected-not-billable" else "USD",
         )
 
-    if state in {"tracked-no-bookings", "bookings-no-paid", "first-paid"}:
+    if state in {"tracked-no-bookings", "bookings-no-paid", "first-paid", "diagnostic-review"}:
         if booking_link_id is None:
             raise AssertionError("booking_link_id should be available for tracked states")
         _insert_content(
@@ -363,7 +469,7 @@ def _seed_state(*, conn, state: str, base_url: str) -> SeededState:
         )
 
     booking_id = None
-    if state in {"bookings-no-paid", "first-paid"}:
+    if state in {"bookings-no-paid", "first-paid", "diagnostic-review"}:
         if booking_link_id is None:
             raise AssertionError("booking_link_id should be available for booking states")
         booking_id = _insert_booking(
@@ -389,6 +495,27 @@ def _seed_state(*, conn, state: str, base_url: str) -> SeededState:
             paid_at=datetime(2026, 4, 9, 13, 30, tzinfo=timezone.utc),
         )
 
+    if state == "diagnostic-review":
+        if booking_id is None:
+            raise AssertionError("booking_id should be available for diagnostic-review")
+        _insert_blocked_billing_case(
+            conn=conn,
+            creator_id=creator_id,
+            booking_id=booking_id,
+            tid=tid,
+            calendly_booking_uuid=f"BOOK_STORY111_{normalized_state}_{suffix}".upper(),
+            stripe_account_id=stripe_account_id,
+            first_blocked_at=datetime(2026, 4, 9, 13, 15, tzinfo=timezone.utc),
+        )
+        _insert_unmatched_payment_event(
+            conn=conn,
+            creator_id=creator_id,
+            stripe_account_id=stripe_account_id,
+            stripe_event_id=f"evt_story111_{normalized_state}_{suffix}",
+            stripe_invoice_id=f"in_story111_{normalized_state}_{suffix}",
+            paid_at=datetime(2026, 4, 9, 13, 20, tzinfo=timezone.utc),
+        )
+
     login_token = _magic_link_token(f"story111-{state}")
     backup_login_token = _magic_link_token(f"story111-{state}-backup")
     _insert_magic_link_token(conn=conn, user_id=user_id, raw_token=login_token)
@@ -401,6 +528,7 @@ def _seed_state(*, conn, state: str, base_url: str) -> SeededState:
         backup_login_url=f"{base_url}/auth/magic-link/verify?token={backup_login_token}",
         app_url=f"{base_url}/app",
         reports_url=f"{base_url}/app/reports" if definition.reports_relevant else None,
+        attention_url=f"{base_url}/app/attention" if definition.attention_relevant else None,
         expected_title=definition.title,
         expectation=definition.expectation,
     )
@@ -414,6 +542,8 @@ def _print_seeded_state(seeded: SeededState) -> None:
     print(f"APP_URL={seeded.app_url}")
     if seeded.reports_url is not None:
         print(f"REPORTS_URL={seeded.reports_url}")
+    if seeded.attention_url is not None:
+        print(f"ATTENTION_URL={seeded.attention_url}")
     print(f"EXPECTED_TITLE={seeded.expected_title}")
     print(f"EXPECTATION={seeded.expectation}")
     print("---")

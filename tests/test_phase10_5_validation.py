@@ -495,7 +495,7 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert "Current milestone" in setup_complete_response.text
     assert "Ready to track" in setup_complete_response.text
     assert "4 of 4 setup milestones done" in setup_complete_response.text
-    assert "This workspace is ready to track. The next real milestone is a tracked booking and then a matching paid invoice." in setup_complete_response.text
+    assert "This workspace is ready to track. The next milestone is real activity: a tracked booking and then a matching paid invoice." in setup_complete_response.text
     assert "Copy or share a tracked link" in setup_complete_response.text
     assert "1 tracked link ready to share" in setup_complete_response.text
     assert "Billing account" in setup_complete_response.text
@@ -515,7 +515,7 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert "First paid result is already landing" in trust_home_response.text
     assert "4 of 4 setup milestones done" in trust_home_response.text
     assert "Review paid results" in trust_home_response.text
-    assert "Review 2 attention items" in trust_home_response.text
+    assert "2 attention items still need review" in trust_home_response.text
     assert 'href="/app/attention"' in trust_home_response.text
 
     assert reports_response.status_code == 200

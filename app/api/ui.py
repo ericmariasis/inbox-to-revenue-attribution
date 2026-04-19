@@ -2330,11 +2330,11 @@ def _render_app_shell(
           {_render_setup_checklist_items(setup_progress['steps'])}
         </ul>
       </article>
-      <article class="card accent stack">
-        <div>
-          <p class="eyebrow">Workspace proof</p>
-          <h2>What is already true in this workspace</h2>
-        </div>
+        <article class="card accent stack">
+          <div>
+            <p class="eyebrow">Workspace proof</p>
+            <h2>What is already true in this workspace</h2>
+          </div>
         <div class="stat-grid">
           <article class="stat-tile">
             <p class="eyebrow">Booking links</p>
@@ -2362,7 +2362,7 @@ def _render_app_shell(
             <p>Canonical paid invoices counted so far.</p>
           </article>
         </div>
-        <p class="footnote">{_setup_attention_copy(setup_progress['attention_count'])}</p>
+        {_render_setup_home_attention_summary(setup_progress['attention_count'])}
       </article>
     </section>
     """
@@ -3222,14 +3222,14 @@ def _build_setup_home_milestone(
             "badge_class": "connected",
             "question": "What is working and where should I look next?",
             "body": (
-                "This workspace has moved past setup. Reports already includes canonical paid results, "
-                "and the next job is understanding what is working."
+                "The setup proof is already real here. At least one canonical paid result is attached to this workspace, "
+                "so the next job is understanding which tracked content and bookings are producing it."
             ),
             "next_title": "Review paid results",
             "next_copy": "Open reports to review the counted paid results already attached to this workspace.",
             "proof_title": f"{_count_copy(readiness.paid_invoice_count, 'paid result')} already counted",
             "proof_copy": (
-                "Canonical paid invoices are already landing, so this workspace has moved beyond the first-value wait."
+                "This is the first-value milestone, not just booking activity. Canonical paid invoices are already counted."
             ),
             "action": {
                 "title": "Review paid results",
@@ -3247,13 +3247,13 @@ def _build_setup_home_milestone(
             "badge_class": "pending",
             "question": "Why do bookings show up before revenue?",
             "body": (
-                "The tracked funnel is already capturing real bookings. Revenue stays empty until the matching invoice chain is "
-                "clear enough to count as paid truth."
+                "Tracked bookings already prove the funnel is working. Revenue stays empty until the matching invoice path is "
+                "complete enough to count as canonical paid truth."
             ),
             "next_title": "Review the content funnel",
             "next_copy": "Open reports to review the bookings already recorded and see why paid results have not landed yet.",
             "proof_title": f"{_count_copy(tracked_booking_count, 'tracked booking')} already recorded",
-            "proof_copy": "The product is already capturing activity. Canonical paid truth just has not landed yet.",
+            "proof_copy": "Activity is already visible. This is a waiting-on-paid-truth state, not a broken-tracking state.",
             "action": {
                 "title": "Review the content funnel",
                 "copy_html": "Open reports to review the bookings already recorded and see why paid results have not landed yet.",
@@ -3270,12 +3270,12 @@ def _build_setup_home_milestone(
             "badge_class": "connected",
             "question": "Am I set up correctly?",
             "body": (
-                "This workspace is ready to track. The next real milestone is a tracked booking and then a matching paid invoice."
+                "This workspace is ready to track. The next milestone is real activity: a tracked booking and then a matching paid invoice."
             ),
             "next_title": "Copy or share a tracked link",
-            "next_copy": "Open content to copy the tracked link that is ready to share from this billable setup.",
+            "next_copy": "Open content to copy the tracked link that is already ready to share from this billable setup.",
             "proof_title": f"{_count_copy(readiness.tracked_content_count, 'tracked link')} ready to share",
-            "proof_copy": "Tracking is ready. No booking has landed yet, which is different from the setup being broken.",
+            "proof_copy": "Tracking is ready. Reports stay quiet until real activity lands, which is different from setup failing.",
             "action": {
                 "title": "Copy or share a tracked link",
                 "copy_html": "Open content to copy the tracked link that is ready to share from this billable setup.",
@@ -3535,6 +3535,29 @@ def _setup_attention_copy(attention_count: int) -> str:
         f'<a href="/app/attention" class="inline-link">Review '
         f"{html.escape(_count_copy(attention_count, 'attention item'))}</a> already waiting in blocked billing or unresolved payments."
     )
+
+
+def _render_setup_home_attention_summary(attention_count: int) -> str:
+    if attention_count == 0:
+        return f'<p class="footnote">{_setup_attention_copy(attention_count)}</p>'
+
+    review_count_copy = html.escape(_count_copy(attention_count, "attention item"))
+    review_heading = (
+        f"{review_count_copy} still needs review"
+        if attention_count == 1
+        else f"{review_count_copy} still need review"
+    )
+
+    return f"""
+    <section class="topic-summary stack">
+      <div>
+        <p class="eyebrow">Diagnostic summary</p>
+        <h2>{review_heading}</h2>
+      </div>
+      <p>Blocked billing and unresolved payments stay outside paid totals until the repair or attribution issue is resolved. Review them separately so diagnostic backlog does not get mistaken for revenue truth.</p>
+      <p><a href="/app/attention" class="inline-link">Open Attention</a></p>
+    </section>
+    """
 
 
 def _readiness_stage_summary(readiness: CreatorWorkspaceReadiness) -> dict[str, str]:
@@ -6183,7 +6206,7 @@ def _render_attention_page(
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Attention</h1>
-        <p class="lede">Review diagnostic items that are still outside paid totals: bookings blocked before invoicing and verified payments whose attribution chain is still incomplete.</p>
+        <p class="lede">Review the diagnostic items the shell keeps separate from paid totals: tracked bookings blocked before invoicing and verified payments whose attribution chain is still incomplete.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -6195,26 +6218,26 @@ def _render_attention_page(
       <article class="card stack">
         <div>
           <p class="eyebrow">Blocked billing</p>
-          <h2>Bookings blocked before invoicing</h2>
+          <h2>Tracked bookings blocked before invoicing</h2>
           <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
         <p>{html.escape(_blocked_billing_backlog_copy(blocked_count))}</p>
-        <p>Some blocked cases are creator-fixable setup gaps. Others reflect provider ambiguity and stay diagnostic until retry succeeds.</p>
+        <p>These cases explain why a tracked booking did not become an invoice yet. Retry only after the stored setup or provider condition has actually changed.</p>
       </article>
       <article class="card accent stack">
         <div>
           <p class="eyebrow">Unresolved payments</p>
-          <h2>Verified payments still unmatched</h2>
+          <h2>Verified payments still diagnostic-only</h2>
         </div>
         <p>{html.escape(_unmatched_payment_backlog_copy(unmatched_count))}</p>
-        <p>Some unmatched events point to missing tracking. Others reflect provider or system ambiguity and may not be something you can fix directly.</p>
+        <p>These are real provider payment events, but they stay diagnostic until the attribution chain is complete enough to enter canonical paid truth.</p>
       </article>
     </section>
     <section class="card stack">
       <div class="section-heading">
         <div>
           <p class="eyebrow">Blocked billing</p>
-          <h2>Current blocked invoice cases</h2>
+          <h2>Current blocked billing details</h2>
         </div>
         <p>{html.escape(_count_copy(blocked_count, "open case"))}</p>
       </div>
@@ -6224,7 +6247,7 @@ def _render_attention_page(
       <div class="section-heading">
         <div>
           <p class="eyebrow">Unresolved payments</p>
-          <h2>Current unmatched payment events</h2>
+          <h2>Current unmatched payment diagnostics</h2>
         </div>
         <p>{html.escape(_count_copy(unmatched_count, "event"))}</p>
       </div>
@@ -9081,7 +9104,7 @@ def _unmatched_payment_backlog_copy(event_count: int) -> str:
     if event_count == 0:
         return "No unmatched payment events are waiting right now."
     return (
-        f"{_count_copy(event_count, 'event')} diagnostic only and still outside paid totals "
+        f"{_count_copy(event_count, 'payment event')} still diagnostic only and outside paid totals "
         "while the attribution chain is incomplete."
     )
 

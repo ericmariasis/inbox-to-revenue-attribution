@@ -2441,6 +2441,9 @@ def _render_account_page(
         <h1>Account</h1>
         <p class="lede">Review the billing setup, recovery status, and safe account actions for this workspace.</p>
       </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
     </header>
     {_render_shell_nav(current_path="/app/account")}
     {_render_account_request_notice(status_value=status_value)}
@@ -2467,14 +2470,11 @@ def _render_account_page(
           <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong>. This workspace currently holds your billing connection, booking links, tracked content, reports, and any blocked or unresolved items still waiting on review.</p>
         </section>
         <section class="topic-summary stack">
-          <div>
-            <p class="eyebrow">Session</p>
-            <h2>Session</h2>
-          </div>
-          <p>Signing out ends this browser session only. Your workspace data stays here when you sign back in.</p>
-          <form action="/sign-out" method="post">
-            <button type="submit" class="secondary">Sign out</button>
-          </form>
+        <div>
+          <p class="eyebrow">Session</p>
+          <h2>Session</h2>
+        </div>
+          <p>Use the sign-out button above to end this browser session only. Your workspace data stays here when you sign back in.</p>
         </section>
       </article>
       <article class="card stack">
@@ -2486,7 +2486,7 @@ def _render_account_page(
         <p>{html.escape(booking_links_summary)}</p>
         <p><strong>What this changes</strong></p>
         <p>Changing booking links affects future tracked behavior. Existing tracked links, bookings, invoices, and reports may still reflect earlier activity already recorded for this workspace.</p>
-        <p><a href="/app/booking-links" class="inline-link">Manage booking links</a></p>
+        <p><a href="/app/booking-links" class="button-link secondary">Manage booking links</a></p>
       </article>
     </section>
     <section id="danger-zone" class="card accent stack">
@@ -3121,7 +3121,7 @@ def _render_setup_next_action_cta(
         """
 
     return (
-        f'<p><a href="{html.escape(next_action["action_href"])}" class="inline-link">'
+        f'<p><a href="{html.escape(next_action["action_href"])}" class="button-link">'
         f"{html.escape(next_action['action_label'])}</a></p>"
     )
 
@@ -3555,7 +3555,7 @@ def _render_setup_home_attention_summary(attention_count: int) -> str:
         <h2>{review_heading}</h2>
       </div>
       <p>Blocked billing and unresolved payments stay outside paid totals until the repair or attribution issue is resolved. Review them separately so diagnostic backlog does not get mistaken for revenue truth.</p>
-      <p><a href="/app/attention" class="inline-link">Open Attention</a></p>
+      <p><a href="/app/attention" class="button-link secondary">Open Attention</a></p>
     </section>
     """
 
@@ -4196,11 +4196,17 @@ def _render_shell_nav(*, current_path: str) -> str:
     ]
     items = []
     for href, label in links:
-        class_name = "nav-link active" if href == current_path else "nav-link"
-        items.append(
-            f'<a href="{href}" class="{class_name}">{html.escape(label)}</a>'
-        )
-    return f'<nav class="shell-nav">{"".join(items)}</nav>'
+        if href == current_path:
+            items.append(
+                f'<a href="{href}" class="nav-link active" aria-current="page">'
+                f"{html.escape(label)}</a>"
+            )
+            continue
+        items.append(f'<a href="{href}" class="nav-link">{html.escape(label)}</a>')
+    return (
+        '<nav class="shell-nav" aria-label="Primary shell navigation">'
+        f'{"".join(items)}</nav>'
+    )
 
 
 def _booking_link_form_provider(form_values: dict[str, str]) -> str:
@@ -9543,6 +9549,10 @@ def _page_layout(*, title: str, body: str) -> str:
         margin-bottom: 16px;
       }}
 
+      .shell-header > form {{
+        flex-shrink: 0;
+      }}
+
       .shell-nav {{
         display: flex;
         flex-wrap: wrap;
@@ -9566,6 +9576,16 @@ def _page_layout(*, title: str, body: str) -> str:
         background: var(--accent);
         border-color: var(--accent);
         color: #fff8f3;
+      }}
+
+      .nav-link:focus-visible,
+      .button-link:focus-visible,
+      .inline-link:focus-visible,
+      button:focus-visible,
+      input:focus-visible,
+      select:focus-visible {{
+        outline: 3px solid rgba(47, 95, 91, 0.34);
+        outline-offset: 3px;
       }}
 
       .status-row {{
@@ -9836,6 +9856,28 @@ def _page_layout(*, title: str, body: str) -> str:
         background: #2f5f5b;
       }}
 
+      .button-link {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: fit-content;
+        padding: 12px 18px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        background: var(--accent);
+        color: #fff8f3;
+        font-weight: 700;
+        text-decoration: none;
+        box-shadow: 0 10px 24px rgba(163, 74, 40, 0.16);
+      }}
+
+      .button-link.secondary {{
+        background: rgba(47, 95, 91, 0.1);
+        border-color: rgba(47, 95, 91, 0.18);
+        box-shadow: none;
+        color: #224845;
+      }}
+
       .accent {{
         background:
           linear-gradient(145deg, rgba(243, 223, 212, 0.94), rgba(255, 251, 244, 0.96));
@@ -10079,6 +10121,21 @@ def _page_layout(*, title: str, body: str) -> str:
           flex-direction: column;
         }}
 
+        .shell-header > form,
+        .shell-header > form button {{
+          width: 100%;
+        }}
+
+        .shell-nav {{
+          gap: 8px;
+        }}
+
+        .nav-link,
+        .button-link {{
+          width: 100%;
+          justify-content: center;
+        }}
+
         .status-row,
         .checklist-item,
         .section-heading,
@@ -10087,6 +10144,29 @@ def _page_layout(*, title: str, body: str) -> str:
         .activity-card-header {{
           flex-direction: column;
           align-items: flex-start;
+        }}
+
+        .grid,
+        .milestone-grid,
+        .stat-grid,
+        .filter-row,
+        .report-answer-strip,
+        .report-snapshot-grid,
+        .report-proof-grid {{
+          grid-template-columns: 1fr;
+        }}
+
+        .filter-actions,
+        .report-row-actions,
+        .copy-row {{
+          flex-direction: column;
+          align-items: stretch;
+        }}
+
+        .copy-button,
+        .primary-action button,
+        .primary-action .button-link {{
+          width: 100%;
         }}
       }}
     </style>

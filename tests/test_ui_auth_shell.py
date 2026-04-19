@@ -2639,7 +2639,7 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
     assert "This read-only preview is illustrative only." not in response.text
     assert "Missing tracking ID" in response.text
     assert (
-        "1 event diagnostic only and still outside paid totals while the attribution chain is incomplete."
+        "1 payment event still diagnostic only and outside paid totals while the attribution chain is incomplete."
         in response.text
     )
     assert "These unmatched events are diagnostic only, not a second revenue total" in response.text
@@ -3253,16 +3253,32 @@ def test_attention_page_renders_blocked_and_unmatched_cases():
     assert response.status_code == 200
     assert "Attention" in response.text
     assert '<a href="/app/attention" class="nav-link active">Attention</a>' in response.text
+    assert (
+        "Review the diagnostic items the shell keeps separate from paid totals"
+        in response.text
+    )
+    assert "Tracked bookings blocked before invoicing" in response.text
+    assert "Verified payments still diagnostic-only" in response.text
     assert booking_uuid in response.text
     assert "Creator not billable" in response.text
     assert "creator_not_billable" in response.text
     assert "Finish the billing setup and then retry invoice creation." in response.text
     assert "Retry invoice creation" in response.text
     assert f'/app/attention/blocked-billing/{case_id}/retry' in response.text
+    assert "Current blocked billing details" in response.text
+    assert (
+        "These cases explain why a tracked booking did not become an invoice yet."
+        in response.text
+    )
     assert stripe_event_id in response.text
     assert stripe_invoice_id in response.text
     assert "Missing tracking ID" in response.text
     assert "Use the tracked link consistently going forward." in response.text
+    assert "Current unmatched payment diagnostics" in response.text
+    assert (
+        "These are real provider payment events, but they stay diagnostic until the attribution chain is complete enough to enter canonical paid truth."
+        in response.text
+    )
 
 
 def test_health_page_renders_creator_scoped_snapshot():
@@ -5571,7 +5587,7 @@ def test_setup_and_account_pages_reuse_waiting_for_first_paid_result_vocabulary(
     assert "Copy or share a tracked link" in setup_response.text
     assert "1 tracked link ready to share" in setup_response.text
     assert (
-        "Tracking is ready. No booking has landed yet, which is different from the setup being broken."
+        "Tracking is ready. Reports stay quiet until real activity lands, which is different from setup failing."
         in setup_response.text
     )
     assert "Ready to track and waiting for first paid result" in account_response.text
@@ -5628,9 +5644,79 @@ def test_setup_home_bookings_without_paid_result_promotes_reports_review():
     assert "Bookings are landing; paid proof is next" in response.text
     assert "Why do bookings show up before revenue?" in response.text
     assert "1 tracked booking already recorded" in response.text
-    assert "The product is already capturing activity. Canonical paid truth just has not landed yet." in response.text
+    assert "Activity is already visible. This is a waiting-on-paid-truth state, not a broken-tracking state." in response.text
     assert 'href="/app/reports"' in response.text
     assert "Open Reports" in response.text
+
+
+def test_setup_home_attention_summary_keeps_diagnostics_secondary_and_points_to_attention():
+    creator = _insert_creator_user(
+        email=f"ui_shell_attention_{uuid.uuid4().hex}@example.com",
+        name="Shell Attention Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_shell_attention",
+    )
+    access_token = _access_token(
+        user_id=creator["user_id"],
+        creator_id=creator["creator_id"],
+        email=creator["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=creator["creator_id"],
+        name="Shell Attention Call",
+        calendly_url="https://calendly.com/example/shell-attention",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    tid = f"uishellattention{uuid.uuid4().hex[:8]}"
+    booking_uuid = f"BOOK_UI_SHELL_ATTENTION_{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/shell-attention",
+        tid=tid,
+    )
+    booking_id = _insert_booking(
+        creator_id=creator["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=tid,
+        calendly_booking_uuid=booking_uuid,
+        booked_at=datetime.now(timezone.utc),
+    )
+    _insert_blocked_billing_case(
+        creator_id=creator["creator_id"],
+        booking_id=booking_id,
+        tid=tid,
+        calendly_booking_uuid=booking_uuid,
+        stripe_account_id="acct_ui_shell_attention",
+        frozen_amount_cents=19500,
+        frozen_currency="USD",
+        reason_code="creator_not_billable",
+        first_blocked_at=datetime.now(timezone.utc),
+    )
+    _insert_unmatched_payment_event(
+        creator_id=creator["creator_id"],
+        stripe_account_id="acct_ui_shell_attention",
+        stripe_event_id=f"evt_ui_shell_attention_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=f"in_ui_shell_attention_{uuid.uuid4().hex[:8]}",
+        reason=UNATTRIBUTED_REASON_MISSING_TID,
+        paid_at=datetime.now(timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Bookings are landing; paid proof is next" in response.text
+    assert "2 attention items still need review" in response.text
+    assert (
+        "Blocked billing and unresolved payments stay outside paid totals until the repair or attribution issue is resolved."
+        in response.text
+    )
+    assert "Open Attention" in response.text
+    assert 'href="/app/attention"' in response.text
 
 
 def test_setup_home_first_paid_result_promotes_reports_review():
@@ -5686,7 +5772,7 @@ def test_setup_home_first_paid_result_promotes_reports_review():
     assert "What is working and where should I look next?" in response.text
     assert "1 paid result already counted" in response.text
     assert (
-        "Canonical paid invoices are already landing, so this workspace has moved beyond the first-value wait."
+        "This is the first-value milestone, not just booking activity. Canonical paid invoices are already counted."
         in response.text
     )
     assert 'href="/app/reports"' in response.text

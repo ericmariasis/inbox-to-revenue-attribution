@@ -2622,7 +2622,7 @@ def test_reports_page_lists_invoice_backed_rows_and_supports_paid_date_filters()
 
     assert response.status_code == 200
     assert "Reports" in response.text
-    assert '<a href="/app/reports" class="nav-link active">Reports</a>' in response.text
+    assert '<a href="/app/reports" class="nav-link active" aria-current="page">Reports</a>' in response.text
     assert "reports-current" in response.text
     assert "reports-old" not in response.text
     assert "reports-other-creator" not in response.text
@@ -3252,7 +3252,7 @@ def test_attention_page_renders_blocked_and_unmatched_cases():
 
     assert response.status_code == 200
     assert "Attention" in response.text
-    assert '<a href="/app/attention" class="nav-link active">Attention</a>' in response.text
+    assert '<a href="/app/attention" class="nav-link active" aria-current="page">Attention</a>' in response.text
     assert (
         "Review the diagnostic items the shell keeps separate from paid totals"
         in response.text
@@ -3450,7 +3450,7 @@ def test_health_page_renders_creator_scoped_snapshot():
 
     assert response.status_code == 200
     assert "Health" in response.text
-    assert '<a href="/app/health" class="nav-link active">Health</a>' in response.text
+    assert '<a href="/app/health" class="nav-link active" aria-current="page">Health</a>' in response.text
     assert "FullScope ingress" in response.text
     assert "1 unattributed booking" in response.text
     assert "1 failed event currently need operator review." in response.text
@@ -4275,7 +4275,7 @@ def test_experiments_page_without_prior_run_renders_generate_empty_state_and_doe
 
     assert response.status_code == 200
     assert "Experiments" in response.text
-    assert '<a href="/app/experiments" class="nav-link active">Experiments</a>' in response.text
+    assert '<a href="/app/experiments" class="nav-link active" aria-current="page">Experiments</a>' in response.text
     assert "Generate your first experiment snapshot" in response.text
     assert "Refreshing the page does not create a new helper run." in response.text
     assert 'action="/app/experiments"' in response.text
@@ -4946,10 +4946,10 @@ def test_account_page_connected_state_keeps_switch_entry_point_for_allowlisted_o
     assert "Current status" in response.text
     assert "Next safe action" in response.text
     assert "Account context" in response.text
-    assert '<a href="/app/account" class="nav-link active">Account</a>' in response.text
+    assert '<a href="/app/account" class="nav-link active" aria-current="page">Account</a>' in response.text
     assert "Current workspace" in response.text
     assert inserted["email"] in response.text
-    assert "Signing out ends this browser session only." in response.text
+    assert "Use the sign-out button above to end this browser session only." in response.text
     assert 'action="/sign-out"' in response.text
     assert "This workspace has a connected billing provider and is billable now for future invoicing." in response.text
     assert "Changing the billing connection affects future billing readiness." in response.text
@@ -5716,6 +5716,7 @@ def test_setup_home_attention_summary_keeps_diagnostics_secondary_and_points_to_
         in response.text
     )
     assert "Open Attention" in response.text
+    assert 'class="button-link secondary">Open Attention</a>' in response.text
     assert 'href="/app/attention"' in response.text
 
 
@@ -5776,6 +5777,7 @@ def test_setup_home_first_paid_result_promotes_reports_review():
         in response.text
     )
     assert 'href="/app/reports"' in response.text
+    assert 'class="button-link">Open Reports</a>' in response.text
     assert "Open Reports" in response.text
 
 

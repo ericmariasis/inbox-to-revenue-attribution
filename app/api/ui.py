@@ -2401,37 +2401,6 @@ def _render_account_page(
     trackable_booking_links_count = readiness.trackable_booking_links_count
     limited_tracking_booking_links_count = readiness.limited_tracking_booking_links_count
     billing_ready_count = readiness.billing_ready_count
-
-    billing_detail_lines = []
-    if current_user.creator.resolved_billing_account_id:
-        billing_detail_lines.append(
-            f"<p><strong>Billing provider</strong>: "
-            f"{html.escape(_billing_provider_label(current_user.creator.resolved_billing_provider))}</p>"
-        )
-        billing_detail_lines.append(
-            f"<p><strong>Billing account</strong>: "
-            f"{html.escape(current_user.creator.resolved_billing_account_id)}</p>"
-        )
-    if current_user.creator.resolved_billing_connected_at:
-        billing_detail_lines.append(
-            f"<p><strong>Connected on</strong>: "
-            f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
-        )
-    if switch_attempt is not None:
-        billing_detail_lines.append(
-            f"<p><strong>Pending switch target</strong>: "
-            f"{html.escape(_billing_provider_label(switch_attempt.target_billing_provider))}</p>"
-        )
-        if switch_attempt.target_billing_account_id:
-            billing_detail_lines.append(
-                f"<p><strong>Pending target account</strong>: "
-                f"{html.escape(switch_attempt.target_billing_account_id)}</p>"
-            )
-        if switch_attempt.target_billing_connected_at:
-            billing_detail_lines.append(
-                f"<p><strong>Pending target connected on</strong>: "
-                f"{_format_connected_at(switch_attempt.target_billing_connected_at)}</p>"
-            )
     billing_action = billing_state["actions_html"]
 
     booking_links_summary = "No booking links are saved yet for this workspace."
@@ -2469,46 +2438,44 @@ def _render_account_page(
     <header class="shell-header">
       <div>
         <p class="eyebrow">Account</p>
-        <h1>Account settings</h1>
-        <p class="lede">Manage your sign-in session, payment connection, active booking setup, and the beta policies for starting over or closing this workspace.</p>
+        <h1>Account</h1>
+        <p class="lede">Review the billing setup, recovery status, and safe account actions for this workspace.</p>
       </div>
     </header>
     {_render_shell_nav(current_path="/app/account")}
     {_render_account_request_notice(status_value=status_value)}
+    {_render_account_billing_setup_section(
+        current_user=current_user,
+        readiness=readiness,
+        billing_state=billing_state,
+        billing_action=billing_action,
+        switch_attempt=switch_attempt,
+        switch_clean_state=switch_clean_state,
+        switch_target_guidance=switch_target_guidance,
+    )}
     <section class="grid">
       <article class="card stack">
         <div>
-          <p class="eyebrow">Current workspace</p>
-          <h2 class="wrap-anywhere">{creator_name}</h2>
+          <p class="eyebrow">Account context</p>
+          <h2>Account context</h2>
         </div>
-        <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong>. This workspace currently holds your billing connection, booking links, tracked content, reports, and any blocked or unresolved items still waiting on review.</p>
-      </article>
-      <article class="card stack">
-        <div>
-          <p class="eyebrow">Session</p>
-          <h2>Session</h2>
-        </div>
-        <p>Signing out ends this browser session only. Your workspace data stays here when you sign back in.</p>
-        <form action="/sign-out" method="post">
-          <button type="submit" class="secondary">Sign out</button>
-        </form>
-      </article>
-    </section>
-    <section class="grid">
-      <article class="card stack">
-        <div class="status-row">
+        <section class="topic-summary stack">
           <div>
-            <p class="eyebrow">Billing connection</p>
-            <h2>Billing connection</h2>
+            <p class="eyebrow">Current workspace</p>
+            <h2 class="wrap-anywhere">{creator_name}</h2>
           </div>
-          <span class="status-pill {html.escape(billing_state['badge_class'])}">{html.escape(billing_state['label'])}</span>
-        </div>
-        <p>{html.escape(billing_state['body'])}</p>
-        {"".join(billing_detail_lines)}
-        {_render_readiness_summary(readiness=readiness)}
-        <p><strong>What this changes</strong></p>
-        <p>Changing the billing connection affects future billing readiness. It does not erase local history already recorded for this workspace, and it does not delete anything from the payment provider automatically.</p>
-        {billing_action}
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong>. This workspace currently holds your billing connection, booking links, tracked content, reports, and any blocked or unresolved items still waiting on review.</p>
+        </section>
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Session</p>
+            <h2>Session</h2>
+          </div>
+          <p>Signing out ends this browser session only. Your workspace data stays here when you sign back in.</p>
+          <form action="/sign-out" method="post">
+            <button type="submit" class="secondary">Sign out</button>
+          </form>
+        </section>
       </article>
       <article class="card stack">
         <div>
@@ -2569,6 +2536,228 @@ def _render_account_page(
     </section>
     """
     return _page_layout(title="Account settings", body=body)
+
+
+def _render_account_billing_setup_section(
+    *,
+    current_user: AuthUser,
+    readiness: CreatorWorkspaceReadiness,
+    billing_state: dict[str, str],
+    billing_action: str,
+    switch_attempt: BillingProviderSwitchAttempt | None,
+    switch_clean_state: BillingProviderSwitchCleanState,
+    switch_target_guidance: _BillingProviderSetupGuidance,
+) -> str:
+    pending_switch_html = ""
+    if switch_attempt is not None:
+        pending_switch_html = _render_account_pending_switch_summary(
+            current_user=current_user,
+            switch_attempt=switch_attempt,
+            switch_clean_state=switch_clean_state,
+            switch_target_guidance=switch_target_guidance,
+        )
+
+    return f"""
+    <section class="hero milestone-hero stack account-billing-hero">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Billing setup</p>
+          <h2>Billing connection</h2>
+        </div>
+        <span class="status-pill {html.escape(billing_state['badge_class'])}">{html.escape(billing_state['label'])}</span>
+      </div>
+      <p class="lede">Use this billing surface to confirm what is configured now, understand any recovery or switch blockers, and take the next safe action for future billing changes.</p>
+      <div class="milestone-grid">
+        {_render_account_current_provider_summary(current_user=current_user, readiness=readiness)}
+        {_render_account_status_summary(billing_state=billing_state)}
+        {_render_account_next_safe_action_summary(
+            readiness=readiness,
+            billing_action=billing_action,
+            switch_attempt=switch_attempt,
+        )}
+      </div>
+      {pending_switch_html}
+      <div class="milestone-grid account-support-grid">
+        {_render_readiness_summary(readiness=readiness)}
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">What this changes</p>
+            <h2>Future billing and preserved history</h2>
+          </div>
+          <p>Changing the billing connection affects future billing readiness. It does not erase local history already recorded for this workspace, and it does not delete anything from the payment provider automatically.</p>
+        </section>
+      </div>
+    </section>
+    """
+
+
+def _render_account_current_provider_summary(
+    *,
+    current_user: AuthUser,
+    readiness: CreatorWorkspaceReadiness,
+) -> str:
+    configured_provider = (
+        current_user.creator.resolved_billing_provider or readiness.billing_provider
+    )
+    provider_label = _billing_provider_label(configured_provider)
+    if readiness.billing_connect_status == "connected":
+        provider_status = "Connected for future billing review."
+    elif readiness.billing_connect_status == "disconnected":
+        provider_status = "Previously chosen, but currently disconnected."
+    elif _creator_needs_initial_billing_provider_choice(
+        creator=current_user.creator,
+        readiness=readiness,
+    ):
+        provider_status = "No billing provider has been chosen yet."
+    else:
+        provider_status = "Setup has started, but a billing provider is not connected yet."
+
+    detail_lines = [f"<p><strong>Billing provider</strong>: {html.escape(provider_label)}</p>"]
+    if current_user.creator.resolved_billing_account_id:
+        detail_lines.append(
+            f"<p><strong>Billing account</strong>: "
+            f'<span class="wrap-anywhere">{html.escape(current_user.creator.resolved_billing_account_id)}</span></p>'
+        )
+    else:
+        detail_lines.append("<p><strong>Billing account</strong>: No active billing account is saved yet.</p>")
+    if current_user.creator.resolved_billing_connected_at:
+        detail_lines.append(
+            f"<p><strong>Connected on</strong>: "
+            f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
+        )
+
+    return f"""
+    <section class="topic-summary stack">
+      <div>
+        <p class="eyebrow">Current provider</p>
+        <h2>{html.escape(provider_label)}</h2>
+      </div>
+      <p>{html.escape(provider_status)}</p>
+      {"".join(detail_lines)}
+    </section>
+    """
+
+
+def _render_account_status_summary(*, billing_state: dict[str, str]) -> str:
+    return f"""
+    <section class="topic-summary stack">
+      <div>
+        <p class="eyebrow">Current status</p>
+        <h2>{html.escape(billing_state['label'])}</h2>
+      </div>
+      <p>{html.escape(billing_state['body'])}</p>
+      <p><strong>What this means</strong>: review this state before changing future billing behavior.</p>
+    </section>
+    """
+
+
+def _render_account_next_safe_action_summary(
+    *,
+    readiness: CreatorWorkspaceReadiness,
+    billing_action: str,
+    switch_attempt: BillingProviderSwitchAttempt | None,
+) -> str:
+    if billing_action:
+        action_title = "Take the next safe action"
+        action_copy = (
+            "Use only the actions below for future billing changes. Historical records and earlier workspace history stay preserved."
+        )
+    elif readiness.billing_connect_status == "connected" and readiness.billable_now and switch_attempt is None:
+        action_title = "No immediate action required"
+        action_copy = (
+            "This workspace is ready for future billing. Return here when you need to reconnect or switch providers."
+        )
+    else:
+        action_title = "No automatic action available right now"
+        action_copy = (
+            "Review the current status first. The active provider stays in place until the blocker is cleared or a supported action becomes available."
+        )
+
+    return f"""
+    <section class="topic-summary stack primary-action">
+      <div>
+        <p class="eyebrow">Next safe action</p>
+        <h2>{html.escape(action_title)}</h2>
+      </div>
+      <p>{html.escape(action_copy)}</p>
+      {billing_action}
+    </section>
+    """
+
+
+def _render_account_pending_switch_summary(
+    *,
+    current_user: AuthUser,
+    switch_attempt: BillingProviderSwitchAttempt,
+    switch_clean_state: BillingProviderSwitchCleanState,
+    switch_target_guidance: _BillingProviderSetupGuidance,
+) -> str:
+    target_provider_label = _billing_provider_label(switch_attempt.target_billing_provider)
+    current_provider_label = _billing_provider_label(current_user.creator.resolved_billing_provider)
+
+    if (
+        switch_attempt.target_billing_connect_status != "connected"
+        or switch_attempt.target_billing_account_id is None
+    ):
+        switch_label = "Waiting"
+        switch_badge_class = "pending"
+        switch_summary = (
+            f"{target_provider_label} is selected as the replacement provider, but setup is not connected yet. "
+            f"{current_provider_label} stays active until the replacement provider is connected and committed."
+        )
+    elif switch_target_guidance.state == _BILLING_PROVIDER_SETUP_STATE_BLOCKED:
+        switch_label = "Needs review"
+        switch_badge_class = "disconnected"
+        switch_summary = (
+            f"{target_provider_label} is connected for the pending switch, but its invoice readiness could not be verified yet."
+        )
+    elif switch_target_guidance.state == _BILLING_PROVIDER_SETUP_STATE_NOT_READY:
+        switch_label = "Needs setup"
+        switch_badge_class = "pending"
+        switch_summary = (
+            f"{target_provider_label} is connected for the pending switch, but it still needs more setup before the switch can be committed."
+        )
+    elif not switch_clean_state.is_clean:
+        switch_label = "Blocked"
+        switch_badge_class = "disconnected"
+        switch_summary = (
+            f"{target_provider_label} is connected, but the switch is blocked by active billing work that must be cleared first."
+        )
+    else:
+        switch_label = "Ready"
+        switch_badge_class = "connected"
+        switch_summary = (
+            f"{target_provider_label} is connected and ready. {current_provider_label} stays active until you commit the switch."
+        )
+
+    detail_lines = [
+        f"<p><strong>Current provider</strong>: {html.escape(current_provider_label)}</p>",
+        f"<p><strong>Pending switch target</strong>: {html.escape(target_provider_label)}</p>",
+    ]
+    if switch_attempt.target_billing_account_id:
+        detail_lines.append(
+            f"<p><strong>Pending target account</strong>: "
+            f'<span class="wrap-anywhere">{html.escape(switch_attempt.target_billing_account_id)}</span></p>'
+        )
+    if switch_attempt.target_billing_connected_at:
+        detail_lines.append(
+            f"<p><strong>Pending target connected on</strong>: "
+            f"{_format_connected_at(switch_attempt.target_billing_connected_at)}</p>"
+        )
+
+    return f"""
+    <section class="topic-summary stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Switch state</p>
+          <h2>Pending provider switch</h2>
+        </div>
+        <span class="status-pill {html.escape(switch_badge_class)}">{html.escape(switch_label)}</span>
+      </div>
+      <p>{html.escape(switch_summary)}</p>
+      {"".join(detail_lines)}
+    </section>
+    """
 
 
 def _render_setup_home_notice(*, status_value: str | None) -> str:
@@ -9393,6 +9582,19 @@ def _page_layout(*, title: str, body: str) -> str:
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
         gap: 12px;
+      }}
+
+      .account-billing-hero .topic-summary {{
+        height: 100%;
+      }}
+
+      .primary-action {{
+        background: var(--panel-strong);
+        border-color: rgba(163, 74, 40, 0.16);
+      }}
+
+      .primary-action button {{
+        width: 100%;
       }}
 
       .milestone-note {{

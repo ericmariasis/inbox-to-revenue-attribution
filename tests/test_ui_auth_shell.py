@@ -4925,6 +4925,11 @@ def test_account_page_connected_state_keeps_switch_entry_point_for_allowlisted_o
 
     assert response.status_code == 200
     assert "Account settings" in response.text
+    assert "Billing setup" in response.text
+    assert "Current provider" in response.text
+    assert "Current status" in response.text
+    assert "Next safe action" in response.text
+    assert "Account context" in response.text
     assert '<a href="/app/account" class="nav-link active">Account</a>' in response.text
     assert "Current workspace" in response.text
     assert inserted["email"] in response.text
@@ -4933,6 +4938,7 @@ def test_account_page_connected_state_keeps_switch_entry_point_for_allowlisted_o
     assert "This workspace has a connected billing provider and is billable now for future invoicing." in response.text
     assert "Changing the billing connection affects future billing readiness." in response.text
     assert "acct_ui_account_connected" in response.text
+    assert 'class="wrap-anywhere">acct_ui_account_connected</span>' in response.text
     assert "Start PayPal switch" in response.text
     assert 'action="/app/paypal/connect/start"' in response.text
     assert "Stripe stays active until PayPal is connected, ready, and you commit the switch." in response.text
@@ -5073,6 +5079,9 @@ def test_account_page_pending_paypal_switch_keeps_resume_restart_and_cancel_for_
             response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
+    assert "Pending provider switch" in response.text
+    assert "Switch state" in response.text
+    assert "Current provider" in response.text
     assert "Pending switch target" in response.text
     assert "PayPal" in response.text
     assert "Resume PayPal setup" in response.text
@@ -5198,8 +5207,11 @@ def test_account_page_ready_pending_paypal_switch_keeps_commit_action_for_allowl
                 response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
+    assert "Pending provider switch" in response.text
+    assert "Switch state" in response.text
     assert "Pending target account" in response.text
     assert "merchant_ui_account_switch_ready" in response.text
+    assert 'class="wrap-anywhere">merchant_ui_account_switch_ready</span>' in response.text
     assert "Switch to PayPal" in response.text
     assert 'action="/app/account/billing-switch/commit"' in response.text
     assert provider.readiness_calls == ["merchant_ui_account_switch_ready"]

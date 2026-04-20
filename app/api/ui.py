@@ -83,7 +83,6 @@ from app.services.billing_provider_switch import (
     commit_billing_provider_switch_attempt,
     get_billing_provider_switch_attempt,
     get_billing_provider_switch_clean_state,
-    replacement_billing_provider_name,
     restart_billing_provider_switch_attempt,
 )
 from app.services.blocked_billing import (
@@ -107,6 +106,12 @@ from app.services.creator_workspace_state import (
     CreatorWorkspaceState,
     build_creator_workspace_readiness,
     build_creator_workspace_state,
+)
+from app.services.creator_shell_view_model import (
+    build_account_billing_management_view,
+    build_attention_overview_view,
+    build_setup_home_attention_summary_view,
+    build_setup_home_milestone_view,
 )
 from app.services.email_provider import (
     MagicLinkEmailDeliveryError,
@@ -3215,313 +3220,24 @@ def _build_setup_home_milestone(
     show_provider_choice: bool,
     paypal_available_to_creator: bool,
 ) -> dict[str, object]:
-    if readiness.paid_invoice_count > 0:
-        return {
-            "title": "First paid result is already landing",
-            "badge_label": "Paid",
-            "badge_class": "connected",
-            "question": "What is working and where should I look next?",
-            "body": (
-                "The setup proof is already real here. At least one canonical paid result is attached to this workspace, "
-                "so the next job is understanding which tracked content and bookings are producing it."
-            ),
-            "next_title": "Review paid results",
-            "next_copy": "Open reports to review the counted paid results already attached to this workspace.",
-            "proof_title": f"{_count_copy(readiness.paid_invoice_count, 'paid result')} already counted",
-            "proof_copy": (
-                "This is the first-value milestone, not just booking activity. Canonical paid invoices are already counted."
-            ),
-            "action": {
-                "title": "Review paid results",
-                "copy_html": "Open reports to review the counted paid results already attached to this workspace.",
-                "action_label": "Open Reports",
-                "action_href": "/app/reports",
-                "action_method": "get",
-            },
-        }
-
-    if readiness.waiting_for_first_paid_result and tracked_booking_count > 0:
-        return {
-            "title": "Bookings are landing; paid proof is next",
-            "badge_label": "Current",
-            "badge_class": "pending",
-            "question": "Why do bookings show up before revenue?",
-            "body": (
-                "Tracked bookings already prove the funnel is working. Revenue stays empty until the matching invoice path is "
-                "complete enough to count as canonical paid truth."
-            ),
-            "next_title": "Review the content funnel",
-            "next_copy": "Open reports to review the bookings already recorded and see why paid results have not landed yet.",
-            "proof_title": f"{_count_copy(tracked_booking_count, 'tracked booking')} already recorded",
-            "proof_copy": "Activity is already visible. This is a waiting-on-paid-truth state, not a broken-tracking state.",
-            "action": {
-                "title": "Review the content funnel",
-                "copy_html": "Open reports to review the bookings already recorded and see why paid results have not landed yet.",
-                "action_label": "Open Reports",
-                "action_href": "/app/reports",
-                "action_method": "get",
-            },
-        }
-
-    if readiness.waiting_for_first_paid_result:
-        return {
-            "title": "Ready to track",
-            "badge_label": "Current",
-            "badge_class": "connected",
-            "question": "Am I set up correctly?",
-            "body": (
-                "This workspace is ready to track. The next milestone is real activity: a tracked booking and then a matching paid invoice."
-            ),
-            "next_title": "Copy or share a tracked link",
-            "next_copy": "Open content to copy the tracked link that is already ready to share from this billable setup.",
-            "proof_title": f"{_count_copy(readiness.tracked_content_count, 'tracked link')} ready to share",
-            "proof_copy": "Tracking is ready. Reports stay quiet until real activity lands, which is different from setup failing.",
-            "action": {
-                "title": "Copy or share a tracked link",
-                "copy_html": "Open content to copy the tracked link that is ready to share from this billable setup.",
-                "action_label": "Open content",
-                "action_href": "/app/content",
-                "action_method": "get",
-            },
-        }
-
-    if readiness.billable_now:
-        return {
-            "title": "Billable now",
-            "badge_label": "Current",
-            "badge_class": "connected",
-            "question": "How do I start tracking real activity?",
-            "body": (
-                "Billing is ready. The next milestone is creating tracked content so the links you share can carry attribution into bookings."
-            ),
-            "next_title": "Create tracked content",
-            "next_copy": "Open content and create the first tracked link for this billable setup.",
-            "proof_title": f"{_count_copy(readiness.billing_ready_count, 'saved link')} already billable now",
-            "proof_copy": "At least one saved booking link already has amount and currency, so invoicing can be trusted once activity arrives.",
-            "action": {
-                "title": "Create tracked content",
-                "copy_html": "Open content and create the first tracked link for this billable setup.",
-                "action_label": "Open content",
-                "action_href": "/app/content",
-                "action_method": "get",
-            },
-        }
-
-    if _billing_provider_is_connected_but_blocked(readiness):
-        return {
-            "title": "Billing setup needs review",
-            "badge_label": "Blocked",
-            "badge_class": "disconnected",
-            "question": "Is something wrong before this workspace becomes billable now?",
-            "body": _billing_provider_blocked_copy(provider_name=readiness.billing_provider),
-            "next_title": "Review billing connection",
-            "next_copy": "Open account to review the connected provider and the readiness issue before relying on new bookings.",
-            "proof_title": "A billing provider is connected",
-            "proof_copy": "The connection exists, but invoice readiness could not be verified cleanly for future billing.",
-            "action": {
-                "title": "Review billing connection",
-                "copy_html": "Open account to review the connected provider and the readiness issue before relying on new bookings.",
-                "action_label": "Open account",
-                "action_href": "/app/account",
-                "action_method": "get",
-            },
-        }
-
-    if _billing_provider_is_connected_but_not_ready(readiness):
-        return {
-            "title": "Connected, but not billable now",
-            "badge_label": "Current",
-            "badge_class": "pending",
-            "question": "What is keeping this workspace from becoming billable now?",
-            "body": _billing_provider_not_ready_copy(readiness),
-            "next_title": "Review billing readiness",
-            "next_copy": "Open account to review the connected provider and the setup work still needed before invoicing can start.",
-            "proof_title": "A billing provider is already connected",
-            "proof_copy": "The workspace is past the first connection step, but the provider still is not ready to create invoices.",
-            "action": {
-                "title": "Review billing readiness",
-                "copy_html": "Open account to review the connected provider and the setup work still needed before invoicing can start.",
-                "action_label": "Open account",
-                "action_href": "/app/account",
-                "action_method": "get",
-            },
-        }
-
-    if readiness.billing_connect_status == "disconnected":
-        provider_action = _billing_provider_connect_action(
-            provider_name=readiness.billing_provider,
-            reconnect=True,
-            paypal_available_to_creator=paypal_available_to_creator,
-        )
-        if provider_action is None:
-            return {
-                "title": "Reconnect billing setup",
-                "badge_label": "Blocked",
-                "badge_class": "disconnected",
-                "question": "How do I restore billing safely?",
-                "body": (
-                    f"This workspace was connected to {_billing_provider_label(readiness.billing_provider)} before, but it is disconnected now. "
-                    f"{_PAYPAL_UNAVAILABLE_CREATOR_COPY}"
-                ),
-                "next_title": "Review billing connection",
-                "next_copy": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
-                "proof_title": "Historical workspace data stays here",
-                "proof_copy": "Reconnection affects future billing readiness. Existing local history remains attached to this workspace.",
-                "action": {
-                    "title": "Review billing connection",
-                    "copy_html": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
-                    "action_label": "Open account",
-                    "action_href": "/app/account",
-                    "action_method": "get",
-                },
-            }
-        return {
-            "title": "Reconnect billing setup",
-            "badge_label": "Blocked",
-            "badge_class": "disconnected",
-            "question": "What do I need to restore before new bookings can move into invoicing?",
-            "body": (
-                f"This workspace was connected to {_billing_provider_label(readiness.billing_provider)} before, but it is disconnected now. "
-                "Reconnect it before you rely on new bookings."
-            ),
-            "next_title": provider_action["label"],
-            "next_copy": "Reconnect billing so the workspace can return to the billable-now path.",
-            "proof_title": "Historical workspace data stays here",
-            "proof_copy": "Reconnection affects future billing readiness. Existing local history remains attached to this workspace.",
-            "action": {
-                "title": provider_action["label"],
-                "copy_html": "Reconnect billing so the workspace can return to the billable-now path.",
-                "action_label": provider_action["label"],
-                "action_href": provider_action["href"],
-                "action_method": "post",
-            },
-        }
-
-    if readiness.billing_connected:
-        if readiness.booking_links_count == 0:
-            return {
-                "title": "Connected, but not billable now",
-                "badge_label": "Current",
-                "badge_class": "pending",
-                "question": "What does this workspace need before it can bill real activity?",
-                "body": "A billing provider is connected. The next milestone is saving a booking link and adding billing defaults.",
-                "next_title": "Add your first booking link",
-                "next_copy": "Open booking links and save the destination this creator actually uses.",
-                "proof_title": "The billing connection step is already done",
-                "proof_copy": "The next blocker is configuration, not connection.",
-                "action": {
-                    "title": "Add your first booking link",
-                    "copy_html": "Open booking links and save the destination this creator actually uses.",
-                    "action_label": "Open booking links",
-                    "action_href": "/app/booking-links",
-                    "action_method": "get",
-                },
-            }
-        if _has_limited_tracking_only_booking_links(readiness):
-            next_copy = "Open booking links and add a creator-visible tracked-content-ready link before relying on billable-now state."
-            body = (
-                "Saved booking sources can generate tracked redirects now, but billable-now readiness still waits for end-to-end provider support."
-            )
-        elif _has_inactive_creator_booking_links(readiness):
-            next_copy = "Open booking links and add a currently supported booking link for creator-tracked setup."
-            body = (
-                "Saved booking sources are not active for creator-tracked workflows right now, so this workspace is still not billable now."
-            )
-        else:
-            next_copy = "Open booking links and add amount and currency so at least one saved link becomes billable now."
-            body = "A billing provider is connected, but this workspace still needs amount and currency on at least one saved booking link."
-        return {
-            "title": "Connected, but not billable now",
-            "badge_label": "Current",
-            "badge_class": "pending",
-            "question": "What is keeping this workspace from becoming billable now?",
-            "body": body,
-            "next_title": "Become billable now",
-            "next_copy": next_copy,
-            "proof_title": f"{_count_copy(readiness.booking_links_count, 'booking link')} already saved",
-            "proof_copy": "The workspace has moved beyond connection. The remaining gap is making one saved link usable for creator billing.",
-            "action": {
-                "title": "Become billable now",
-                "copy_html": next_copy,
-                "action_label": "Open booking links",
-                "action_href": "/app/booking-links",
-                "action_method": "get",
-            },
-        }
-
-    if show_provider_choice:
-        next_copy = (
-            "Choose Stripe or PayPal to start billing setup. This release still keeps one active billing provider per workspace."
-            if paypal_available_to_creator
-            else "Choose Stripe to start billing setup. PayPal setup is not yet available for general creators."
-        )
-        proof_copy = (
-            "Nothing is broken yet. This workspace is simply still before the first billing milestone."
-            if attention_count == 0
-            else "Billing has not started yet, and blocked or unresolved items will stay separate if they appear later."
-        )
-        return {
-            "title": "Choose billing provider",
-            "badge_label": "Start here",
-            "badge_class": "pending",
-            "question": "What do I need to do first?",
-            "body": (
-                "A billing provider must be connected before this workspace can turn new bookings into invoices."
-            ),
-            "next_title": "Start billing setup",
-            "next_copy": next_copy,
-            "proof_title": "No provider is connected yet",
-            "proof_copy": proof_copy,
-            "action": {
-                "title": "Start billing setup",
-                "copy_html": next_copy,
-                "action_label": "",
-                "action_href": "",
-                "action_method": "provider-choice",
-            },
-        }
-
-    provider_action = _billing_provider_connect_action(
-        provider_name=readiness.billing_provider,
-        reconnect=False,
+    milestone = build_setup_home_milestone_view(
+        readiness=readiness,
+        attention_count=attention_count,
+        tracked_booking_count=tracked_booking_count,
+        show_provider_choice=show_provider_choice,
         paypal_available_to_creator=paypal_available_to_creator,
     )
-    if provider_action is None:
-        return {
-            "title": "Review billing setup",
-            "badge_label": "Start here",
-            "badge_class": "pending",
-            "question": "What do I need to do first?",
-            "body": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
-            "next_title": "Review billing options",
-            "next_copy": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
-            "proof_title": "No provider is connected yet",
-            "proof_copy": "This workspace is still before the first billing milestone.",
-            "action": {
-                "title": "Review billing options",
-                "copy_html": _PAYPAL_UNAVAILABLE_CREATOR_COPY,
-                "action_label": "Open account",
-                "action_href": "/app/account",
-                "action_method": "get",
-            },
-        }
     return {
-        "title": "Start billing setup",
-        "badge_label": "Start here",
-        "badge_class": "pending",
-        "question": "What do I need to do first?",
-        "body": "A billing provider is required before this workspace can turn new bookings into invoices.",
-        "next_title": provider_action["label"],
-        "next_copy": "Finish billing setup so the rest of the shell can move toward a billable workspace.",
-        "proof_title": "No provider is connected yet",
-        "proof_copy": "The workspace is still before the first billing milestone, not in a broken state.",
-        "action": {
-            "title": provider_action["label"],
-            "copy_html": "Finish billing setup so the rest of the shell can move toward a billable workspace.",
-            "action_label": provider_action["label"],
-            "action_href": provider_action["href"],
-            "action_method": "post",
-        },
+        "title": milestone.title,
+        "badge_label": milestone.badge_label,
+        "badge_class": milestone.badge_class,
+        "question": milestone.question,
+        "body": milestone.body,
+        "next_title": milestone.next_title,
+        "next_copy": milestone.next_copy,
+        "proof_title": milestone.proof_title,
+        "proof_copy": milestone.proof_copy,
+        "action": milestone.action,
     }
 
 
@@ -3538,24 +3254,22 @@ def _setup_attention_copy(attention_count: int) -> str:
 
 
 def _render_setup_home_attention_summary(attention_count: int) -> str:
-    if attention_count == 0:
-        return f'<p class="footnote">{_setup_attention_copy(attention_count)}</p>'
-
-    review_count_copy = html.escape(_count_copy(attention_count, "attention item"))
-    review_heading = (
-        f"{review_count_copy} still needs review"
-        if attention_count == 1
-        else f"{review_count_copy} still need review"
-    )
+    summary_view = build_setup_home_attention_summary_view(attention_count)
+    if summary_view.action is None:
+        return (
+            f'<p class="footnote">{html.escape(summary_view.inline_prefix or "")}'
+            f'<a href="/app/attention" class="inline-link">{html.escape(summary_view.inline_link_label or "")}</a>'
+            f"{html.escape(summary_view.inline_suffix or '')}</p>"
+        )
 
     return f"""
     <section class="topic-summary stack">
       <div>
         <p class="eyebrow">Diagnostic summary</p>
-        <h2>{review_heading}</h2>
+        <h2>{html.escape(summary_view.title or "")}</h2>
       </div>
-      <p>Blocked billing and unresolved payments stay outside paid totals until the repair or attribution issue is resolved. Review them separately so diagnostic backlog does not get mistaken for revenue truth.</p>
-      <p><a href="/app/attention" class="button-link secondary">Open Attention</a></p>
+      <p>{html.escape(summary_view.body)}</p>
+      <p><a href="{html.escape(summary_view.action['href'])}" class="button-link secondary">{html.escape(summary_view.action['label'])}</a></p>
     </section>
     """
 
@@ -6206,6 +5920,10 @@ def _render_attention_page(
     creator_email = html.escape(current_user.email)
     blocked_count = len(blocked_cases)
     unmatched_count = len(unmatched_events)
+    overview = build_attention_overview_view(
+        blocked_count=blocked_count,
+        unmatched_count=unmatched_count,
+    )
 
     body = f"""
     <header class="shell-header">
@@ -6224,19 +5942,19 @@ def _render_attention_page(
       <article class="card stack">
         <div>
           <p class="eyebrow">Blocked billing</p>
-          <h2>Tracked bookings blocked before invoicing</h2>
+          <h2>{html.escape(overview.blocked_heading)}</h2>
           <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
         </div>
-        <p>{html.escape(_blocked_billing_backlog_copy(blocked_count))}</p>
-        <p>These cases explain why a tracked booking did not become an invoice yet. Retry only after the stored setup or provider condition has actually changed.</p>
+        <p>{html.escape(overview.blocked_backlog_copy)}</p>
+        <p>{html.escape(overview.blocked_explainer)}</p>
       </article>
       <article class="card accent stack">
         <div>
           <p class="eyebrow">Unresolved payments</p>
-          <h2>Verified payments still diagnostic-only</h2>
+          <h2>{html.escape(overview.unmatched_heading)}</h2>
         </div>
-        <p>{html.escape(_unmatched_payment_backlog_copy(unmatched_count))}</p>
-        <p>These are real provider payment events, but they stay diagnostic until the attribution chain is complete enough to enter canonical paid truth.</p>
+        <p>{html.escape(overview.unmatched_backlog_copy)}</p>
+        <p>{html.escape(overview.unmatched_explainer)}</p>
       </article>
     </section>
     <section class="card stack">
@@ -8089,187 +7807,39 @@ def _account_billing_management_state(
     switch_target_guidance: _BillingProviderSetupGuidance,
     paypal_available_to_creator: bool,
 ) -> dict[str, str]:
-    normalized_status = readiness.billing_connect_status
-    if normalized_status == "connected":
-        current_provider_label = _billing_provider_label(current_billing_provider)
-        target_provider_name = replacement_billing_provider_name(
-            current_provider=current_billing_provider
-        )
-        target_provider_label = _billing_provider_label(target_provider_name)
-        body = _connected_account_billing_body(readiness)
-        actions_html = ""
-        if switch_attempt is not None:
-            body = _billing_provider_switch_attempt_body(
-                current_provider_label=current_provider_label,
-                switch_attempt=switch_attempt,
-                switch_clean_state=switch_clean_state,
-                switch_target_guidance=switch_target_guidance,
-            )
-            actions_html = _render_billing_provider_switch_attempt_actions(
-                switch_attempt=switch_attempt,
-                switch_clean_state=switch_clean_state,
-                switch_target_guidance=switch_target_guidance,
-                paypal_available_to_creator=paypal_available_to_creator,
-            )
-            if (
-                switch_attempt.target_billing_provider == BILLING_PROVIDER_PAYPAL
-                and not paypal_available_to_creator
-            ):
-                body = (
-                f"{body} {_PAYPAL_UNAVAILABLE_CREATOR_COPY} "
-                    "Cancel the pending switch if you need to stay on the current provider."
-                )
-        elif switch_clean_state.is_clean:
-            target_provider_action = _billing_provider_connect_action(
-                provider_name=target_provider_name,
-                reconnect=False,
-                paypal_available_to_creator=paypal_available_to_creator,
-            )
-            if target_provider_action is None:
-                body = (
-                    f"{body} {_PAYPAL_UNAVAILABLE_CREATOR_COPY}"
-                )
-            else:
-                body = (
-                    f"{body} You can start a {target_provider_label} switch here. "
-                    f"{current_provider_label} stays active until {target_provider_label} is connected, "
-                    "ready, and you commit the switch."
-                )
-                actions_html = _render_post_action_button(
-                    action=target_provider_action,
-                    label=f"Start {target_provider_label} switch",
-                )
-        else:
-            body = (
-                f"{body} Provider switching is blocked right now because this workspace still has "
-                f"{_billing_provider_switch_blockers_copy(switch_clean_state=switch_clean_state)}. "
-                f"Clear those items before starting a {target_provider_label} switch."
-            )
-        return {
-            "label": "Connected",
-            "body": body,
-            "badge_class": "connected",
-            "actions_html": actions_html,
-        }
-
-    if normalized_status == "disconnected":
-        provider_action = _billing_provider_connect_action(
-            provider_name=readiness.billing_provider,
-            reconnect=True,
+    management_view = build_account_billing_management_view(
+        current_billing_provider=current_billing_provider,
+        readiness=readiness,
+        show_provider_choice=show_provider_choice,
+        switch_attempt=switch_attempt,
+        switch_clean_state=switch_clean_state,
+        switch_target_guidance_state=switch_target_guidance.state,
+        switch_target_actionable_issue_codes=switch_target_guidance.actionable_issue_codes,
+        paypal_available_to_creator=paypal_available_to_creator,
+    )
+    actions_html = ""
+    if management_view.action_mode == "switch-attempt" and switch_attempt is not None:
+        actions_html = _render_billing_provider_switch_attempt_actions(
+            switch_attempt=switch_attempt,
+            switch_clean_state=switch_clean_state,
+            switch_target_guidance=switch_target_guidance,
             paypal_available_to_creator=paypal_available_to_creator,
         )
-        body = (
-            f"This workspace is not currently connected to {html.escape(_billing_provider_label(readiness.billing_provider))} "
-            "for invoicing. You can reconnect it here when you are ready."
-        )
-        actions_html = _render_post_action_button(action=provider_action) if provider_action is not None else ""
-        if provider_action is None:
-            body = (
-                f"This workspace is not currently connected to {html.escape(_billing_provider_label(readiness.billing_provider))} "
-                f"for invoicing. {_PAYPAL_UNAVAILABLE_CREATOR_COPY}"
-            )
-        return {
-            "label": "Disconnected",
-            "body": body,
-            "badge_class": "disconnected",
-            "actions_html": actions_html,
-        }
-
-    if show_provider_choice:
-        body = (
-            "This workspace is not currently connected to a billing provider for invoicing. "
-            "Choose Stripe or PayPal here when you are ready. No billing provider is preselected "
-            "for this workspace."
-            if paypal_available_to_creator
-            else "This workspace is not currently connected to a billing provider for invoicing. "
-            "Choose Stripe here when you are ready. PayPal setup is not yet available for general creators."
-        )
+    elif management_view.action_mode == "provider-choice":
         actions_html = _render_billing_provider_choice_actions(
             paypal_available_to_creator=paypal_available_to_creator
         )
-    else:
-        provider_action = _billing_provider_connect_action(
-            provider_name=readiness.billing_provider,
-            reconnect=False,
-            paypal_available_to_creator=paypal_available_to_creator,
+    elif management_view.action_mode == "simple" and management_view.action is not None:
+        actions_html = _render_post_action_button(
+            action=management_view.action,
+            label=management_view.action_label_override,
         )
-        if provider_action is None:
-            body = (
-                "This workspace is not currently connected to a billing provider for invoicing. "
-                f"{_PAYPAL_UNAVAILABLE_CREATOR_COPY}"
-            )
-            actions_html = ""
-        else:
-            body = (
-                "This workspace is not currently connected to a billing provider for invoicing. "
-                "You can continue the current setup here when you are ready."
-            )
-            actions_html = _render_post_action_button(action=provider_action)
     return {
-        "label": "Pending",
-        "body": body,
-        "badge_class": "pending",
+        "label": management_view.label,
+        "body": management_view.body,
+        "badge_class": management_view.badge_class,
         "actions_html": actions_html,
     }
-
-
-def _connected_account_billing_body(readiness: CreatorWorkspaceReadiness) -> str:
-    if _billing_provider_is_connected_but_blocked(readiness):
-        return _billing_provider_blocked_copy(provider_name=readiness.billing_provider)
-    if _billing_provider_is_connected_but_not_ready(readiness):
-        return _billing_provider_not_ready_copy(readiness)
-    if readiness.billable_now:
-        return (
-            "This workspace has a connected billing provider and is billable now for future "
-            "invoicing."
-        )
-    return (
-        "This workspace has a connected billing provider, but it is not billable now yet. Save "
-        "amount and currency on at least one booking link before new bookings can move into invoicing."
-    )
-
-
-def _billing_provider_switch_attempt_body(
-    *,
-    current_provider_label: str,
-    switch_attempt: BillingProviderSwitchAttempt,
-    switch_clean_state: BillingProviderSwitchCleanState,
-    switch_target_guidance: _BillingProviderSetupGuidance,
-) -> str:
-    target_provider_label = _billing_provider_label(switch_attempt.target_billing_provider)
-    if (
-        switch_attempt.target_billing_connect_status != "connected"
-        or switch_attempt.target_billing_account_id is None
-    ):
-        return (
-            f"A {target_provider_label} switch is in progress. {current_provider_label} stays active "
-            f"until {target_provider_label} is connected, ready, and you commit the switch."
-        )
-    if switch_target_guidance.state == _BILLING_PROVIDER_SETUP_STATE_BLOCKED:
-        return (
-            f"{target_provider_label} is connected for the pending switch, but its invoice readiness "
-            "could not be verified right now. "
-            f"{current_provider_label} stays active until the readiness check succeeds and you commit "
-            "the switch."
-        )
-    if switch_target_guidance.state == _BILLING_PROVIDER_SETUP_STATE_NOT_READY:
-        return (
-            f"{target_provider_label} is connected for the pending switch, but it still needs this "
-            f"setup work before it can create invoices: "
-            f"{_billing_provider_actionable_issue_copy(switch_attempt.target_billing_provider, switch_target_guidance.actionable_issue_codes)}. "
-            f"{current_provider_label} stays active until {target_provider_label} is ready and you commit the switch."
-        )
-    if not switch_clean_state.is_clean:
-        return (
-            f"{target_provider_label} is connected for the pending switch, but finishing the switch is "
-            f"blocked because this workspace still has "
-            f"{_billing_provider_switch_blockers_copy(switch_clean_state=switch_clean_state)}. "
-            f"{current_provider_label} stays active until those items are cleared."
-        )
-    return (
-        f"{target_provider_label} is connected and ready for the pending switch. "
-        f"{current_provider_label} stays active until you commit the switch."
-    )
 
 
 def _render_billing_provider_switch_attempt_actions(

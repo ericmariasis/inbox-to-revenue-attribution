@@ -41,6 +41,13 @@ class CreatorSetupHomeMilestoneView:
 
 
 @dataclass(frozen=True)
+class CreatorSetupHomeExperimentsHandoffView:
+    title: str
+    body: str
+    action: dict[str, str]
+
+
+@dataclass(frozen=True)
 class CreatorSetupHomeAttentionSummaryView:
     title: str | None
     body: str
@@ -614,6 +621,38 @@ def build_setup_home_milestone_view(
             "action_label": provider_action["label"],
             "action_href": provider_action["href"],
             "action_method": "post",
+        },
+    )
+
+
+def build_setup_home_experiments_handoff_view(
+    *,
+    readiness: CreatorWorkspaceReadiness,
+    current_experiments_status: str,
+) -> CreatorSetupHomeExperimentsHandoffView | None:
+    if readiness.paid_invoice_count <= 0:
+        return None
+
+    if current_experiments_status == "ready":
+        return CreatorSetupHomeExperimentsHandoffView(
+            title="Experiments are ready for a fresh read",
+            body=(
+                "Reports stay primary here. Experiments can now use the current evidence for a separate read-only next-content snapshot."
+            ),
+            action={
+                "label": "Open Experiments",
+                "href": "/app/experiments",
+            },
+        )
+
+    return CreatorSetupHomeExperimentsHandoffView(
+        title="Experiments still need more evidence",
+        body=(
+            "Reports stay primary here. Open Experiments to review the current gap before you generate a new snapshot."
+        ),
+        action={
+            "label": "Review Experiments",
+            "href": "/app/experiments",
         },
     )
 

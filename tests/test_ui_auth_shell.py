@@ -432,7 +432,7 @@ def _insert_confirmed_topic(
 def _set_authoritative_extraction_artifact(
     *,
     content_id: str,
-    artifact_id: str,
+    artifact_id: str | None,
 ) -> None:
     with _engine().begin() as conn:
         conn.execute(
@@ -4243,7 +4243,7 @@ def test_reports_page_with_tracked_content_but_no_paid_invoices_shows_funnel_row
     assert "Illustrative preview" not in response.text
 
 
-def test_experiments_page_without_prior_run_renders_generate_empty_state_and_does_not_write():
+def test_experiments_page_without_prior_run_renders_current_unsupported_readiness_and_does_not_write():
     inserted = _insert_creator_user(
         email=f"ui_experiments_empty_{uuid.uuid4().hex}@example.com",
         name="Empty Experiments Creator",
@@ -4276,9 +4276,124 @@ def test_experiments_page_without_prior_run_renders_generate_empty_state_and_doe
     assert response.status_code == 200
     assert "Experiments" in response.text
     assert '<a href="/app/experiments" class="nav-link active" aria-current="page">Experiments</a>' in response.text
-    assert "Generate your first experiment snapshot" in response.text
+    assert "Helper is unsupported from current evidence" in response.text
+    assert "No stored helper snapshot exists yet" in response.text
+    assert "Review content evidence" in response.text
+    assert "Review paid results" in response.text
+    assert '<button type="submit" class="secondary">Generate next experiments</button>' in response.text
     assert "Refreshing the page does not create a new helper run." in response.text
     assert 'action="/app/experiments"' in response.text
+    assert before_count == 0
+    assert after_count == 0
+
+
+def test_experiments_page_without_prior_run_renders_current_ready_readiness_without_writing():
+    inserted = _insert_creator_user(
+        email=f"ui_experiments_ready_no_snapshot_{uuid.uuid4().hex}@example.com",
+        name="Ready No Snapshot Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_experiments_ready_no_snapshot",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Ready No Snapshot Link",
+        calendly_url="https://calendly.com/example/ready-no-snapshot",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    content_tid = f"uiexperimentsreadynosnapshot{uuid.uuid4().hex[:8]}"
+    content_id = _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/experiments-ready-no-snapshot",
+        tid=content_tid,
+    )
+    snapshot_id = _insert_fetch_snapshot(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        requested_url="https://example.com/posts/experiments-ready-no-snapshot",
+        fetched_url="https://example.com/posts/experiments-ready-no-snapshot",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Ready no snapshot.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 12, 11, 0, tzinfo=timezone.utc),
+    )
+    artifact_id = _insert_extraction_artifact(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        fetch_snapshot_id=snapshot_id,
+        extraction_status="succeeded",
+        title="Ready No Snapshot Artifact",
+        extracted_text="Retention review content for ready-no-snapshot experiments.",
+        created_at=datetime(2026, 3, 12, 11, 5, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        extraction_artifact_id=artifact_id,
+        label="Retention Reviews",
+    )
+    _set_authoritative_extraction_artifact(
+        content_id=content_id,
+        artifact_id=artifact_id,
+    )
+    booking_id = _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=f"BOOK_UI_EXPERIMENTS_READY_NO_SNAPSHOT_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 12, 12, 0, tzinfo=timezone.utc),
+    )
+    stripe_invoice_id = f"in_ui_experiments_ready_no_snapshot_{uuid.uuid4().hex[:8]}"
+    invoice_id = _insert_invoice(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        stripe_account_id="acct_ui_experiments_ready_no_snapshot",
+        stripe_invoice_id=stripe_invoice_id,
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        invoice_id=invoice_id,
+        stripe_account_id="acct_ui_experiments_ready_no_snapshot",
+        stripe_event_id=f"evt_ui_experiments_ready_no_snapshot_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=stripe_invoice_id,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+
+    with _engine().connect() as conn:
+        before_count = conn.execute(
+            text("SELECT COUNT(*) FROM creator_experiment_runs WHERE creator_id = :creator_id"),
+            {"creator_id": inserted["creator_id"]},
+        ).scalar_one()
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        response = client.get("/app/experiments", headers=HTML_ACCEPT_HEADERS)
+
+    with _engine().connect() as conn:
+        after_count = conn.execute(
+            text("SELECT COUNT(*) FROM creator_experiment_runs WHERE creator_id = :creator_id"),
+            {"creator_id": inserted["creator_id"]},
+        ).scalar_one()
+
+    assert response.status_code == 200
+    assert "Helper is ready from current evidence" in response.text
+    assert "No ready snapshot is stored yet" in response.text
+    assert (
+        "Current evidence is ready, but no stored snapshot exists yet" in response.text
+    )
+    assert '<button type="submit">Generate next experiments</button>' in response.text
     assert before_count == 0
     assert after_count == 0
 
@@ -4404,6 +4519,8 @@ def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():
     )
     assert page_response.status_code == 200
     assert "Fresh snapshot ready" in page_response.text
+    assert "Helper is ready from current evidence" in page_response.text
+    assert "The latest stored snapshot is already ready." in page_response.text
     assert "Here is the next content experiment most grounded" in page_response.text
     assert "Test another Retention Reviews angle" in page_response.text
     assert "Test whether another post about Retention Reviews may lead to more attributed paid bookings." in page_response.text
@@ -4507,12 +4624,123 @@ def test_experiments_generate_route_renders_unsupported_state_without_generic_ti
 
     assert create_response.status_code == 303
     assert page_response.status_code == 200
+    assert "Helper is unsupported from current evidence" in page_response.text
     assert "Not enough trusted evidence yet" in page_response.text
     assert UNSUPPORTED_EXPERIMENTS_SUMMARY in page_response.text
     assert "Why this helper is still unsupported" in page_response.text
     assert "No settled attributed paid results exist yet for this workspace." in page_response.text
     assert "generic fallback tips" not in page_response.text
     assert "Test whether another post about" not in page_response.text
+
+
+def test_experiments_page_leads_with_current_unsupported_readiness_over_historical_ready_snapshot():
+    inserted = _insert_creator_user(
+        email=f"ui_experiments_historical_ready_{uuid.uuid4().hex}@example.com",
+        name="Historical Ready Experiments Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_experiments_historical_ready",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Historical Ready Experiments Strategy",
+        calendly_url="https://calendly.com/example/experiments-historical-ready",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    content_tid = f"uiexperimentshistoricalready{uuid.uuid4().hex[:8]}"
+    content_id = _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/experiments-historical-ready",
+        tid=content_tid,
+    )
+    snapshot_id = _insert_fetch_snapshot(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        requested_url="https://example.com/posts/experiments-historical-ready",
+        fetched_url="https://example.com/posts/experiments-historical-ready",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Historical ready experiments.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 12, 11, 0, tzinfo=timezone.utc),
+    )
+    artifact_id = _insert_extraction_artifact(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        fetch_snapshot_id=snapshot_id,
+        extraction_status="succeeded",
+        title="Historical Ready Artifact",
+        extracted_text="Retention review content for historical-ready experiments.",
+        created_at=datetime(2026, 3, 12, 11, 5, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        extraction_artifact_id=artifact_id,
+        label="Retention Reviews",
+    )
+    _set_authoritative_extraction_artifact(
+        content_id=content_id,
+        artifact_id=artifact_id,
+    )
+    booking_id = _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=f"BOOK_UI_EXPERIMENTS_HISTORICAL_READY_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 12, 12, 0, tzinfo=timezone.utc),
+    )
+    stripe_invoice_id = f"in_ui_experiments_historical_ready_{uuid.uuid4().hex[:8]}"
+    invoice_id = _insert_invoice(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        stripe_account_id="acct_ui_experiments_historical_ready",
+        stripe_invoice_id=stripe_invoice_id,
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        invoice_id=invoice_id,
+        stripe_account_id="acct_ui_experiments_historical_ready",
+        stripe_event_id=f"evt_ui_experiments_historical_ready_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=stripe_invoice_id,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        create_response = client.post(
+            "/app/experiments",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+    _set_authoritative_extraction_artifact(
+        content_id=content_id,
+        artifact_id=None,
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        page_response = client.get("/app/experiments", headers=HTML_ACCEPT_HEADERS)
+
+    assert create_response.status_code == 303
+    assert page_response.status_code == 200
+    assert "Helper is unsupported from current evidence" in page_response.text
+    assert "Open latest ready snapshot" in page_response.text
+    assert "historical artifact" in page_response.text
+    assert "This ready snapshot is historical stored output." in page_response.text
+    assert "Here is the next content experiment most grounded" in page_response.text
 
 
 def test_experiments_compare_page_renders_two_stored_runs_with_lineage():
@@ -5599,6 +5827,8 @@ def test_setup_and_account_pages_reuse_waiting_for_first_paid_result_vocabulary(
     assert "This content is tracked, but no booking has landed yet." in reports_response.text
     assert "No invoice-backed paid result is counted for this content yet." in reports_response.text
     assert "Illustrative preview" not in reports_response.text
+    assert "Open Experiments" not in setup_response.text
+    assert "Review Experiments" not in setup_response.text
 
 
 def test_setup_home_bookings_without_paid_result_promotes_reports_review():
@@ -5779,6 +6009,13 @@ def test_setup_home_first_paid_result_promotes_reports_review():
     assert 'href="/app/reports"' in response.text
     assert 'class="button-link">Open Reports</a>' in response.text
     assert "Open Reports" in response.text
+    assert "Experiments still need more evidence" in response.text
+    assert (
+        "Reports stay primary here. Open Experiments to review the current gap before you generate a new snapshot."
+        in response.text
+    )
+    assert 'class="button-link secondary">Review Experiments</a>' in response.text
+    assert 'href="/app/experiments"' in response.text
 
 
 def test_account_page_disconnected_state_renders_reconnect_copy_without_destructive_forms():

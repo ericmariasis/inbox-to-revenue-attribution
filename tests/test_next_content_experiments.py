@@ -40,6 +40,7 @@ from app.services.next_content_experiments import (
     get_creator_next_content_experiment_card_drilldown,
     get_creator_next_content_experiment_card_drilldown_by_card_id,
     get_creator_next_content_experiments_run,
+    get_current_creator_next_content_experiments_readiness_summary,
     get_current_creator_next_content_experiments_unsupported_explanation,
     get_latest_creator_next_content_experiments_run,
 )
@@ -747,6 +748,180 @@ def test_get_current_creator_next_content_experiments_unsupported_explanation_re
         "Your reviewed topics and settled paid results do not overlap on the same tracked content yet."
     ]
     assert explanation.has_excluded_current_activity is True
+
+
+def test_get_current_creator_next_content_experiments_readiness_summary_reports_unsupported_without_stored_snapshot():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, booking_link = _create_creator_fixture(session, suffix="readiness_unsupported_no_snapshot")
+        content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            tid="experiments_readiness_unsupported_no_snapshot",
+            source_url="https://example.com/posts/experiments-readiness-unsupported-no-snapshot",
+        )
+        _create_authoritative_artifact(
+            session,
+            content=content,
+            topic_labels=["Discovery Call Pricing"],
+            fetched_at=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+        )
+
+        summary = get_current_creator_next_content_experiments_readiness_summary(
+            creator_id=creator.id,
+            db=session,
+        )
+
+    assert summary.current_status == EXPERIMENT_RUN_STATUS_UNSUPPORTED
+    assert summary.latest_run is None
+    assert summary.latest_ready_run is None
+    assert summary.unsupported_explanation is not None
+    assert summary.unsupported_explanation.reasons == [
+        "No settled attributed paid results exist yet for this workspace."
+    ]
+
+
+def test_get_current_creator_next_content_experiments_readiness_summary_reports_ready_without_stored_snapshot():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, booking_link = _create_creator_fixture(session, suffix="readiness_ready_no_snapshot")
+        content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            tid="experiments_readiness_ready_no_snapshot",
+            source_url="https://example.com/posts/experiments-readiness-ready-no-snapshot",
+        )
+        _create_authoritative_artifact(
+            session,
+            content=content,
+            topic_labels=["Retention Reviews"],
+            fetched_at=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_READINESS_READY_NO_SNAPSHOT",
+            paid_at=datetime(2026, 3, 12, 14, 0, tzinfo=timezone.utc),
+            amount_cents=19500,
+            stripe_invoice_id="in_readiness_ready_no_snapshot",
+            stripe_event_id="evt_readiness_ready_no_snapshot",
+        )
+
+        summary = get_current_creator_next_content_experiments_readiness_summary(
+            creator_id=creator.id,
+            db=session,
+        )
+
+    assert summary.current_status == EXPERIMENT_RUN_STATUS_READY
+    assert summary.latest_run is None
+    assert summary.latest_ready_run is None
+    assert summary.unsupported_explanation is None
+
+
+def test_get_current_creator_next_content_experiments_readiness_summary_reports_ready_with_stored_ready_snapshot():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, booking_link = _create_creator_fixture(session, suffix="readiness_ready_with_snapshot")
+        content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            tid="experiments_readiness_ready_with_snapshot",
+            source_url="https://example.com/posts/experiments-readiness-ready-with-snapshot",
+        )
+        _create_authoritative_artifact(
+            session,
+            content=content,
+            topic_labels=["Retention Reviews"],
+            fetched_at=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_READINESS_READY_WITH_SNAPSHOT",
+            paid_at=datetime(2026, 3, 12, 14, 0, tzinfo=timezone.utc),
+            amount_cents=19500,
+            stripe_invoice_id="in_readiness_ready_with_snapshot",
+            stripe_event_id="evt_readiness_ready_with_snapshot",
+        )
+        created = create_creator_next_content_experiments_run(
+            creator_id=creator.id,
+            db=session,
+        )
+
+        summary = get_current_creator_next_content_experiments_readiness_summary(
+            creator_id=creator.id,
+            db=session,
+        )
+
+    assert summary.current_status == EXPERIMENT_RUN_STATUS_READY
+    assert summary.latest_run is not None
+    assert summary.latest_ready_run is not None
+    assert summary.latest_run.claim_snapshot_id == created.claim_snapshot_id
+    assert summary.latest_ready_run.claim_snapshot_id == created.claim_snapshot_id
+    assert summary.unsupported_explanation is None
+
+
+def test_get_current_creator_next_content_experiments_readiness_summary_reports_unsupported_with_historical_ready_snapshot():
+    engine = _engine()
+
+    with Session(engine) as session:
+        creator, booking_link = _create_creator_fixture(session, suffix="readiness_unsupported_with_ready_snapshot")
+        content = _create_content(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            tid="experiments_readiness_unsupported_with_ready_snapshot",
+            source_url="https://example.com/posts/experiments-readiness-unsupported-with-ready-snapshot",
+        )
+        artifact = _create_authoritative_artifact(
+            session,
+            content=content,
+            topic_labels=["Retention Reviews"],
+            fetched_at=datetime(2026, 3, 12, 10, 0, tzinfo=timezone.utc),
+        )
+        _create_paid_booking(
+            session,
+            creator=creator,
+            booking_link=booking_link,
+            content=content,
+            booking_uuid="BOOK_READINESS_UNSUPPORTED_WITH_READY_SNAPSHOT",
+            paid_at=datetime(2026, 3, 12, 14, 0, tzinfo=timezone.utc),
+            amount_cents=19500,
+            stripe_invoice_id="in_readiness_unsupported_with_ready_snapshot",
+            stripe_event_id="evt_readiness_unsupported_with_ready_snapshot",
+        )
+        created = create_creator_next_content_experiments_run(
+            creator_id=creator.id,
+            db=session,
+        )
+        assert content.authoritative_extraction_artifact_id == artifact.id
+        content.authoritative_extraction_artifact_id = None
+        session.flush()
+
+        summary = get_current_creator_next_content_experiments_readiness_summary(
+            creator_id=creator.id,
+            db=session,
+        )
+
+    assert summary.current_status == EXPERIMENT_RUN_STATUS_UNSUPPORTED
+    assert summary.latest_run is not None
+    assert summary.latest_ready_run is not None
+    assert summary.latest_run.claim_snapshot_id == created.claim_snapshot_id
+    assert summary.latest_ready_run.claim_snapshot_id == created.claim_snapshot_id
+    assert summary.unsupported_explanation is not None
+    assert summary.unsupported_explanation.reasons == [
+        "No authoritative reviewed topics exist yet on your tracked content."
+    ]
 
 
 def test_compare_creator_next_content_experiments_runs_matches_stable_card_ids_across_reordering():

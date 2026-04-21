@@ -32,6 +32,13 @@ from app.services.stripe_provider import build_default_stripe_provider
 DEFAULT_APP_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_BOOKING_LINK_URL = "https://calendly.com/example/paypal-live-validation"
 DEFAULT_CONTENT_SOURCE_URL = "https://example.com/paypal-live-validation"
+DEFAULT_PROOF_SHIPPING_FULL_NAME = "Sandbox Buyer"
+DEFAULT_PROOF_SHIPPING_ADDRESS_LINE_1 = "1 Main St"
+DEFAULT_PROOF_SHIPPING_ADDRESS_LINE_2 = ""
+DEFAULT_PROOF_SHIPPING_CITY = "San Jose"
+DEFAULT_PROOF_SHIPPING_STATE_OR_REGION = "CA"
+DEFAULT_PROOF_SHIPPING_POSTAL_CODE = "95131"
+DEFAULT_PROOF_SHIPPING_COUNTRY_CODE = "US"
 
 
 class PayPalLiveValidationError(RuntimeError):
@@ -176,6 +183,41 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit JSON instead of key=value lines.",
+    )
+    start_order.add_argument(
+        "--shipping-full-name",
+        default=DEFAULT_PROOF_SHIPPING_FULL_NAME,
+        help=f"Buyer full name for the shipping payload. Default: {DEFAULT_PROOF_SHIPPING_FULL_NAME}",
+    )
+    start_order.add_argument(
+        "--shipping-address-line-1",
+        default=DEFAULT_PROOF_SHIPPING_ADDRESS_LINE_1,
+        help=f"Shipping address line 1. Default: {DEFAULT_PROOF_SHIPPING_ADDRESS_LINE_1}",
+    )
+    start_order.add_argument(
+        "--shipping-address-line-2",
+        default=DEFAULT_PROOF_SHIPPING_ADDRESS_LINE_2,
+        help="Optional shipping address line 2.",
+    )
+    start_order.add_argument(
+        "--shipping-city",
+        default=DEFAULT_PROOF_SHIPPING_CITY,
+        help=f"Shipping city. Default: {DEFAULT_PROOF_SHIPPING_CITY}",
+    )
+    start_order.add_argument(
+        "--shipping-state-or-region",
+        default=DEFAULT_PROOF_SHIPPING_STATE_OR_REGION,
+        help=f"Shipping state or region. Default: {DEFAULT_PROOF_SHIPPING_STATE_OR_REGION}",
+    )
+    start_order.add_argument(
+        "--shipping-postal-code",
+        default=DEFAULT_PROOF_SHIPPING_POSTAL_CODE,
+        help=f"Shipping postal code. Default: {DEFAULT_PROOF_SHIPPING_POSTAL_CODE}",
+    )
+    start_order.add_argument(
+        "--shipping-country-code",
+        default=DEFAULT_PROOF_SHIPPING_COUNTRY_CODE,
+        help=f"Two-letter shipping country code. Default: {DEFAULT_PROOF_SHIPPING_COUNTRY_CODE}",
     )
 
     void_invoice = subparsers.add_parser(
@@ -425,7 +467,18 @@ def _run_start_order(args: argparse.Namespace) -> int:
     payload = _post_json(
         url=start_url,
         access_token=access_token,
-        body={"booking_id": str(booking_id)},
+        body={
+            "booking_id": str(booking_id),
+            "shipping_address": {
+                "full_name": args.shipping_full_name,
+                "address_line_1": args.shipping_address_line_1,
+                "address_line_2": args.shipping_address_line_2 or None,
+                "city": args.shipping_city,
+                "state_or_region": args.shipping_state_or_region,
+                "postal_code": args.shipping_postal_code,
+                "country_code": args.shipping_country_code,
+            },
+        },
     )
     _emit(payload, as_json=args.json)
     return 0

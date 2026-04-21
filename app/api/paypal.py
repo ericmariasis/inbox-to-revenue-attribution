@@ -56,6 +56,7 @@ from app.services.paypal_orders import (
     PayPalOrdersService,
 )
 from app.services.paypal_provider import (
+    PAYPAL_REQUIRED_THIRD_PARTY_SCOPES,
     PayPalProvider,
     PayPalProviderError,
     PayPalSellerStatus,
@@ -334,6 +335,40 @@ def _verified_callback_identity_matches_state(
     if callback_merchant_id is not None and callback_merchant_id != verified_status.merchant_id:
         return False
     return True
+
+
+def _mock_verified_seller_status_for_connect_callback(
+    *,
+    creator: Creator,
+    settings: Settings,
+    expected_tracking_id: str,
+    callback_merchant_id: str | None,
+) -> PayPalSellerStatus | None:
+    auth_user = creator.auth_user
+    if auth_user is None:
+        return None
+
+    normalized_email = auth_user.email.strip().lower()
+    merchant_id = callback_merchant_id or f"mock-paypal-merchant-{creator.id.hex[:12]}"
+    if normalized_email in frozenset(settings.paypal_mock_connect_payments_receivable_false_email_values()):
+        return PayPalSellerStatus(
+            merchant_id=merchant_id,
+            tracking_id=expected_tracking_id,
+            payments_receivable=False,
+            primary_email_confirmed=True,
+            granted_third_party_scopes=PAYPAL_REQUIRED_THIRD_PARTY_SCOPES,
+            required_third_party_permissions_granted=True,
+        )
+    if normalized_email in frozenset(settings.paypal_mock_connect_primary_email_false_email_values()):
+        return PayPalSellerStatus(
+            merchant_id=merchant_id,
+            tracking_id=expected_tracking_id,
+            payments_receivable=True,
+            primary_email_confirmed=False,
+            granted_third_party_scopes=PAYPAL_REQUIRED_THIRD_PARTY_SCOPES,
+            required_third_party_permissions_granted=True,
+        )
+    return None
 
 
 def _browser_order_failure_response() -> HTMLResponse:
@@ -909,24 +944,37 @@ def paypal_connect_callback(
                 )
             return GenericOkResponse()
 
-    try:
-        verified_status = _paypal_provider(request).get_verified_seller_status(
-            tracking_id=expected_tracking_id,
-        )
-    except PayPalProviderError as exc:
-        logger.warning(
-            "paypal_connect_callback_provider_error creator_id=%s operation=%s http_status=%s error_code=%s",
+    verified_status = _mock_verified_seller_status_for_connect_callback(
+        creator=creator,
+        settings=settings,
+        expected_tracking_id=expected_tracking_id,
+        callback_merchant_id=merchantIdInPayPal,
+    )
+    if verified_status is None:
+        try:
+            verified_status = _paypal_provider(request).get_verified_seller_status(
+                tracking_id=expected_tracking_id,
+            )
+        except PayPalProviderError as exc:
+            logger.warning(
+                "paypal_connect_callback_provider_error creator_id=%s operation=%s http_status=%s error_code=%s",
+                creator.id,
+                exc.operation,
+                exc.http_status,
+                exc.error_code,
+            )
+            if prefers_html:
+                return _browser_connect_failure_response()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
+            ) from exc
+    else:
+        logger.info(
+            "paypal_connect_callback_mocked_requirements_failure creator_id=%s email=%s",
             creator.id,
-            exc.operation,
-            exc.http_status,
-            exc.error_code,
+            creator.auth_user.email,
         )
-        if prefers_html:
-            return _browser_connect_failure_response()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
-        ) from exc
 
     if not _verified_callback_identity_matches_state(
         expected_tracking_id=expected_tracking_id,

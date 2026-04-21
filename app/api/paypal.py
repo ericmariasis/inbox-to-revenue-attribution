@@ -74,6 +74,21 @@ PAYPAL_ORDER_START_UNAVAILABLE_DETAIL = "paypal order start unavailable"
 PAYPAL_ORDER_START_NOT_FOUND_DETAIL = "paypal order start not found"
 PAYPAL_ORDER_START_NOT_FOUND_PAGE_TITLE = "PayPal payment could not be started"
 PAYPAL_ORDER_CHECKOUT_PAGE_NOT_FOUND_DETAIL = "paypal checkout page not found"
+PAYPAL_PAYMENTS_RECEIVABLE_FALSE_COPY = (
+    "Attention: You currently cannot receive payments due to restriction on your "
+    "PayPal account. Please reach out to PayPal Customer Support or connect to "
+    "https://www.paypal.com for more information."
+)
+PAYPAL_PRIMARY_EMAIL_FALSE_COPY = (
+    "Attention: Please confirm your email address on "
+    "https://www.paypal.com/businessprofile/settings in order to receive payments! "
+    "You currently cannot receive payments."
+)
+PAYPAL_THIRD_PARTY_PERMISSIONS_FALSE_COPY = (
+    "Attention: The required PayPal permissions were not granted to this platform. "
+    "Reconnect your PayPal account and approve the requested permissions before "
+    "offering PayPal services and products on your website."
+)
 
 
 def _settings(request: Request) -> Settings:
@@ -234,6 +249,33 @@ def _browser_connect_failure_response() -> HTMLResponse:
     )
 
 
+def _browser_connect_permissions_failure_response() -> HTMLResponse:
+    return _connect_result_page(
+        title="PayPal setup needs additional permissions",
+        body=PAYPAL_THIRD_PARTY_PERMISSIONS_FALSE_COPY,
+        status_code=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _browser_connect_requirements_failure_response(
+    *,
+    verified_status: PayPalSellerStatus,
+) -> HTMLResponse:
+    if not verified_status.payments_receivable:
+        return _connect_result_page(
+            title="PayPal account cannot receive payments yet",
+            body=PAYPAL_PAYMENTS_RECEIVABLE_FALSE_COPY,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not verified_status.primary_email_confirmed:
+        return _connect_result_page(
+            title="PayPal email confirmation is still required",
+            body=PAYPAL_PRIMARY_EMAIL_FALSE_COPY,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return _browser_connect_permissions_failure_response()
+
+
 def _query_param_is_explicit_false(value: str | None) -> bool:
     if value is None:
         return False
@@ -278,7 +320,7 @@ def _callback_indicates_denied_permissions(
     return _query_param_is_explicit_false(permissions_granted) or _query_param_is_explicit_false(consent_status)
 
 
-def _verified_callback_matches_state(
+def _verified_callback_identity_matches_state(
     *,
     expected_tracking_id: str,
     callback_tracking_id: str | None,
@@ -291,11 +333,7 @@ def _verified_callback_matches_state(
         return False
     if callback_merchant_id is not None and callback_merchant_id != verified_status.merchant_id:
         return False
-    return (
-        verified_status.payments_receivable
-        and verified_status.primary_email_confirmed
-        and verified_status.required_third_party_permissions_granted
-    )
+    return True
 
 
 def _browser_order_failure_response() -> HTMLResponse:
@@ -698,7 +736,7 @@ def paypal_connect_callback(
         consent_status=consentStatus,
     ):
         if prefers_html:
-            return _browser_connect_failure_response()
+            return _browser_connect_permissions_failure_response()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
@@ -766,7 +804,7 @@ def paypal_connect_callback(
             detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
         ) from exc
 
-    if not _verified_callback_matches_state(
+    if not _verified_callback_identity_matches_state(
         expected_tracking_id=expected_tracking_id,
         callback_tracking_id=merchantId,
         callback_merchant_id=merchantIdInPayPal,
@@ -774,6 +812,19 @@ def paypal_connect_callback(
     ):
         if prefers_html:
             return _browser_connect_failure_response()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
+        )
+    if (
+        not verified_status.payments_receivable
+        or not verified_status.primary_email_confirmed
+        or not verified_status.required_third_party_permissions_granted
+    ):
+        if prefers_html:
+            return _browser_connect_requirements_failure_response(
+                verified_status=verified_status,
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,

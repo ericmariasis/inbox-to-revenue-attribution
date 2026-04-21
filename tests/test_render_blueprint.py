@@ -56,6 +56,9 @@ def test_render_blueprint_covers_required_non_local_config():
     assert env_vars["APP_ENV"]["value"] == "production"
     assert env_vars["JWT_SECRET"]["generateValue"] is True
     assert env_vars["JWT_ALGORITHM"]["value"] == "HS256"
+    assert env_vars["PAYPAL_ENVIRONMENT"]["value"] == "sandbox"
+    assert env_vars["PAYPAL_CREATOR_ACCESS"]["value"] == "public"
+    assert env_vars["PAYPAL_PARTNER_ATTRIBUTION_ID"]["value"] == "CAREERCODE_SP_PPCP"
     assert env_vars["DATABASE_URL"]["fromDatabase"] == {
         "name": "inbox-to-revenue-attribution-db",
         "property": "connectionString",
@@ -72,6 +75,11 @@ def test_render_blueprint_covers_required_non_local_config():
         "STRIPE_SECRET_KEY",
         "STRIPE_CONNECT_REDIRECT_URI",
         "STRIPE_WEBHOOK_SECRET",
+        "PAYPAL_SANDBOX_CLIENT_ID",
+        "PAYPAL_SANDBOX_CLIENT_SECRET",
+        "PAYPAL_SANDBOX_PARTNER_ID",
+        "PAYPAL_CONNECT_REDIRECT_URI",
+        "PAYPAL_SANDBOX_WEBHOOK_ID",
         "CALENDLY_WEBHOOK_SIGNING_KEY",
         "TRACKED_LINK_BASE_URL",
         "MAGIC_LINK_BASE_URL",

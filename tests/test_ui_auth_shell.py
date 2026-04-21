@@ -1052,8 +1052,37 @@ def test_sign_in_page_is_browser_accessible():
     assert 'action="/sign-in"' in response.text
     assert 'name="email"' in response.text
     assert "Sign in to your creator workspace" in response.text
+    assert "Independent tutors create or reopen their workspace here" in response.text
     assert "open it on this same device and browser" in response.text
     assert "you opened the email on another device" in response.text
+    assert 'href="/terms"' in response.text
+    assert 'href="/privacy"' in response.text
+
+
+def test_public_home_page_explains_tutor_onboarding_and_links_to_legal_pages():
+    with TestClient(app) as client:
+        response = client.get("/", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Career Code Pro tutor setup" in response.text
+    assert "Independent tutors register here by email" in response.text
+    assert "Tutors use their own payment-provider account" in response.text
+    assert 'href="/sign-in"' in response.text
+    assert 'href="/terms"' in response.text
+    assert 'href="/privacy"' in response.text
+
+
+def test_public_terms_and_privacy_pages_are_browser_accessible():
+    with TestClient(app) as client:
+        terms_response = client.get("/terms", headers=HTML_ACCEPT_HEADERS)
+        privacy_response = client.get("/privacy", headers=HTML_ACCEPT_HEADERS)
+
+    assert terms_response.status_code == 200
+    assert "Career Code Pro Terms and Conditions" in terms_response.text
+    assert "Independent tutors use their own connected payment-provider account" in terms_response.text
+    assert privacy_response.status_code == 200
+    assert "Career Code Pro Privacy Policy" in privacy_response.text
+    assert "We store account email addresses, creator names, booking links" in privacy_response.text
 
 
 def test_sign_in_page_invalid_link_notice_explains_how_to_recover():
@@ -5808,6 +5837,99 @@ def test_account_page_disconnected_state_renders_reconnect_copy_without_destruct
     assert 'href="/app/account?confirm=account-deletion#danger-zone"' in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
     assert 'action="/app/account"' not in response.text
+
+
+def test_account_page_connected_paypal_state_renders_disconnect_confirmation_flow():
+    connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    inserted = _insert_creator_user(
+        email=f"ui_account_paypal_disconnect_{uuid.uuid4().hex}@example.com",
+        name="PayPal Disconnect Creator",
+        stripe_connect_status="pending",
+        billing_provider="paypal",
+        billing_connect_status="connected",
+        billing_account_id="merchant_ui_disconnect",
+        billing_connected_at=connected_at,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, access_token)
+        base_response = client.get("/app/account", headers=HTML_ACCEPT_HEADERS)
+        confirm_response = client.get(
+            "/app/account",
+            params={"confirm": "disconnect-paypal"},
+            headers=HTML_ACCEPT_HEADERS,
+        )
+
+    assert base_response.status_code == 200
+    assert 'href="/app/account?confirm=disconnect-paypal#billing-connection"' in base_response.text
+    assert "Disconnect PayPal" in base_response.text
+
+    assert confirm_response.status_code == 200
+    assert "Disconnect PayPal?" in confirm_response.text
+    assert (
+        "Disconnecting your PayPal account will prevent you from offering PayPal services and products on your website. Do you wish to continue?"
+        in confirm_response.text
+    )
+    assert 'action="/app/account/paypal/disconnect"' in confirm_response.text
+    assert "Keep PayPal connected" in confirm_response.text
+
+
+def test_account_page_paypal_disconnect_submit_marks_workspace_disconnected():
+    connected_at = datetime.now(timezone.utc).replace(microsecond=0)
+    inserted = _insert_creator_user(
+        email=f"ui_account_paypal_disconnect_submit_{uuid.uuid4().hex}@example.com",
+        name="PayPal Disconnect Submit Creator",
+        stripe_connect_status="pending",
+        billing_provider="paypal",
+        billing_connect_status="connected",
+        billing_account_id="merchant_ui_disconnect_submit",
+        billing_connected_at=connected_at,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            submit_response = client.post(
+                "/app/account/paypal/disconnect",
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+            page_response = client.get(
+                submit_response.headers["location"],
+                headers=HTML_ACCEPT_HEADERS,
+            )
+
+    with _engine().connect() as conn:
+        creator_row = conn.execute(
+            text(
+                "SELECT billing_provider, billing_connect_status, billing_account_id, billing_connected_at "
+                "FROM creators WHERE id = :creator_id"
+            ),
+            {"creator_id": inserted["creator_id"]},
+        ).mappings().one()
+
+    assert submit_response.status_code == 303
+    assert submit_response.headers["location"] == "/app/account?status=paypal-disconnected#billing-connection"
+    assert page_response.status_code == 200
+    assert "PayPal disconnected" in page_response.text
+    assert "Reconnect PayPal" in page_response.text
+    assert creator_row["billing_provider"] == "paypal"
+    assert creator_row["billing_connect_status"] == "disconnected"
+    assert creator_row["billing_account_id"] == "merchant_ui_disconnect_submit"
+    assert creator_row["billing_connected_at"] is None
 
 
 def test_account_page_reset_confirmation_renders_before_send():

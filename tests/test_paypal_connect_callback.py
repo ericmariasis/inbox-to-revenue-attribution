@@ -476,3 +476,154 @@ def test_paypal_connect_callback_rejects_provider_verification_failure():
     assert callback_response.status_code == 400
     assert callback_response.json() == {"detail": "invalid paypal connect callback"}
     assert provider.status_calls == [tracking_id]
+
+
+def test_paypal_connect_callback_browser_response_shows_payments_receivable_failure_copy():
+    inserted = _insert_creator_user(email=f"paypal_browser_receivable_{uuid.uuid4().hex}@example.com")
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider(
+        seller_status=PayPalSellerStatus(
+            merchant_id="merchant_pp6_receivable",
+            tracking_id="placeholder",
+            payments_receivable=False,
+            primary_email_confirmed=True,
+        )
+    )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                start_response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                state = start_response.json()["state"]
+                tracking_id = decode_paypal_connect_state(state)["tracking_id"]
+                provider.seller_status = PayPalSellerStatus(
+                    merchant_id="merchant_pp6_receivable",
+                    tracking_id=tracking_id,
+                    payments_receivable=False,
+                    primary_email_confirmed=True,
+                )
+                callback_response = client.get(
+                    "/paypal/connect/callback",
+                    params={
+                        "state": state,
+                        "merchantId": tracking_id,
+                        "merchantIdInPayPal": "merchant_pp6_receivable",
+                        "permissionsGranted": "true",
+                        "consentStatus": "true",
+                    },
+                    headers=HTML_ACCEPT_HEADERS,
+                )
+
+    assert start_response.status_code == 200
+    assert callback_response.status_code == 400
+    assert (
+        "Attention: You currently cannot receive payments due to restriction on your PayPal account."
+        in callback_response.text
+    )
+    assert "https://www.paypal.com for more information." in callback_response.text
+
+
+def test_paypal_connect_callback_browser_response_shows_primary_email_failure_copy():
+    inserted = _insert_creator_user(email=f"paypal_browser_email_{uuid.uuid4().hex}@example.com")
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider(
+        seller_status=PayPalSellerStatus(
+            merchant_id="merchant_pp6_email",
+            tracking_id="placeholder",
+            payments_receivable=True,
+            primary_email_confirmed=False,
+        )
+    )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                start_response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                state = start_response.json()["state"]
+                tracking_id = decode_paypal_connect_state(state)["tracking_id"]
+                provider.seller_status = PayPalSellerStatus(
+                    merchant_id="merchant_pp6_email",
+                    tracking_id=tracking_id,
+                    payments_receivable=True,
+                    primary_email_confirmed=False,
+                )
+                callback_response = client.get(
+                    "/paypal/connect/callback",
+                    params={
+                        "state": state,
+                        "merchantId": tracking_id,
+                        "merchantIdInPayPal": "merchant_pp6_email",
+                        "permissionsGranted": "true",
+                        "consentStatus": "true",
+                    },
+                    headers=HTML_ACCEPT_HEADERS,
+                )
+
+    assert start_response.status_code == 200
+    assert callback_response.status_code == 400
+    assert (
+        "Attention: Please confirm your email address on https://www.paypal.com/businessprofile/settings in order to receive payments!"
+        in callback_response.text
+    )
+    assert "You currently cannot receive payments." in callback_response.text
+
+
+def test_paypal_connect_callback_browser_response_shows_permissions_failure_copy():
+    inserted = _insert_creator_user(email=f"paypal_browser_permissions_{uuid.uuid4().hex}@example.com")
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider(
+        seller_status=PayPalSellerStatus(
+            merchant_id="merchant_permissions_denied",
+            tracking_id="placeholder",
+            payments_receivable=True,
+            primary_email_confirmed=True,
+        )
+    )
+    settings = _paypal_operator_only_settings(inserted["email"], environment="sandbox")
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                start_response = client.post(
+                    "/paypal/connect/start",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                state = start_response.json()["state"]
+                callback_response = client.get(
+                    "/paypal/connect/callback",
+                    params={
+                        "state": state,
+                        "merchantId": "tracking_permissions_denied",
+                        "merchantIdInPayPal": "merchant_permissions_denied",
+                        "permissionsGranted": "false",
+                        "consentStatus": "false",
+                    },
+                    headers=HTML_ACCEPT_HEADERS,
+                )
+
+    assert start_response.status_code == 200
+    assert callback_response.status_code == 400
+    assert "The required PayPal permissions were not granted to this platform." in callback_response.text

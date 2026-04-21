@@ -61,6 +61,15 @@ def _normalized_email(value: str) -> str:
     return _cleaned_value(value).lower()
 
 
+def _normalized_email_csv_values(value: str) -> tuple[str, ...]:
+    normalized_values: list[str] = []
+    for raw_email in _split_csv_values(value):
+        normalized_email = _normalized_email(raw_email)
+        if normalized_email and normalized_email not in normalized_values:
+            normalized_values.append(normalized_email)
+    return tuple(normalized_values)
+
+
 def _looks_like_email(value: str) -> bool:
     local_part, separator, domain = value.partition("@")
     return bool(separator and local_part and domain)
@@ -240,20 +249,23 @@ class Settings(BaseSettings):
     magic_link_email_smtp_use_ssl: bool = False
     magic_link_email_smtp_timeout_seconds: int = 10
     operator_email_allowlist: str = DEFAULT_OPERATOR_EMAIL_ALLOWLIST
+    paypal_mock_connect_payments_receivable_false_emails: str = ""
+    paypal_mock_connect_primary_email_false_emails: str = ""
 
     def is_local_env(self) -> bool:
         return is_local_app_env(self.app_env)
 
     def operator_email_allowlist_values(self) -> tuple[str, ...]:
-        normalized_values: list[str] = []
-        for raw_email in _split_csv_values(self.operator_email_allowlist):
-            normalized_email = _normalized_email(raw_email)
-            if normalized_email and normalized_email not in normalized_values:
-                normalized_values.append(normalized_email)
-        return tuple(normalized_values)
+        return _normalized_email_csv_values(self.operator_email_allowlist)
 
     def is_operator_email_allowed(self, email: str) -> bool:
         return _normalized_email(email) in frozenset(self.operator_email_allowlist_values())
+
+    def paypal_mock_connect_payments_receivable_false_email_values(self) -> tuple[str, ...]:
+        return _normalized_email_csv_values(self.paypal_mock_connect_payments_receivable_false_emails)
+
+    def paypal_mock_connect_primary_email_false_email_values(self) -> tuple[str, ...]:
+        return _normalized_email_csv_values(self.paypal_mock_connect_primary_email_false_emails)
 
     def paypal_environment_value(self) -> str:
         normalized_value = _normalized_paypal_environment(self.paypal_environment)

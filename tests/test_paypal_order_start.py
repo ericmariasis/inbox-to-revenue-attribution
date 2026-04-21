@@ -117,6 +117,18 @@ def _insert_creator_with_booking(*, email: str) -> dict[str, str]:
     return {"creator_id": creator_id, "user_id": user_id, "booking_id": booking_id, "email": email}
 
 
+def _shipping_address_payload() -> dict[str, str]:
+    return {
+        "full_name": "Buyer Example",
+        "address_line_1": "123 Main St",
+        "address_line_2": "Apt 5",
+        "city": "San Jose",
+        "state_or_region": "CA",
+        "postal_code": "95131",
+        "country_code": "US",
+    }
+
+
 def _access_token(*, user_id: str, creator_id: str, email: str, expires_delta: timedelta) -> str:
     settings = get_settings()
     issued_at = datetime.now(timezone.utc)
@@ -184,6 +196,7 @@ class _StubPayPalProvider:
         idempotency_key: str,
         custom_id: str | None = None,
         payer_email: str | None = None,
+        shipping_address,
     ) -> PayPalCheckoutOrderResult:
         self.order_calls.append(
             {
@@ -195,6 +208,8 @@ class _StubPayPalProvider:
                 "idempotency_key": idempotency_key,
                 "custom_id": custom_id or "",
                 "payer_email": payer_email or "",
+                "shipping_full_name": shipping_address.full_name,
+                "shipping_country_code": shipping_address.country_code,
             }
         )
         return PayPalCheckoutOrderResult(
@@ -222,7 +237,10 @@ def test_paypal_order_start_returns_approval_url_and_persists_open_invoice():
             with TestClient(app) as client:
                 response = client.post(
                     "/paypal/orders/start",
-                    json={"booking_id": inserted["booking_id"]},
+                    json={
+                        "booking_id": inserted["booking_id"],
+                        "shipping_address": _shipping_address_payload(),
+                    },
                     headers={"Authorization": f"Bearer {access_token}"},
                 )
 
@@ -234,6 +252,8 @@ def test_paypal_order_start_returns_approval_url_and_persists_open_invoice():
     assert provider.readiness_calls == ["merchant_story_pp17"]
     assert provider.order_calls[0]["custom_id"] == inserted["booking_id"]
     assert provider.order_calls[0]["payer_email"] == "buyer@example.com"
+    assert provider.order_calls[0]["shipping_full_name"] == "Buyer Example"
+    assert provider.order_calls[0]["shipping_country_code"] == "US"
 
     with Session(_engine()) as session:
         invoice = session.scalar(select(Invoice).where(Invoice.id == uuid.UUID(payload["invoice_id"])))
@@ -266,7 +286,10 @@ def test_paypal_order_start_accepts_browser_session_cookie_for_operator():
                 client.cookies.set(SESSION_COOKIE_NAME, access_token)
                 response = client.post(
                     "/paypal/orders/start",
-                    json={"booking_id": inserted["booking_id"]},
+                    json={
+                        "booking_id": inserted["booking_id"],
+                        "shipping_address": _shipping_address_payload(),
+                    },
                 )
 
     assert response.status_code == 200
@@ -294,10 +317,49 @@ def test_paypal_order_start_hides_path_for_non_operator_creator():
             with TestClient(app) as client:
                 response = client.post(
                     "/paypal/orders/start",
-                    json={"booking_id": inserted["booking_id"]},
+                    json={
+                        "booking_id": inserted["booking_id"],
+                        "shipping_address": _shipping_address_payload(),
+                    },
                     headers={"Authorization": f"Bearer {access_token}"},
                 )
 
     assert response.status_code == 404
+    assert provider.readiness_calls == []
+    assert provider.order_calls == []
+
+
+def test_paypal_order_start_rejects_invalid_shipping_country_code():
+    inserted = _insert_creator_with_booking(
+        email=f"paypal_order_invalid_shipping_{uuid.uuid4().hex}@example.com"
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubPayPalProvider()
+    settings = _paypal_operator_only_settings(inserted["email"])
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("paypal_provider", provider):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/paypal/orders/start",
+                    json={
+                        "booking_id": inserted["booking_id"],
+                        "shipping_address": {
+                            **_shipping_address_payload(),
+                            "country_code": "USA",
+                        },
+                    },
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["msg"] == (
+        "Value error, Enter a valid two-letter shipping country code before continuing to PayPal."
+    )
     assert provider.readiness_calls == []
     assert provider.order_calls == []

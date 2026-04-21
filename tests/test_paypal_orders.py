@@ -10,6 +10,7 @@ from app.models.blocked_billing_case import BlockedBillingCase
 from app.models.invoice import Invoice
 from app.models.invoice_payment_event import InvoicePaymentEvent
 from app.services.billing_provider import BillingAccountReadiness
+from app.services.paypal_order_checkout import PayPalOrderShippingAddress
 from app.services.paypal_orders import (
     PAYPAL_ORDER_FLOW_REASON_PROVIDER_ERROR,
     PayPalOrderFlowError,
@@ -129,6 +130,18 @@ def _insert_paypal_creator_with_booking(*, email: str) -> dict[str, str]:
     }
 
 
+def _shipping_address() -> PayPalOrderShippingAddress:
+    return PayPalOrderShippingAddress(
+        full_name="Buyer Example",
+        address_line_1="123 Main St",
+        address_line_2="Apt 5",
+        city="San Jose",
+        state_or_region="CA",
+        postal_code="95131",
+        country_code="US",
+    )
+
+
 class _StubPayPalOrdersProvider:
     def __init__(
         self,
@@ -161,6 +174,7 @@ class _StubPayPalOrdersProvider:
         idempotency_key: str,
         custom_id: str | None = None,
         payer_email: str | None = None,
+        shipping_address: PayPalOrderShippingAddress,
     ) -> PayPalCheckoutOrderResult:
         self.create_calls.append(
             {
@@ -172,6 +186,8 @@ class _StubPayPalOrdersProvider:
                 "idempotency_key": idempotency_key,
                 "custom_id": custom_id or "",
                 "payer_email": payer_email or "",
+                "shipping_full_name": shipping_address.full_name,
+                "shipping_country_code": shipping_address.country_code,
             }
         )
         if self.create_error is not None:
@@ -218,6 +234,7 @@ def test_start_order_persists_open_paypal_invoice_with_approval_url():
     result = service.start_order(
         creator_id=uuid.UUID(fixture["creator_id"]),
         booking_id=uuid.UUID(fixture["booking_id"]),
+        shipping_address=_shipping_address(),
     )
 
     assert result.outcome == "created"
@@ -229,6 +246,8 @@ def test_start_order_persists_open_paypal_invoice_with_approval_url():
     assert provider.create_calls[0]["currency"] == "USD"
     assert provider.create_calls[0]["custom_id"] == fixture["booking_id"]
     assert provider.create_calls[0]["payer_email"] == "buyer@example.com"
+    assert provider.create_calls[0]["shipping_full_name"] == "Buyer Example"
+    assert provider.create_calls[0]["shipping_country_code"] == "US"
 
     with Session(_engine()) as session:
         invoice = session.scalar(select(Invoice).where(Invoice.id == result.invoice_id))
@@ -266,6 +285,7 @@ def test_start_order_records_blocked_case_when_paypal_provider_create_fails():
         service.start_order(
             creator_id=uuid.UUID(fixture["creator_id"]),
             booking_id=uuid.UUID(fixture["booking_id"]),
+            shipping_address=_shipping_address(),
         )
 
     assert exc_info.value.reason_code == PAYPAL_ORDER_FLOW_REASON_PROVIDER_ERROR

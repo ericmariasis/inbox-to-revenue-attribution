@@ -192,6 +192,7 @@ class _StubPayPalProvider:
         idempotency_key: str,
         custom_id: str | None = None,
         payer_email: str | None = None,
+        shipping_address,
     ) -> PayPalCheckoutOrderResult:
         self.order_calls.append(
             {
@@ -201,6 +202,8 @@ class _StubPayPalProvider:
                 "idempotency_key": idempotency_key,
                 "custom_id": custom_id or "",
                 "payer_email": payer_email or "",
+                "shipping_full_name": shipping_address.full_name,
+                "shipping_country_code": shipping_address.country_code,
             }
         )
         return PayPalCheckoutOrderResult(
@@ -272,6 +275,15 @@ def test_paypal_order_checkout_page_renders_sdk_for_allowlisted_operator():
     assert f'const bookingId = "{inserted["booking_id"]}";' in response.text
     assert "/paypal/orders/start" in response.text
     assert "/paypal/orders/capture" in response.text
+    assert "Enter the buyer shipping address here first." in response.text
+    assert 'id="shipping-full-name"' in response.text
+    assert 'id="shipping-address-line-1"' in response.text
+    assert 'id="shipping-city"' in response.text
+    assert 'id="shipping-state-or-region"' in response.text
+    assert 'id="shipping-postal-code"' in response.text
+    assert 'id="shipping-country-code"' in response.text
+    assert "validateShippingAddressPayload" in response.text
+    assert "shipping_address: shippingAddress" in response.text
     assert 'layout: "vertical"' in response.text
     assert 'label: "paypal"' in response.text
     assert "Pending until button click" in response.text
@@ -337,7 +349,18 @@ def test_paypal_order_capture_browser_endpoint_marks_paid_for_allowlisted_operat
                 )
                 start_response = client.post(
                     "/paypal/orders/start",
-                    json={"booking_id": inserted["booking_id"]},
+                    json={
+                        "booking_id": inserted["booking_id"],
+                        "shipping_address": {
+                            "full_name": "Buyer Example",
+                            "address_line_1": "123 Main St",
+                            "address_line_2": "Apt 5",
+                            "city": "San Jose",
+                            "state_or_region": "CA",
+                            "postal_code": "95131",
+                            "country_code": "US",
+                        },
+                    },
                 )
                 capture_response = client.post(
                     "/paypal/orders/capture",
@@ -360,6 +383,8 @@ def test_paypal_order_capture_browser_endpoint_marks_paid_for_allowlisted_operat
     assert provider.order_calls[0]["idempotency_key"] == f"paypal:order:start:{inserted['booking_id']}"
     assert provider.order_calls[0]["custom_id"] == inserted["booking_id"]
     assert provider.order_calls[0]["payer_email"] == "buyer@example.com"
+    assert provider.order_calls[0]["shipping_full_name"] == "Buyer Example"
+    assert provider.order_calls[0]["shipping_country_code"] == "US"
     assert provider.capture_calls == [
         {
             "provider_account_id": "merchant_story_pp17a",
@@ -403,7 +428,18 @@ def test_paypal_order_capture_browser_endpoint_returns_instrument_declined_signa
                 client.cookies.set(SESSION_COOKIE_NAME, access_token)
                 start_response = client.post(
                     "/paypal/orders/start",
-                    json={"booking_id": inserted["booking_id"]},
+                    json={
+                        "booking_id": inserted["booking_id"],
+                        "shipping_address": {
+                            "full_name": "Buyer Example",
+                            "address_line_1": "123 Main St",
+                            "address_line_2": "Apt 5",
+                            "city": "San Jose",
+                            "state_or_region": "CA",
+                            "postal_code": "95131",
+                            "country_code": "US",
+                        },
+                    },
                 )
                 capture_response = client.post(
                     "/paypal/orders/capture",

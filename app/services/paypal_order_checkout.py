@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from secrets import token_hex
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -8,6 +9,17 @@ from app.core.config import Settings, get_settings
 
 PAYPAL_ORDER_CHECKOUT_STATE_PURPOSE = "paypal_order_checkout"
 PAYPAL_ORDER_CHECKOUT_CALLBACK_PATH = "/paypal/orders/callback"
+
+
+@dataclass(frozen=True)
+class PayPalOrderShippingAddress:
+    full_name: str
+    address_line_1: str
+    address_line_2: str | None
+    city: str
+    state_or_region: str
+    postal_code: str
+    country_code: str
 
 
 def build_paypal_order_checkout_state(

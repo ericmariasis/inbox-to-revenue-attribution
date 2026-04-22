@@ -56,6 +56,7 @@ from app.services.paypal_orders import (
     PayPalOrdersService,
 )
 from app.services.paypal_provider import (
+    PAYPAL_REQUIRED_THIRD_PARTY_SCOPES,
     PayPalProvider,
     PayPalProviderError,
     PayPalSellerStatus,
@@ -74,6 +75,21 @@ PAYPAL_ORDER_START_UNAVAILABLE_DETAIL = "paypal order start unavailable"
 PAYPAL_ORDER_START_NOT_FOUND_DETAIL = "paypal order start not found"
 PAYPAL_ORDER_START_NOT_FOUND_PAGE_TITLE = "PayPal payment could not be started"
 PAYPAL_ORDER_CHECKOUT_PAGE_NOT_FOUND_DETAIL = "paypal checkout page not found"
+PAYPAL_PAYMENTS_RECEIVABLE_FALSE_COPY = (
+    "Attention: You currently cannot receive payments due to restriction on your "
+    "PayPal account. Please reach out to PayPal Customer Support or connect to "
+    "https://www.paypal.com for more information."
+)
+PAYPAL_PRIMARY_EMAIL_FALSE_COPY = (
+    "Attention: Please confirm your email address on "
+    "https://www.paypal.com/businessprofile/settings in order to receive payments! "
+    "You currently cannot receive payments."
+)
+PAYPAL_THIRD_PARTY_PERMISSIONS_FALSE_COPY = (
+    "Attention: The required PayPal permissions were not granted to this platform. "
+    "Reconnect your PayPal account and approve the requested permissions before "
+    "offering PayPal services and products on your website."
+)
 
 
 def _settings(request: Request) -> Settings:
@@ -234,6 +250,33 @@ def _browser_connect_failure_response() -> HTMLResponse:
     )
 
 
+def _browser_connect_permissions_failure_response() -> HTMLResponse:
+    return _connect_result_page(
+        title="PayPal setup needs additional permissions",
+        body=PAYPAL_THIRD_PARTY_PERMISSIONS_FALSE_COPY,
+        status_code=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _browser_connect_requirements_failure_response(
+    *,
+    verified_status: PayPalSellerStatus,
+) -> HTMLResponse:
+    if not verified_status.payments_receivable:
+        return _connect_result_page(
+            title="PayPal account cannot receive payments yet",
+            body=PAYPAL_PAYMENTS_RECEIVABLE_FALSE_COPY,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not verified_status.primary_email_confirmed:
+        return _connect_result_page(
+            title="PayPal email confirmation is still required",
+            body=PAYPAL_PRIMARY_EMAIL_FALSE_COPY,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return _browser_connect_permissions_failure_response()
+
+
 def _query_param_is_explicit_false(value: str | None) -> bool:
     if value is None:
         return False
@@ -278,7 +321,7 @@ def _callback_indicates_denied_permissions(
     return _query_param_is_explicit_false(permissions_granted) or _query_param_is_explicit_false(consent_status)
 
 
-def _verified_callback_matches_state(
+def _verified_callback_identity_matches_state(
     *,
     expected_tracking_id: str,
     callback_tracking_id: str | None,
@@ -291,11 +334,41 @@ def _verified_callback_matches_state(
         return False
     if callback_merchant_id is not None and callback_merchant_id != verified_status.merchant_id:
         return False
-    return (
-        verified_status.payments_receivable
-        and verified_status.primary_email_confirmed
-        and verified_status.required_third_party_permissions_granted
-    )
+    return True
+
+
+def _mock_verified_seller_status_for_connect_callback(
+    *,
+    creator: Creator,
+    settings: Settings,
+    expected_tracking_id: str,
+    callback_merchant_id: str | None,
+) -> PayPalSellerStatus | None:
+    auth_user = creator.auth_user
+    if auth_user is None:
+        return None
+
+    normalized_email = auth_user.email.strip().lower()
+    merchant_id = callback_merchant_id or f"mock-paypal-merchant-{creator.id.hex[:12]}"
+    if normalized_email in frozenset(settings.paypal_mock_connect_payments_receivable_false_email_values()):
+        return PayPalSellerStatus(
+            merchant_id=merchant_id,
+            tracking_id=expected_tracking_id,
+            payments_receivable=False,
+            primary_email_confirmed=True,
+            granted_third_party_scopes=PAYPAL_REQUIRED_THIRD_PARTY_SCOPES,
+            required_third_party_permissions_granted=True,
+        )
+    if normalized_email in frozenset(settings.paypal_mock_connect_primary_email_false_email_values()):
+        return PayPalSellerStatus(
+            merchant_id=merchant_id,
+            tracking_id=expected_tracking_id,
+            payments_receivable=True,
+            primary_email_confirmed=False,
+            granted_third_party_scopes=PAYPAL_REQUIRED_THIRD_PARTY_SCOPES,
+            required_third_party_permissions_granted=True,
+        )
+    return None
 
 
 def _browser_order_failure_response() -> HTMLResponse:
@@ -442,6 +515,39 @@ def _render_paypal_order_checkout_page(
         color: var(--accent);
         margin-bottom: 4px;
       }}
+      .shipping-fields {{
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }}
+      .field {{
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }}
+      .field.full {{
+        grid-column: 1 / -1;
+      }}
+      .field label {{
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }}
+      .field input {{
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 11px 12px;
+        font: inherit;
+        color: var(--ink);
+        background: #fff;
+      }}
+      .support-text {{
+        margin: 0;
+        color: var(--muted);
+      }}
       .status {{
         min-height: 4rem;
         padding: 14px 16px;
@@ -487,7 +593,7 @@ def _render_paypal_order_checkout_page(
       <section class="hero stack">
         <p class="eyebrow">Operator-gated proof</p>
         <h1>PayPal checkout proof</h1>
-        <p>Use the documented JavaScript SDK buyer path for one existing booking. This page creates the order only after the buyer clicks PayPal and keeps final capture on the server so local paid truth stays canonical.</p>
+        <p>Use the documented JavaScript SDK buyer path for one existing booking. This page validates the buyer shipping address before creating the order, then keeps final capture on the server so local paid truth stays canonical.</p>
       </section>
       <section class="grid">
         <article class="card stack">
@@ -495,7 +601,43 @@ def _render_paypal_order_checkout_page(
             <p class="eyebrow">Buyer approval</p>
             <h2>Approve and capture one PayPal order</h2>
           </div>
-          <div id="status" class="status" role="status" aria-live="polite">Ready. Click the PayPal button to continue the buyer approval flow.</div>
+          <div class="stack">
+            <div>
+              <p class="eyebrow">Shipping details</p>
+              <p class="support-text">Enter the buyer shipping address here first. The app validates the details before it calls PayPal so the buyer can correct any issue on this page.</p>
+            </div>
+            <div class="shipping-fields">
+              <div class="field full">
+                <label for="shipping-full-name">Full name</label>
+                <input id="shipping-full-name" name="shipping-full-name" type="text" autocomplete="shipping name" required>
+              </div>
+              <div class="field full">
+                <label for="shipping-address-line-1">Address line 1</label>
+                <input id="shipping-address-line-1" name="shipping-address-line-1" type="text" autocomplete="shipping address-line1" required>
+              </div>
+              <div class="field full">
+                <label for="shipping-address-line-2">Address line 2 (optional)</label>
+                <input id="shipping-address-line-2" name="shipping-address-line-2" type="text" autocomplete="shipping address-line2">
+              </div>
+              <div class="field">
+                <label for="shipping-city">City</label>
+                <input id="shipping-city" name="shipping-city" type="text" autocomplete="shipping address-level2" required>
+              </div>
+              <div class="field">
+                <label for="shipping-state-or-region">State / region</label>
+                <input id="shipping-state-or-region" name="shipping-state-or-region" type="text" autocomplete="shipping address-level1" required>
+              </div>
+              <div class="field">
+                <label for="shipping-postal-code">Postal code</label>
+                <input id="shipping-postal-code" name="shipping-postal-code" type="text" autocomplete="shipping postal-code" required>
+              </div>
+              <div class="field">
+                <label for="shipping-country-code">Country code</label>
+                <input id="shipping-country-code" name="shipping-country-code" type="text" autocomplete="shipping country" maxlength="2" placeholder="US" required>
+              </div>
+            </div>
+          </div>
+          <div id="status" class="status" role="status" aria-live="polite">Ready. Enter the shipping details, then click the PayPal button to continue the buyer approval flow.</div>
           <div id="paypal-buttons"></div>
         </article>
         <aside class="card stack">
@@ -537,6 +679,14 @@ def _render_paypal_order_checkout_page(
 
         function parseErrorPayload(payload, fallbackMessage) {{
           const detail = payload && payload.detail;
+          if (Array.isArray(detail) && detail.length > 0) {{
+            return {{
+              message: detail
+                .map((entry) => (entry && entry.msg ? entry.msg : fallbackMessage))
+                .join(" "),
+              errorCode: payload && payload.error_code ? payload.error_code : null,
+            }};
+          }}
           if (detail && typeof detail === "object") {{
             return {{
               message: detail.message || fallbackMessage,
@@ -555,6 +705,46 @@ def _render_paypal_order_checkout_page(
           }};
         }}
 
+        function shippingFieldValue(id) {{
+          const field = document.getElementById(id);
+          return field && typeof field.value === "string" ? field.value.trim() : "";
+        }}
+
+        function buildShippingAddressPayload() {{
+          const addressLine2 = shippingFieldValue("shipping-address-line-2");
+          return {{
+            full_name: shippingFieldValue("shipping-full-name"),
+            address_line_1: shippingFieldValue("shipping-address-line-1"),
+            address_line_2: addressLine2 || null,
+            city: shippingFieldValue("shipping-city"),
+            state_or_region: shippingFieldValue("shipping-state-or-region"),
+            postal_code: shippingFieldValue("shipping-postal-code"),
+            country_code: shippingFieldValue("shipping-country-code").toUpperCase(),
+          }};
+        }}
+
+        function validateShippingAddressPayload(payload) {{
+          if (!payload.full_name) {{
+            return "Enter the buyer full name before continuing to PayPal.";
+          }}
+          if (!payload.address_line_1) {{
+            return "Enter the first shipping address line before continuing to PayPal.";
+          }}
+          if (!payload.city) {{
+            return "Enter the shipping city before continuing to PayPal.";
+          }}
+          if (!payload.state_or_region) {{
+            return "Enter the shipping state or region before continuing to PayPal.";
+          }}
+          if (!payload.postal_code) {{
+            return "Enter the shipping postal code before continuing to PayPal.";
+          }}
+          if (!/^[A-Za-z]{{2}}$/.test(payload.country_code)) {{
+            return "Enter a valid two-letter shipping country code before continuing to PayPal.";
+          }}
+          return null;
+        }}
+
         if (!window.paypal) {{
           setStatus("PayPal JavaScript SDK did not load on this page.", "error");
         }} else {{
@@ -565,7 +755,13 @@ def _render_paypal_order_checkout_page(
               shape: "rect",
             }},
             createOrder() {{
-              setStatus("Creating a PayPal order on the server.", "");
+              const shippingAddress = buildShippingAddressPayload();
+              const shippingValidationMessage = validateShippingAddressPayload(shippingAddress);
+              if (shippingValidationMessage) {{
+                setStatus(shippingValidationMessage, "error");
+                return Promise.reject(new Error(shippingValidationMessage));
+              }}
+              setStatus("Shipping validated. Creating a PayPal order on the server.", "");
               return fetch("/paypal/orders/start", {{
                 method: "POST",
                 headers: {{
@@ -575,6 +771,7 @@ def _render_paypal_order_checkout_page(
                 credentials: "same-origin",
                 body: JSON.stringify({{
                   booking_id: bookingId,
+                  shipping_address: shippingAddress,
                 }}),
               }})
                 .then(async (response) => {{
@@ -698,7 +895,7 @@ def paypal_connect_callback(
         consent_status=consentStatus,
     ):
         if prefers_html:
-            return _browser_connect_failure_response()
+            return _browser_connect_permissions_failure_response()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
@@ -747,26 +944,39 @@ def paypal_connect_callback(
                 )
             return GenericOkResponse()
 
-    try:
-        verified_status = _paypal_provider(request).get_verified_seller_status(
-            tracking_id=expected_tracking_id,
-        )
-    except PayPalProviderError as exc:
-        logger.warning(
-            "paypal_connect_callback_provider_error creator_id=%s operation=%s http_status=%s error_code=%s",
+    verified_status = _mock_verified_seller_status_for_connect_callback(
+        creator=creator,
+        settings=settings,
+        expected_tracking_id=expected_tracking_id,
+        callback_merchant_id=merchantIdInPayPal,
+    )
+    if verified_status is None:
+        try:
+            verified_status = _paypal_provider(request).get_verified_seller_status(
+                tracking_id=expected_tracking_id,
+            )
+        except PayPalProviderError as exc:
+            logger.warning(
+                "paypal_connect_callback_provider_error creator_id=%s operation=%s http_status=%s error_code=%s",
+                creator.id,
+                exc.operation,
+                exc.http_status,
+                exc.error_code,
+            )
+            if prefers_html:
+                return _browser_connect_failure_response()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
+            ) from exc
+    else:
+        logger.info(
+            "paypal_connect_callback_mocked_requirements_failure creator_id=%s email=%s",
             creator.id,
-            exc.operation,
-            exc.http_status,
-            exc.error_code,
+            creator.auth_user.email,
         )
-        if prefers_html:
-            return _browser_connect_failure_response()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
-        ) from exc
 
-    if not _verified_callback_matches_state(
+    if not _verified_callback_identity_matches_state(
         expected_tracking_id=expected_tracking_id,
         callback_tracking_id=merchantId,
         callback_merchant_id=merchantIdInPayPal,
@@ -774,6 +984,19 @@ def paypal_connect_callback(
     ):
         if prefers_html:
             return _browser_connect_failure_response()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
+        )
+    if (
+        not verified_status.payments_receivable
+        or not verified_status.primary_email_confirmed
+        or not verified_status.required_third_party_permissions_granted
+    ):
+        if prefers_html:
+            return _browser_connect_requirements_failure_response(
+                verified_status=verified_status,
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=INVALID_PAYPAL_CONNECT_CALLBACK_DETAIL,
@@ -887,6 +1110,7 @@ def paypal_order_start(
         result = service.start_order(
             creator_id=current_user.creator_id,
             booking_id=payload.booking_id,
+            shipping_address=payload.shipping_address.as_shipping_address(),
         )
     except PayPalOrderFlowError as exc:
         if exc.reason_code == PAYPAL_ORDER_FLOW_REASON_PROVIDER_ERROR:

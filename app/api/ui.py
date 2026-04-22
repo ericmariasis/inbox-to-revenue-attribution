@@ -40,7 +40,11 @@ from app.api.stripe import (
 from app.core.config import get_settings
 from app.db.session import SessionLocal, get_db
 from app.models.auth_user import AuthUser
-from app.models.billing_provider import BILLING_PROVIDER_PAYPAL, BILLING_PROVIDER_STRIPE
+from app.models.billing_provider import (
+    BILLING_CONNECT_STATUS_CONNECTED,
+    BILLING_PROVIDER_PAYPAL,
+    BILLING_PROVIDER_STRIPE,
+)
 from app.models.billing_provider_switch_attempt import BillingProviderSwitchAttempt
 from app.models.booking_provider import (
     BOOKING_PROVIDER_CALENDLY,
@@ -340,6 +344,11 @@ ACCOUNT_REQUEST_STATUS_MESSAGES = {
         "body": "PayPal setup is not yet available for general creators. Stripe remains the supported self-serve billing path for now.",
         "notice_class": "notice error",
     },
+    "paypal-disconnected": {
+        "title": "PayPal disconnected",
+        "body": "This workspace no longer offers PayPal for future billing. Historical workspace records stay preserved locally.",
+        "notice_class": "notice success",
+    },
 }
 OPERATOR_SUPPORT_REQUEST_STATUS_MESSAGES = {
     "status-updated": {
@@ -354,6 +363,8 @@ OPERATOR_SUPPORT_REQUEST_STATUS_MESSAGES = {
     },
 }
 ACCOUNT_DANGER_ZONE_FRAGMENT = "#danger-zone"
+ACCOUNT_BILLING_FRAGMENT = "#billing-connection"
+PAYPAL_DISCONNECT_CONFIRM_VALUE = "disconnect-paypal"
 
 _BILLING_PROVIDER_SETUP_STATE_NOT_APPLICABLE = "not_applicable"
 _BILLING_PROVIDER_SETUP_STATE_PENDING_CONNECTION = "pending_connection"
@@ -363,6 +374,14 @@ _BILLING_PROVIDER_SETUP_STATE_BLOCKED = "blocked"
 _PAYPAL_UNAVAILABLE_CREATOR_COPY = (
     "PayPal setup is not yet available for general creators. "
     "Stripe remains the supported self-serve billing path for now."
+)
+_PUBLIC_LEGAL_LINKS_HTML = (
+    '<a href="/terms" class="inline-link">Terms and Conditions</a> '
+    '<a href="/privacy" class="inline-link">Privacy Policy</a>'
+)
+_PAYPAL_DISCONNECT_CONFIRMATION_COPY = (
+    "Disconnecting your PayPal account will prevent you from offering PayPal services "
+    "and products on your website. Do you wish to continue?"
 )
 
 
@@ -393,12 +412,25 @@ class _BillingProviderSetupGuidance:
 def root(
     request: Request,
     current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
-) -> RedirectResponse:
+) -> Response:
     if current_user is not None:
         return _redirect("/app")
 
     should_clear_cookie = get_browser_session_token(request) is not None
-    return _redirect("/sign-in", clear_session=should_clear_cookie)
+    response = _html_response(_render_public_home_page())
+    if should_clear_cookie:
+        clear_browser_session_cookie(response, settings=get_settings())
+    return response
+
+
+@router.get("/terms")
+def terms_page() -> HTMLResponse:
+    return _html_response(_render_terms_page())
+
+
+@router.get("/privacy")
+def privacy_page() -> HTMLResponse:
+    return _html_response(_render_privacy_page())
 
 
 @router.get("/sign-in")
@@ -737,6 +769,33 @@ def creator_billing_switch_restart(
 
     db.commit()
     return _redirect(str(start_response.onboarding_url))
+
+
+@router.post("/app/account/paypal/disconnect")
+def creator_paypal_disconnect(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    switch_attempt = get_billing_provider_switch_attempt(
+        db=db,
+        creator_id=current_user.creator_id,
+    )
+    if not _paypal_disconnect_available(
+        current_user=current_user,
+        switch_attempt=switch_attempt,
+    ):
+        return _redirect(f"/app/account{ACCOUNT_BILLING_FRAGMENT}")
+
+    current_user.creator.billing_connect_status = "disconnected"
+    current_user.creator.billing_connected_at = None
+    db.add(current_user.creator)
+    db.commit()
+    return _redirect(f"/app/account?status=paypal-disconnected{ACCOUNT_BILLING_FRAGMENT}")
 
 
 @router.get("/app/operator/support-requests")
@@ -2253,6 +2312,140 @@ def _sign_in_path(*, status_value: str | None = None) -> str:
     return f"/sign-in?status={quote(status_value, safe='')}"
 
 
+def _render_public_home_page() -> str:
+    body = f"""
+    <section class="hero stack">
+      <div>
+        <p class="eyebrow">Independent tutor onboarding</p>
+        <h1>Career Code Pro tutor setup</h1>
+        <p class="lede">Independent tutors register here by email, open the magic link on the same device and browser, and complete billing, booking-link, and tracked-content setup inside the hosted app.</p>
+      </div>
+      <div class="grid">
+        <article class="topic-summary stack">
+          <div>
+            <p class="eyebrow">How tutors register</p>
+            <h2>Start with email sign-in</h2>
+          </div>
+          <p>Use the hosted sign-in page to request a magic link. Opening that link creates or reopens the tutor workspace for that email on this website.</p>
+        </article>
+        <article class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Own payment account</p>
+            <h2>Tutors use their own account</h2>
+          </div>
+          <p>Tutors use their own payment-provider account to accept payments for their services. The workspace keeps billing setup, booking links, tracked content, and reporting in one place.</p>
+        </article>
+      </div>
+      <section class="card stack">
+        <div>
+          <p class="eyebrow">Hosted review flow</p>
+          <h2>What happens after sign-in</h2>
+        </div>
+        <p>After sign-in, the tutor can connect billing, add or review booking links, add tracked content, and return to the account page later to reconnect or disconnect a billing provider when needed.</p>
+        <p><a href="/sign-in" class="inline-link">Start tutor sign-in</a></p>
+        <p class="footnote">{_PUBLIC_LEGAL_LINKS_HTML}</p>
+      </section>
+    </section>
+    """
+    return _page_layout(title="Career Code Pro tutor setup", body=body)
+
+
+def _render_terms_page() -> str:
+    body = f"""
+    <section class="hero stack">
+      <div>
+        <p class="eyebrow">Terms and Conditions</p>
+        <h1>Career Code Pro Terms and Conditions</h1>
+        <p class="lede">These terms govern use of the hosted Career Code Pro workspace for independent tutors and other creators who manage booking links, tracked content, billing setup, and reporting through this website.</p>
+      </div>
+      <section class="card stack">
+        <div>
+          <p class="eyebrow">Account use</p>
+          <h2>Workspace access</h2>
+        </div>
+        <p>You are responsible for using a valid email address and for keeping access to your mailbox secure. Access to the workspace is tied to the email-based sign-in flow used on this website.</p>
+        <p>During beta, we may suspend or limit access if a workspace is used for prohibited, fraudulent, or abusive activity, or if continued access would create operational, legal, or payment-provider risk.</p>
+      </section>
+      <section class="grid">
+        <article class="card stack">
+          <div>
+            <p class="eyebrow">Payments</p>
+            <h2>Your payment account</h2>
+          </div>
+          <p>Independent tutors use their own connected payment-provider account to accept payments for their services. Career Code Pro does not take ownership of that payment account.</p>
+          <p>Disconnecting a payment provider in this workspace affects future billing readiness only. It does not automatically delete or reverse provider-side records, dashboards, or historical transactions.</p>
+        </article>
+        <article class="card stack">
+          <div>
+            <p class="eyebrow">Content and links</p>
+            <h2>Your sources and bookings</h2>
+          </div>
+          <p>You are responsible for the destination URLs, tracked content, booking links, and other source material you place into the workspace. You must have the right to use that material and the right to offer the services advertised through it.</p>
+          <p>You must not use the service for unlawful conduct, deceptive claims, payment abuse, or prohibited content.</p>
+        </article>
+      </section>
+      <section class="card stack">
+        <div>
+          <p class="eyebrow">Beta operations</p>
+          <h2>Manual review and support</h2>
+        </div>
+        <p>Some destructive changes, including workspace reset and account deletion, stay support-assisted during beta. Submitting a request does not guarantee an immediate change.</p>
+        <p>Questions about these terms can be sent to <a href="mailto:eric@careercodepro.com">eric@careercodepro.com</a>.</p>
+        <p class="footnote"><a href="/" class="inline-link">Return to the hosted onboarding page</a> {_PUBLIC_LEGAL_LINKS_HTML}</p>
+      </section>
+    </section>
+    """
+    return _page_layout(title="Career Code Pro Terms and Conditions", body=body)
+
+
+def _render_privacy_page() -> str:
+    body = f"""
+    <section class="hero stack">
+      <div>
+        <p class="eyebrow">Privacy Policy</p>
+        <h1>Career Code Pro Privacy Policy</h1>
+        <p class="lede">This policy explains the data Career Code Pro stores and uses to run tutor workspaces, billing setup, tracked links, booking attribution, and reporting on this website.</p>
+      </div>
+      <section class="grid">
+        <article class="card stack">
+          <div>
+            <p class="eyebrow">What we store</p>
+            <h2>Workspace data</h2>
+          </div>
+          <p>We store account email addresses, creator names, booking links, tracked content URLs, booking activity, billing-connection metadata, support-request records, and provider event data needed to operate the product and explain what happened in a workspace.</p>
+        </article>
+        <article class="card stack">
+          <div>
+            <p class="eyebrow">How we use it</p>
+            <h2>Product operations</h2>
+          </div>
+          <p>We use that data to authenticate creators, create and reconnect billing setups, attribute tracked bookings, prepare reports, surface attention items, and respond to support-assisted account requests.</p>
+        </article>
+      </section>
+      <section class="grid">
+        <article class="card stack">
+          <div>
+            <p class="eyebrow">Third-party services</p>
+            <h2>Payment and booking providers</h2>
+          </div>
+          <p>Depending on the configuration used for a workspace, the product may exchange operational data with providers such as PayPal, Stripe, Calendly, and email-delivery services needed for sign-in or support notifications.</p>
+          <p>Those providers operate under their own terms and privacy practices.</p>
+        </article>
+        <article class="card stack">
+          <div>
+            <p class="eyebrow">Retention and deletion</p>
+            <h2>Beta deletion handling</h2>
+          </div>
+          <p>During beta, account deletion and workspace reset remain manual-review workflows. Provider-side accounts and records are not deleted automatically when a workspace is disconnected or when a deletion request is submitted.</p>
+          <p>Questions about privacy or data handling can be sent to <a href="mailto:eric@careercodepro.com">eric@careercodepro.com</a>.</p>
+        </article>
+      </section>
+      <p class="footnote"><a href="/" class="inline-link">Return to the hosted onboarding page</a> {_PUBLIC_LEGAL_LINKS_HTML}</p>
+    </section>
+    """
+    return _page_layout(title="Career Code Pro Privacy Policy", body=body)
+
+
 def _render_sign_in_page(status_value: str | None) -> str:
     message = STATUS_MESSAGES.get(status_value)
     message_block = ""
@@ -2273,9 +2466,11 @@ def _render_sign_in_page(status_value: str | None) -> str:
       <form action="/sign-in" method="post" class="card">
         <label for="email">Email</label>
         <input id="email" name="email" type="email" autocomplete="email" placeholder="creator@example.com" required />
+        <p class="form-help">Independent tutors create or reopen their workspace here, then connect their own billing account inside the app.</p>
         <button type="submit">Send magic link</button>
       </form>
       <p class="footnote">If the last link expired, the setup tab was closed, or you opened the email on another device, request another email here and continue from this browser.</p>
+      <p class="footnote">{_PUBLIC_LEGAL_LINKS_HTML}</p>
     </section>
     """
     return _page_layout(title="Creator sign in", body=body)
@@ -2406,7 +2601,14 @@ def _render_account_page(
     trackable_booking_links_count = readiness.trackable_booking_links_count
     limited_tracking_booking_links_count = readiness.limited_tracking_booking_links_count
     billing_ready_count = readiness.billing_ready_count
-    billing_action = billing_state["actions_html"]
+    billing_action = (
+        billing_state["actions_html"]
+        + _render_paypal_disconnect_call_to_action(
+            current_user=current_user,
+            confirm_value=confirm_value,
+            switch_attempt=switch_attempt,
+        )
+    )
 
     booking_links_summary = "No booking links are saved yet for this workspace."
     if booking_links_count > 0:
@@ -2563,7 +2765,7 @@ def _render_account_billing_setup_section(
         )
 
     return f"""
-    <section class="hero milestone-hero stack account-billing-hero">
+    <section id="billing-connection" class="hero milestone-hero stack account-billing-hero">
       <div class="status-row">
         <div>
           <p class="eyebrow">Billing setup</p>
@@ -2848,6 +3050,51 @@ def _render_account_request_call_to_action(
     return (
         f'<p><a href="/app/account?confirm={quote(request_type, safe="")}{ACCOUNT_DANGER_ZONE_FRAGMENT}" class="inline-link">'
         f"{html.escape(flow['action_label'])}</a></p>"
+    )
+
+
+def _paypal_disconnect_available(
+    *,
+    current_user: AuthUser,
+    switch_attempt: BillingProviderSwitchAttempt | None,
+) -> bool:
+    return (
+        current_user.creator.resolved_billing_provider == BILLING_PROVIDER_PAYPAL
+        and current_user.creator.resolved_billing_connect_status == BILLING_CONNECT_STATUS_CONNECTED
+        and switch_attempt is None
+    )
+
+
+def _render_paypal_disconnect_call_to_action(
+    *,
+    current_user: AuthUser,
+    confirm_value: str | None,
+    switch_attempt: BillingProviderSwitchAttempt | None,
+) -> str:
+    if not _paypal_disconnect_available(
+        current_user=current_user,
+        switch_attempt=switch_attempt,
+    ):
+        return ""
+
+    if confirm_value == PAYPAL_DISCONNECT_CONFIRM_VALUE:
+        return f"""
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Confirm</p>
+            <h2>Disconnect PayPal?</h2>
+          </div>
+          <p>{html.escape(_PAYPAL_DISCONNECT_CONFIRMATION_COPY)}</p>
+          <form action="/app/account/paypal/disconnect" method="post">
+            <button type="submit">Disconnect PayPal</button>
+          </form>
+          <p><a href="/app/account{ACCOUNT_BILLING_FRAGMENT}" class="inline-link">Keep PayPal connected</a></p>
+        </section>
+        """
+
+    return (
+        f'<p><a href="/app/account?confirm={quote(PAYPAL_DISCONNECT_CONFIRM_VALUE, safe="")}{ACCOUNT_BILLING_FRAGMENT}" '
+        'class="inline-link">Disconnect PayPal</a></p>'
     )
 
 

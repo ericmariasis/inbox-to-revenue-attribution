@@ -120,6 +120,18 @@ def _insert_creator_with_booking(*, email: str) -> dict[str, str]:
     return {"creator_id": creator_id, "user_id": user_id, "booking_id": booking_id, "email": email}
 
 
+def _shipping_address_payload() -> dict[str, str]:
+    return {
+        "full_name": "Buyer Example",
+        "address_line_1": "123 Main St",
+        "address_line_2": "Apt 5",
+        "city": "San Jose",
+        "state_or_region": "CA",
+        "postal_code": "95131",
+        "country_code": "US",
+    }
+
+
 def _access_token(*, user_id: str, creator_id: str, email: str, expires_delta: timedelta) -> str:
     settings = get_settings()
     issued_at = datetime.now(timezone.utc)
@@ -188,6 +200,7 @@ class _StubPayPalProvider:
         idempotency_key: str,
         custom_id: str | None = None,
         payer_email: str | None = None,
+        shipping_address,
     ) -> PayPalCheckoutOrderResult:
         self.order_calls.append(
             {
@@ -195,6 +208,7 @@ class _StubPayPalProvider:
                 "return_url": return_url,
                 "cancel_url": cancel_url,
                 "idempotency_key": idempotency_key,
+                "shipping_country_code": shipping_address.country_code,
             }
         )
         return PayPalCheckoutOrderResult(
@@ -244,7 +258,10 @@ def test_paypal_order_callback_captures_paid_order_and_returns_browser_success_p
             with TestClient(app) as client:
                 start_response = client.post(
                     "/paypal/orders/start",
-                    json={"booking_id": inserted["booking_id"]},
+                    json={
+                        "booking_id": inserted["booking_id"],
+                        "shipping_address": _shipping_address_payload(),
+                    },
                     headers={"Authorization": f"Bearer {access_token}"},
                 )
                 state = start_response.json()["state"]
@@ -303,7 +320,10 @@ def test_paypal_order_callback_rejects_token_mismatch_without_capture():
             with TestClient(app) as client:
                 start_response = client.post(
                     "/paypal/orders/start",
-                    json={"booking_id": inserted["booking_id"]},
+                    json={
+                        "booking_id": inserted["booking_id"],
+                        "shipping_address": _shipping_address_payload(),
+                    },
                     headers={"Authorization": f"Bearer {access_token}"},
                 )
                 state = start_response.json()["state"]

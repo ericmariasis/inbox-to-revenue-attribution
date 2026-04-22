@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.core.config import Settings
+from app.services.paypal_order_checkout import PayPalOrderShippingAddress
 from app.services.billing_provider import (
     BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
     BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
@@ -102,6 +103,18 @@ def _provider(
         ),
         request_trace_recorder=request_trace_recorder,
         mock_capture_application_code=mock_capture_application_code,
+    )
+
+
+def _shipping_address() -> PayPalOrderShippingAddress:
+    return PayPalOrderShippingAddress(
+        full_name="Buyer Example",
+        address_line_1="123 Main St",
+        address_line_2="Apt 5",
+        city="San Jose",
+        state_or_region="CA",
+        postal_code="95131",
+        country_code="US",
     )
 
 
@@ -692,6 +705,7 @@ def test_create_checkout_order_posts_expected_multiparty_payload_and_returns_app
         idempotency_key="paypal:order:start:story-pp17",
         custom_id="booking-story-pp17",
         payer_email="buyer@example.com",
+        shipping_address=_shipping_address(),
     )
 
     assert result == PayPalCheckoutOrderResult(
@@ -725,12 +739,42 @@ def test_create_checkout_order_posts_expected_multiparty_payload_and_returns_app
                         "amount": {
                             "currency_code": "USD",
                             "value": "150.00",
+                            "breakdown": {
+                                "item_total": {
+                                    "currency_code": "USD",
+                                    "value": "150.00",
+                                }
+                            },
                         },
                         "payee": {
                             "merchant_id": "merchant_story_pp17",
                         },
                         "custom_id": "booking-story-pp17",
                         "reference_id": "booking-story-pp17",
+                        "items": [
+                            {
+                                "name": "Creator Compass booking",
+                                "description": "Creator Compass booking booking-story-pp17",
+                                "quantity": "1",
+                                "unit_amount": {
+                                    "currency_code": "USD",
+                                    "value": "150.00",
+                                },
+                            }
+                        ],
+                        "shipping": {
+                            "name": {
+                                "full_name": "Buyer Example",
+                            },
+                            "address": {
+                                "address_line_1": "123 Main St",
+                                "address_line_2": "Apt 5",
+                                "admin_area_2": "San Jose",
+                                "admin_area_1": "CA",
+                                "postal_code": "95131",
+                                "country_code": "US",
+                            },
+                        },
                     }
                 ],
                 "payment_source": {
@@ -740,7 +784,7 @@ def test_create_checkout_order_posts_expected_multiparty_payload_and_returns_app
                         "experience_context": {
                             "return_url": "https://example.ngrok-free.dev/paypal/orders/callback?state=story-pp17",
                             "cancel_url": "https://example.ngrok-free.dev/paypal/orders/callback?state=story-pp17&cancel=true",
-                            "shipping_preference": "NO_SHIPPING",
+                            "shipping_preference": "SET_PROVIDED_ADDRESS",
                             "user_action": "PAY_NOW",
                         },
                     }
@@ -895,6 +939,7 @@ def test_create_checkout_order_records_sanitized_trace_summary():
         cancel_url="https://example.ngrok-free.dev/paypal/orders/callback?state=story-pp17&cancel=true",
         idempotency_key="paypal:order:start:story-pp17",
         custom_id="booking-story-pp17",
+        shipping_address=_shipping_address(),
     )
 
     assert result.order_id == "ORDER-story-pp17"

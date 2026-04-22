@@ -32,6 +32,7 @@ from app.services.booking_attribution import (
     get_booking_attribution_current_state,
 )
 from app.services.paypal_order_checkout import (
+    PayPalOrderShippingAddress,
     build_paypal_order_checkout_cancel_url,
     build_paypal_order_checkout_return_url,
     build_paypal_order_checkout_state,
@@ -114,6 +115,7 @@ class PayPalOrdersService:
         *,
         creator_id: uuid.UUID,
         booking_id: uuid.UUID,
+        shipping_address: PayPalOrderShippingAddress,
     ) -> PayPalOrderStartResult:
         with self._session_factory() as session:
             booking = session.get(Booking, booking_id)
@@ -248,6 +250,7 @@ class PayPalOrdersService:
                     idempotency_key=f"paypal:order:start:{booking.id}",
                     custom_id=str(booking.id),
                     payer_email=booking.email,
+                    shipping_address=shipping_address,
                 )
             except BillingProviderError as exc:
                 self._record_provider_error(

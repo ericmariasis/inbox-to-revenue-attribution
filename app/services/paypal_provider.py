@@ -14,6 +14,7 @@ from app.core.config import Settings, get_settings
 from app.db.session import SessionLocal
 from app.models.billing_provider import BILLING_PROVIDER_PAYPAL
 from app.models.booking import Booking
+from app.services.paypal_order_checkout import PayPalOrderShippingAddress
 from app.services.billing_provider import (
     BILLING_ACCOUNT_READINESS_ISSUE_CONFIRM_PAYPAL_PRIMARY_EMAIL,
     BILLING_ACCOUNT_READINESS_ISSUE_ENABLE_PAYPAL_PAYMENTS_RECEIVABLE,
@@ -26,6 +27,7 @@ from app.services.billing_provider import (
 
 DEFAULT_PAYPAL_PARTNER_REFERRALS_RETURN_URL_DESCRIPTION = "Creator Compass PayPal onboarding"
 PAYPAL_SELLER_ONBOARDING_FEATURES = (
+    "ACCESS_MERCHANT_INFORMATION",
     "PAYMENT",
     "REFUND",
 )
@@ -216,6 +218,7 @@ class PayPalProvider(Protocol):
         idempotency_key: str,
         custom_id: str | None = None,
         payer_email: str | None = None,
+        shipping_address: PayPalOrderShippingAddress,
     ) -> PayPalCheckoutOrderResult: ...
 
     def capture_checkout_order(
@@ -575,6 +578,7 @@ class PayPalSellerOnboardingProvider:
         idempotency_key: str,
         custom_id: str | None = None,
         payer_email: str | None = None,
+        shipping_address: PayPalOrderShippingAddress,
     ) -> PayPalCheckoutOrderResult:
         access_token = self._oauth_access_token()
         auth_assertion = _paypal_auth_assertion(
@@ -598,6 +602,7 @@ class PayPalSellerOnboardingProvider:
                 cancel_url=cancel_url,
                 custom_id=custom_id,
                 payer_email=payer_email,
+                shipping_address=shipping_address,
             ),
         )
         order_id = _required_string(
@@ -1686,14 +1691,40 @@ def _paypal_checkout_order_payload(
     cancel_url: str,
     custom_id: str | None,
     payer_email: str | None,
+    shipping_address: PayPalOrderShippingAddress,
 ) -> dict[str, Any]:
+    normalized_currency = currency.upper()
+    amount_value = f"{amount_cents / 100:.2f}"
     purchase_unit: dict[str, Any] = {
         "amount": {
-            "currency_code": currency.upper(),
-            "value": f"{amount_cents / 100:.2f}",
+            "currency_code": normalized_currency,
+            "value": amount_value,
+            "breakdown": {
+                "item_total": {
+                    "currency_code": normalized_currency,
+                    "value": amount_value,
+                }
+            },
         },
         "payee": {
             "merchant_id": provider_account_id,
+        },
+        "items": [
+            {
+                "name": "Creator Compass booking",
+                "description": _paypal_checkout_item_description(custom_id),
+                "quantity": "1",
+                "unit_amount": {
+                    "currency_code": normalized_currency,
+                    "value": amount_value,
+                },
+            }
+        ],
+        "shipping": {
+            "name": {
+                "full_name": shipping_address.full_name,
+            },
+            "address": _paypal_checkout_shipping_address_payload(shipping_address),
         },
     }
     if custom_id is not None:
@@ -1706,7 +1737,7 @@ def _paypal_checkout_order_payload(
             "experience_context": {
                 "return_url": return_url,
                 "cancel_url": cancel_url,
-                "shipping_preference": "NO_SHIPPING",
+                "shipping_preference": "SET_PROVIDED_ADDRESS",
                 "user_action": "PAY_NOW",
             },
         }
@@ -1719,6 +1750,27 @@ def _paypal_checkout_order_payload(
         "purchase_units": [purchase_unit],
         "payment_source": payment_source,
     }
+
+
+def _paypal_checkout_item_description(custom_id: str | None) -> str:
+    if custom_id is None:
+        return "Creator Compass booking checkout"
+    return f"Creator Compass booking {custom_id}"[:127]
+
+
+def _paypal_checkout_shipping_address_payload(
+    shipping_address: PayPalOrderShippingAddress,
+) -> dict[str, Any]:
+    address: dict[str, Any] = {
+        "address_line_1": shipping_address.address_line_1,
+        "admin_area_2": shipping_address.city,
+        "admin_area_1": shipping_address.state_or_region,
+        "postal_code": shipping_address.postal_code,
+        "country_code": shipping_address.country_code,
+    }
+    if shipping_address.address_line_2 is not None:
+        address["address_line_2"] = shipping_address.address_line_2
+    return address
 
 
 def _paypal_invoice_number(*, idempotency_key: str) -> str:

@@ -19,6 +19,22 @@ services:
         generateValue: true
       - key: JWT_ALGORITHM
         value: HS256
+      - key: PAYPAL_ENVIRONMENT
+        value: sandbox
+      - key: PAYPAL_CREATOR_ACCESS
+        value: public
+      - key: PAYPAL_PARTNER_ATTRIBUTION_ID
+        value: CAREERCODE_SP_PPCP
+      - key: PAYPAL_SANDBOX_CLIENT_ID
+        sync: false
+      - key: PAYPAL_SANDBOX_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_SANDBOX_PARTNER_ID
+        sync: false
+      - key: PAYPAL_CONNECT_REDIRECT_URI
+        sync: false
+      - key: PAYPAL_SANDBOX_WEBHOOK_ID
+        sync: false
       - key: STRIPE_CONNECT_AUTHORIZE_URL
         value: https://connect.stripe.com/oauth/authorize
       - key: STRIPE_CONNECT_CLIENT_ID

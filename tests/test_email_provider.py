@@ -34,7 +34,14 @@ def _smtp_settings(**overrides) -> Settings:
 
 
 def test_build_default_email_provider_uses_stub_for_local_defaults():
-    provider = build_default_email_provider(settings=Settings.model_validate({"app_env": "local"}))
+    provider = build_default_email_provider(
+        settings=Settings.model_validate(
+            {
+                "app_env": "local",
+                "magic_link_email_provider": "stub",
+            }
+        )
+    )
 
     assert isinstance(provider, StubEmailProvider)
 
@@ -65,8 +72,19 @@ def test_smtp_provider_sends_magic_link_email_without_live_network():
     sent_message = smtp_client.send_message.call_args.args[0]
     assert sent_message["To"] == "creator@example.com"
     assert sent_message["Subject"] == "Your sign-in link"
-    assert "https://creatortrust.test/auth/magic-link/verify?token=raw-token-for-provider-test" in sent_message.get_content()
-    assert "This link expires in 15 minutes" in sent_message.get_content()
+    assert sent_message.is_multipart()
+
+    plain_part = sent_message.get_body(preferencelist=("plain",))
+    assert plain_part is not None
+    plain_content = plain_part.get_content()
+    assert "https://creatortrust.test/auth/magic-link/verify?token=raw-token-for-provider-test" in plain_content
+    assert "This link expires in 15 minutes" in plain_content
+
+    html_part = sent_message.get_body(preferencelist=("html",))
+    assert html_part is not None
+    html_content = html_part.get_content()
+    assert 'href="https://creatortrust.test/auth/magic-link/verify?token=raw-token-for-provider-test"' in html_content
+    assert "Sign in securely" in html_content
 
 
 def test_smtp_provider_wraps_delivery_errors():
@@ -120,6 +138,7 @@ def test_smtp_provider_sends_support_request_email_without_live_network():
     sent_message = smtp_client.send_message.call_args.args[0]
     assert sent_message["To"] == "eric@careercodepro.com"
     assert sent_message["Subject"] == "Workspace reset request for creator@example.com"
+    assert not sent_message.is_multipart()
     assert "Request id: 6ba7b810-9dad-11d1-80b4-00c04fd430c8" in sent_message.get_content()
     assert "Request type: workspace-reset" in sent_message.get_content()
     assert "Signed-in email: creator@example.com" in sent_message.get_content()

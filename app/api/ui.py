@@ -3163,7 +3163,7 @@ def _render_setup_home_milestone_section(
         )
         billing_detail_lines.append(
             f"<p><strong>Billing account</strong>: "
-            f"{html.escape(current_user.creator.resolved_billing_account_id)}</p>"
+            f'<span class="wrap-anywhere">{html.escape(current_user.creator.resolved_billing_account_id)}</span></p>'
         )
     if current_user.creator.resolved_billing_connected_at:
         billing_detail_lines.append(

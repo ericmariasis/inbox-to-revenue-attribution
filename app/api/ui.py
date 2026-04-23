@@ -114,6 +114,7 @@ from app.services.creator_workspace_state import (
 from app.services.creator_shell_view_model import (
     build_account_billing_management_view,
     build_attention_overview_view,
+    build_setup_home_experiments_handoff_view,
     build_setup_home_attention_summary_view,
     build_setup_home_milestone_view,
 )
@@ -143,6 +144,7 @@ from app.services.invoice_payment_events import (
 from app.services.next_content_experiments import (
     EXPERIMENT_RUN_STATUS_READY,
     EXPERIMENT_RUN_STATUS_UNSUPPORTED,
+    CreatorNextContentExperimentsReadinessSummary,
     CreatorNextContentExperimentCardDrilldown,
     CreatorNextContentExperimentsResult,
     CreatorNextContentExperimentsRunComparison,
@@ -150,14 +152,12 @@ from app.services.next_content_experiments import (
     HelperGenerationLineage,
     HelperVersionSemantics,
     NextContentExperimentCard,
-    NextContentExperimentUnsupportedExplanation,
     compare_creator_next_content_experiments_runs,
     create_creator_next_content_experiments_run,
     get_creator_next_content_experiment_card_drilldown,
     get_creator_next_content_experiment_card_drilldown_by_card_id,
     get_creator_next_content_experiments_run,
-    get_current_creator_next_content_experiments_unsupported_explanation,
-    get_latest_creator_next_content_experiments_run,
+    get_current_creator_next_content_experiments_readiness_summary,
 )
 from app.services.paypal_provider import build_default_paypal_provider
 from app.services.rate_limit import (
@@ -530,6 +530,10 @@ def creator_app_shell(
             billing_provider_guidance.actionable_issue_codes
         ),
     )
+    experiments_readiness_summary = get_current_creator_next_content_experiments_readiness_summary(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
 
     return _html_response(
         _render_app_shell(
@@ -538,6 +542,7 @@ def creator_app_shell(
             reports_summary=summary,
             status_value=status_value,
             paypal_available_to_creator=paypal_available_to_creator,
+            experiments_readiness_summary=experiments_readiness_summary,
         )
     )
 
@@ -1594,6 +1599,10 @@ def creator_experiments_page(
     if current_user is None:
         return _redirect("/sign-in", clear_session=should_clear_cookie)
 
+    readiness_summary = get_current_creator_next_content_experiments_readiness_summary(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
     experiment_run = (
         get_creator_next_content_experiments_run(
             creator_id=current_user.creator_id,
@@ -1601,31 +1610,21 @@ def creator_experiments_page(
             db=db,
         )
         if claim_snapshot_id is not None
-        else get_latest_creator_next_content_experiments_run(
-            creator_id=current_user.creator_id,
-            db=db,
-        )
+        else readiness_summary.latest_run
     )
     if claim_snapshot_id is not None and experiment_run is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="experiment snapshot not found",
         )
-    unsupported_explanation = (
-        get_current_creator_next_content_experiments_unsupported_explanation(
-            creator_id=current_user.creator_id,
-            db=db,
-        )
-        if experiment_run is not None and experiment_run.status == EXPERIMENT_RUN_STATUS_UNSUPPORTED
-        else None
-    )
 
     return _html_response(
         _render_experiments_page(
             current_user=current_user,
             experiment_run=experiment_run,
             status_value=status_value,
-            unsupported_explanation=unsupported_explanation,
+            readiness_summary=readiness_summary,
+            showing_specific_snapshot=claim_snapshot_id is not None,
         )
     )
 
@@ -2483,6 +2482,7 @@ def _render_app_shell(
     reports_summary: CreatorReportsSummary,
     status_value: str | None,
     paypal_available_to_creator: bool,
+    experiments_readiness_summary: CreatorNextContentExperimentsReadinessSummary,
 ) -> str:
     readiness = workspace_state.readiness
     show_provider_choice = _creator_needs_initial_billing_provider_choice(
@@ -2516,6 +2516,7 @@ def _render_app_shell(
         tracked_booking_count=tracked_booking_count,
         show_provider_choice=show_provider_choice,
         paypal_available_to_creator=paypal_available_to_creator,
+        experiments_readiness_summary=experiments_readiness_summary,
     )}
     <section class="grid">
       <article class="card stack">
@@ -3386,6 +3387,7 @@ def _render_setup_home_milestone_section(
     tracked_booking_count: int,
     show_provider_choice: bool,
     paypal_available_to_creator: bool,
+    experiments_readiness_summary: CreatorNextContentExperimentsReadinessSummary,
 ) -> str:
     readiness = workspace_state.readiness
     milestone = _build_setup_home_milestone(
@@ -3394,6 +3396,10 @@ def _render_setup_home_milestone_section(
         tracked_booking_count=tracked_booking_count,
         show_provider_choice=show_provider_choice,
         paypal_available_to_creator=paypal_available_to_creator,
+    )
+    experiments_handoff = _build_setup_home_experiments_handoff(
+        readiness=readiness,
+        experiments_readiness_summary=experiments_readiness_summary,
     )
 
     billing_detail_lines = []
@@ -3404,13 +3410,18 @@ def _render_setup_home_milestone_section(
         )
         billing_detail_lines.append(
             f"<p><strong>Billing account</strong>: "
-            f"{html.escape(current_user.creator.resolved_billing_account_id)}</p>"
+            f'<span class="wrap-anywhere">{html.escape(current_user.creator.resolved_billing_account_id)}</span></p>'
         )
     if current_user.creator.resolved_billing_connected_at:
         billing_detail_lines.append(
             f"<p><strong>Connected on</strong>: "
             f"{_format_connected_at(current_user.creator.resolved_billing_connected_at)}</p>"
         )
+    experiments_handoff_html = (
+        _render_setup_home_experiments_handoff(experiments_handoff)
+        if experiments_handoff is not None
+        else ""
+    )
 
     return f"""
     <section class="hero milestone-hero stack">
@@ -3437,6 +3448,7 @@ def _render_setup_home_milestone_section(
               paypal_available_to_creator=paypal_available_to_creator,
           )}
         </article>
+        {experiments_handoff_html}
         <article class="topic-summary stack">
           <div>
             <p class="eyebrow">Proof this is real</p>
@@ -3485,6 +3497,25 @@ def _build_setup_home_milestone(
         "proof_title": milestone.proof_title,
         "proof_copy": milestone.proof_copy,
         "action": milestone.action,
+    }
+
+
+def _build_setup_home_experiments_handoff(
+    *,
+    readiness: CreatorWorkspaceReadiness,
+    experiments_readiness_summary: CreatorNextContentExperimentsReadinessSummary,
+) -> dict[str, str] | None:
+    handoff_view = build_setup_home_experiments_handoff_view(
+        readiness=readiness,
+        current_experiments_status=experiments_readiness_summary.current_status,
+    )
+    if handoff_view is None:
+        return None
+    return {
+        "title": handoff_view.title,
+        "body": handoff_view.body,
+        "action_label": handoff_view.action["label"],
+        "action_href": handoff_view.action["href"],
     }
 
 
@@ -5172,14 +5203,12 @@ def _render_experiments_page(
     current_user: AuthUser,
     experiment_run: CreatorNextContentExperimentsResult | None,
     status_value: str | None,
-    unsupported_explanation: NextContentExperimentUnsupportedExplanation | None,
+    readiness_summary: CreatorNextContentExperimentsReadinessSummary,
+    showing_specific_snapshot: bool,
 ) -> str:
-    creator_name = html.escape(current_user.creator.name)
-    creator_email = html.escape(current_user.email)
-    result_heading = (
-        "Latest experiment snapshot"
-        if experiment_run is not None
-        else "No experiment snapshot yet"
+    snapshot_heading = _experiments_snapshot_heading(
+        experiment_run=experiment_run,
+        showing_specific_snapshot=showing_specific_snapshot,
     )
 
     body = f"""
@@ -5196,17 +5225,10 @@ def _render_experiments_page(
     {_render_shell_nav(current_path="/app/experiments")}
     {_render_experiments_notice(status_value=status_value)}
     <section class="grid">
-      <article class="card stack">
-        <div>
-          <p class="eyebrow">Generate snapshot</p>
-          <h2>{result_heading}</h2>
-          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
-        </div>
-        <p>This helper returns only `ready` or `unsupported`. It does not fill gaps with generic advice, and it uses stored authoritative content plus settled paid evidence rather than raw diagnostics.</p>
-        <form action="/app/experiments" method="post">
-          <button type="submit">Generate next experiments</button>
-        </form>
-      </article>
+      {_render_experiments_readiness_panel(
+          current_user=current_user,
+          readiness_summary=readiness_summary,
+      )}
       <article class="card accent stack">
         <div>
           <p class="eyebrow">Grounding rules</p>
@@ -5219,15 +5241,167 @@ def _render_experiments_page(
     <section class="card stack">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Helper output</p>
-          <h2>{result_heading}</h2>
+          <p class="eyebrow">Stored helper output</p>
+          <h2>{snapshot_heading}</h2>
         </div>
         <p>{html.escape(_experiments_snapshot_meta(experiment_run))}</p>
       </div>
-      {_render_experiment_results(experiment_run=experiment_run, unsupported_explanation=unsupported_explanation)}
+      {_render_experiment_results(
+          experiment_run=experiment_run,
+          readiness_summary=readiness_summary,
+      )}
     </section>
     """
     return _page_layout(title="Experiments", body=body)
+
+
+def _render_setup_home_experiments_handoff(
+    experiments_handoff: dict[str, str],
+) -> str:
+    return f"""
+        <article class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Secondary helper</p>
+            <h2>{html.escape(experiments_handoff['title'])}</h2>
+          </div>
+          <p>{html.escape(experiments_handoff['body'])}</p>
+          <p><a href="{html.escape(experiments_handoff['action_href'])}" class="button-link secondary">{html.escape(experiments_handoff['action_label'])}</a></p>
+        </article>
+    """
+
+
+def _render_experiments_readiness_panel(
+    *,
+    current_user: AuthUser,
+    readiness_summary: CreatorNextContentExperimentsReadinessSummary,
+) -> str:
+    creator_name = html.escape(current_user.creator.name)
+    creator_email = html.escape(current_user.email)
+    current_ready = readiness_summary.current_status == EXPERIMENT_RUN_STATUS_READY
+    badge_label = "Ready" if current_ready else "Unsupported"
+    badge_class = "confirmed" if current_ready else "pending"
+    heading = (
+        "Helper is ready from current evidence"
+        if current_ready
+        else "Helper is unsupported from current evidence"
+    )
+    body_copy = (
+        "The current authoritative content and settled paid results are enough for the helper to prepare a fresh stored snapshot."
+        if current_ready
+        else "The current authoritative content and settled paid results are not yet enough for the helper to prepare a fresh stored snapshot."
+    )
+    readiness_note = _render_experiments_readiness_note(
+        readiness_summary=readiness_summary,
+    )
+    unsupported_reasons = _render_experiments_current_unsupported_reasons(
+        readiness_summary=readiness_summary,
+    )
+    next_steps = _render_experiments_next_steps(
+        readiness_summary=readiness_summary,
+    )
+    generate_button_class = "" if current_ready else ' class="secondary"'
+    return f"""
+      <article class="card stack">
+        <div class="status-row">
+          <div>
+            <p class="eyebrow">Current helper readiness</p>
+            <h2>{heading}</h2>
+            <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong> for <strong class="wrap-anywhere">{creator_name}</strong>.</p>
+          </div>
+          <span class="status-pill {badge_class}">{badge_label}</span>
+        </div>
+        <p>This helper returns only `ready` or `unsupported`. It does not fill gaps with generic advice, and it uses stored authoritative content plus settled paid evidence rather than raw diagnostics.</p>
+        <p>{body_copy}</p>
+        {readiness_note}
+        {unsupported_reasons}
+        {next_steps}
+        <form action="/app/experiments" method="post">
+          <button type="submit"{generate_button_class}>Generate next experiments</button>
+        </form>
+      </article>
+    """
+
+
+def _render_experiments_readiness_note(
+    *,
+    readiness_summary: CreatorNextContentExperimentsReadinessSummary,
+) -> str:
+    current_ready = readiness_summary.current_status == EXPERIMENT_RUN_STATUS_READY
+    latest_ready_run = readiness_summary.latest_ready_run
+    latest_run = readiness_summary.latest_run
+    if current_ready:
+        if latest_ready_run is None:
+            return (
+                "<p>No ready snapshot is stored yet. Generate one when you want a fresh read-only snapshot.</p>"
+            )
+        ready_snapshot_link = (
+            f'<p><a href="/app/experiments?claim_snapshot_id={html.escape(str(latest_ready_run.claim_snapshot_id))}" '
+            'class="button-link secondary">Open latest ready snapshot</a></p>'
+        )
+        if latest_run is not None and latest_run.claim_snapshot_id == latest_ready_run.claim_snapshot_id:
+            return (
+                "<p>The latest stored snapshot is already ready. Review it directly or generate a fresh snapshot if the evidence has changed.</p>"
+                + ready_snapshot_link
+            )
+        return (
+            "<p>Current evidence is ready now, but the most recent ready snapshot is historical stored output. Review it directly or generate a fresh snapshot for the latest read.</p>"
+            + ready_snapshot_link
+        )
+
+    latest_ready_note = ""
+    if latest_ready_run is not None:
+        latest_ready_note = (
+            "<p>Current readiness stays unsupported, but you can still review the latest stored ready snapshot as a historical artifact. It does not auto-refresh into current status.</p>"
+            f'<p><a href="/app/experiments?claim_snapshot_id={html.escape(str(latest_ready_run.claim_snapshot_id))}" class="button-link secondary">Open latest ready snapshot</a></p>'
+        )
+    return (
+        "<p>Lead with current readiness here. Review stored snapshots only as historical helper output, not as current evidence status.</p>"
+        + latest_ready_note
+    )
+
+
+def _render_experiments_current_unsupported_reasons(
+    *,
+    readiness_summary: CreatorNextContentExperimentsReadinessSummary,
+) -> str:
+    unsupported_explanation = readiness_summary.unsupported_explanation
+    if unsupported_explanation is None:
+        return ""
+
+    reason_items = "".join(
+        f"<li>{html.escape(reason)}</li>"
+        for reason in unsupported_explanation.reasons
+    )
+    current_activity_note = ""
+    if unsupported_explanation.has_excluded_current_activity:
+        current_activity_note = (
+            "<p>Some newer activity is still excluded here until it resolves into attributed booking state or settled paid evidence.</p>"
+        )
+    return f"""
+    <div class="stack">
+      <p class="eyebrow">Still blocked today</p>
+      <h3>Why this helper is still unsupported</h3>
+      <ul class="reason-list">{reason_items}</ul>
+      {current_activity_note}
+    </div>
+    """
+
+
+def _render_experiments_next_steps(
+    *,
+    readiness_summary: CreatorNextContentExperimentsReadinessSummary,
+) -> str:
+    if readiness_summary.current_status == EXPERIMENT_RUN_STATUS_READY:
+        return ""
+
+    return """
+    <div class="stack">
+      <p class="eyebrow">Next safe action</p>
+      <h3>Review the evidence this helper still needs</h3>
+      <p><a href="/app/content" class="button-link secondary">Review content evidence</a></p>
+      <p><a href="/app/reports" class="button-link secondary">Review paid results</a></p>
+    </div>
+    """
 
 
 def _render_experiments_notice(*, status_value: str | None) -> str:
@@ -5245,13 +5419,21 @@ def _render_experiments_notice(*, status_value: str | None) -> str:
 def _render_experiment_results(
     *,
     experiment_run: CreatorNextContentExperimentsResult | None,
-    unsupported_explanation: NextContentExperimentUnsupportedExplanation | None,
+    readiness_summary: CreatorNextContentExperimentsReadinessSummary,
 ) -> str:
     if experiment_run is None:
+        if readiness_summary.current_status == EXPERIMENT_RUN_STATUS_READY:
+            return """
+        <section class="empty-state">
+          <p class="eyebrow">No stored snapshot yet</p>
+          <h2>Current evidence is ready, but no stored snapshot exists yet</h2>
+          <p>Generate a fresh snapshot when you want the helper to store the current evidence-backed read. Refreshing the page does not create a new helper run.</p>
+        </section>
+        """
         return """
         <section class="empty-state">
-          <p class="eyebrow">No snapshot yet</p>
-          <h2>Generate your first experiment snapshot</h2>
+          <p class="eyebrow">No stored snapshot yet</p>
+          <h2>No stored helper snapshot exists yet</h2>
           <p>This page stays read-only until you explicitly generate a snapshot. Refreshing the page does not create a new helper run.</p>
         </section>
         """
@@ -5259,7 +5441,7 @@ def _render_experiment_results(
     if experiment_run.status == EXPERIMENT_RUN_STATUS_UNSUPPORTED:
         return _render_experiment_unsupported_state(
             experiment_run=experiment_run,
-            unsupported_explanation=unsupported_explanation,
+            readiness_summary=readiness_summary,
         )
 
     items = "".join(
@@ -5270,15 +5452,20 @@ def _render_experiment_results(
         )
         for index, experiment in enumerate(experiment_run.experiments, start=1)
     )
+    snapshot_context_note = _render_experiment_snapshot_context_note(
+        experiment_run=experiment_run,
+        readiness_summary=readiness_summary,
+    )
     return f"""
     <section class="stack">
       <div class="status-row">
         <div>
-          <p class="eyebrow">Current status</p>
+          <p class="eyebrow">Stored snapshot status</p>
           <h2>{html.escape(experiment_run.summary)}</h2>
         </div>
         <span class="status-pill confirmed">Ready</span>
       </div>
+      {snapshot_context_note}
       <p><strong>Claim snapshot</strong>: <code>{html.escape(str(experiment_run.claim_snapshot_id))}</code></p>
       {_render_experiment_lineage_block(label="Run lineage", lineage=experiment_run.lineage)}
       {_render_experiment_version_semantics_block(
@@ -5297,33 +5484,51 @@ def _render_experiment_results(
 def _render_experiment_unsupported_state(
     *,
     experiment_run: CreatorNextContentExperimentsResult,
-    unsupported_explanation: NextContentExperimentUnsupportedExplanation | None,
+    readiness_summary: CreatorNextContentExperimentsReadinessSummary,
 ) -> str:
+    unsupported_explanation = readiness_summary.unsupported_explanation
     reasons_html = ""
     if unsupported_explanation is not None and unsupported_explanation.reasons:
         reason_items = "".join(
             f"<li>{html.escape(reason)}</li>"
             for reason in unsupported_explanation.reasons
         )
+        explanation_heading = (
+            "Why this helper is still unsupported"
+            if readiness_summary.current_status == EXPERIMENT_RUN_STATUS_UNSUPPORTED
+            else "Why this stored snapshot was unsupported"
+        )
         reasons_html = f"""
         <div class="stack">
-          <p class="eyebrow">Still blocked today</p>
-          <h3>Why this helper is still unsupported</h3>
+          <p class="eyebrow">Stored snapshot explanation</p>
+          <h3>{html.escape(explanation_heading)}</h3>
           <ul class="reason-list">{reason_items}</ul>
         </div>
         """
 
     current_activity_note = ""
     if unsupported_explanation is not None and unsupported_explanation.has_excluded_current_activity:
-        current_activity_note = """
+        current_activity_note = (
+            """
         <p>Some newer activity is still excluded here until it resolves into attributed booking state or settled paid evidence.</p>
         """
+            if readiness_summary.current_status == EXPERIMENT_RUN_STATUS_UNSUPPORTED
+            else """
+        <p>At generation time, some newer activity was still excluded until it resolved into attributed booking state or settled paid evidence.</p>
+        """
+        )
+
+    snapshot_context_note = _render_experiment_snapshot_context_note(
+        experiment_run=experiment_run,
+        readiness_summary=readiness_summary,
+    )
 
     return f"""
     <section class="empty-state">
-      <p class="eyebrow">Unsupported</p>
+      <p class="eyebrow">Stored snapshot status</p>
       <h2>Not enough trusted evidence yet</h2>
       <p>{html.escape(experiment_run.summary)}</p>
+      {snapshot_context_note}
       <p><strong>Claim snapshot</strong>: <code>{html.escape(str(experiment_run.claim_snapshot_id))}</code></p>
       {_render_experiment_lineage_block(label="Run lineage", lineage=experiment_run.lineage)}
       {_render_experiment_version_semantics_block(
@@ -5338,6 +5543,28 @@ def _render_experiment_unsupported_state(
       {current_activity_note}
     </section>
     """
+
+
+def _render_experiment_snapshot_context_note(
+    *,
+    experiment_run: CreatorNextContentExperimentsResult,
+    readiness_summary: CreatorNextContentExperimentsReadinessSummary,
+) -> str:
+    if (
+        readiness_summary.current_status == EXPERIMENT_RUN_STATUS_UNSUPPORTED
+        and experiment_run.status == EXPERIMENT_RUN_STATUS_READY
+    ):
+        return (
+            "<p>This ready snapshot is historical stored output. Current helper readiness is unsupported today, so treat this snapshot as earlier evidence-backed output rather than current status.</p>"
+        )
+    if (
+        readiness_summary.current_status == EXPERIMENT_RUN_STATUS_READY
+        and experiment_run.status == EXPERIMENT_RUN_STATUS_UNSUPPORTED
+    ):
+        return (
+            "<p>This unsupported snapshot is historical stored output. Current evidence is ready now, so generate a fresh snapshot for the latest read.</p>"
+        )
+    return ""
 
 
 def _render_experiment_card(
@@ -5767,6 +5994,18 @@ def _experiments_snapshot_meta(
     if experiment_run is None:
         return "No runs yet"
     return _format_timestamp_in_utc(experiment_run.created_at)
+
+
+def _experiments_snapshot_heading(
+    *,
+    experiment_run: CreatorNextContentExperimentsResult | None,
+    showing_specific_snapshot: bool,
+) -> str:
+    if experiment_run is None:
+        return "No stored snapshot yet"
+    if showing_specific_snapshot:
+        return "Stored snapshot"
+    return "Latest stored snapshot"
 
 
 def _render_reports_page(

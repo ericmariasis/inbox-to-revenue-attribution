@@ -341,6 +341,12 @@ def test_phase14_launch_surfaces_cover_warm_creator_and_operator_paths():
     assert "Review paid results" in home_response.text
     assert "1 attention item still needs review" in home_response.text
     assert 'href="/app/attention"' in home_response.text
+    assert "Experiments are ready for a fresh read" in home_response.text
+    assert (
+        "Reports stay primary here. Experiments can now use the current evidence for a separate read-only next-content snapshot."
+        in home_response.text
+    )
+    assert 'href="/app/experiments"' in home_response.text
 
     assert content_response.status_code == 200
     assert source_url in content_response.text

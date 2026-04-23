@@ -155,6 +155,14 @@ class NextContentExperimentUnsupportedExplanation:
 
 
 @dataclass(frozen=True)
+class CreatorNextContentExperimentsReadinessSummary:
+    current_status: ExperimentRunStatus
+    latest_run: CreatorNextContentExperimentsResult | None
+    latest_ready_run: CreatorNextContentExperimentsResult | None
+    unsupported_explanation: NextContentExperimentUnsupportedExplanation | None = None
+
+
+@dataclass(frozen=True)
 class NextContentExperimentPaidEvidenceDetail:
     content_tid: str
     booked_at: datetime
@@ -317,6 +325,24 @@ def get_latest_creator_next_content_experiments_run(
 ) -> CreatorNextContentExperimentsResult | None:
     run_record = db.execute(
         _creator_experiment_run_query(creator_id=creator_id)
+        .order_by(
+            CreatorExperimentRunRecord.created_at.desc(),
+            CreatorExperimentRunRecord.id.desc(),
+        )
+    ).scalars().first()
+    if run_record is None:
+        return None
+    return _build_experiment_result(run_record)
+
+
+def get_latest_ready_creator_next_content_experiments_run(
+    *,
+    creator_id: UUID,
+    db: Session,
+) -> CreatorNextContentExperimentsResult | None:
+    run_record = db.execute(
+        _creator_experiment_run_query(creator_id=creator_id)
+        .where(CreatorExperimentRunRecord.status == EXPERIMENT_RUN_STATUS_READY)
         .order_by(
             CreatorExperimentRunRecord.created_at.desc(),
             CreatorExperimentRunRecord.id.desc(),
@@ -543,6 +569,44 @@ def get_current_creator_next_content_experiments_unsupported_explanation(
             creator_id=creator_id,
             settled_snapshot=settled_snapshot,
             db=db,
+        ),
+    )
+
+
+def get_current_creator_next_content_experiments_readiness_summary(
+    *,
+    creator_id: UUID,
+    db: Session,
+) -> CreatorNextContentExperimentsReadinessSummary:
+    latest_run = get_latest_creator_next_content_experiments_run(
+        creator_id=creator_id,
+        db=db,
+    )
+    latest_ready_run = (
+        latest_run
+        if latest_run is not None and latest_run.status == EXPERIMENT_RUN_STATUS_READY
+        else get_latest_ready_creator_next_content_experiments_run(
+            creator_id=creator_id,
+            db=db,
+        )
+    )
+    unsupported_explanation = get_current_creator_next_content_experiments_unsupported_explanation(
+        creator_id=creator_id,
+        db=db,
+    )
+    current_status = (
+        EXPERIMENT_RUN_STATUS_UNSUPPORTED
+        if unsupported_explanation.reasons
+        else EXPERIMENT_RUN_STATUS_READY
+    )
+    return CreatorNextContentExperimentsReadinessSummary(
+        current_status=current_status,
+        latest_run=latest_run,
+        latest_ready_run=latest_ready_run,
+        unsupported_explanation=(
+            unsupported_explanation
+            if current_status == EXPERIMENT_RUN_STATUS_UNSUPPORTED
+            else None
         ),
     )
 

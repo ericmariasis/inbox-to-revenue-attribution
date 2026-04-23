@@ -11,6 +11,7 @@ from app.services.creator_shell_view_model import (
     build_account_billing_management_view,
     build_attention_overview_view,
     build_setup_home_attention_summary_view,
+    build_setup_home_experiments_handoff_view,
     build_setup_home_milestone_view,
 )
 from app.services.creator_workspace_state import CreatorWorkspaceReadiness
@@ -95,6 +96,42 @@ def test_build_setup_home_milestone_view_keeps_bookings_without_paid_result_stat
     assert milestone.title == "Bookings are landing; paid proof is next"
     assert milestone.next_title == "Review the content funnel"
     assert milestone.action["action_href"] == "/app/reports"
+
+
+def test_build_setup_home_experiments_handoff_view_only_appears_in_first_paid_state():
+    handoff = build_setup_home_experiments_handoff_view(
+        readiness=_readiness(
+            billing_connect_status="connected",
+            billing_connected=True,
+            billable_now=True,
+            ready_to_track=True,
+            waiting_for_first_paid_result=True,
+            paid_invoice_count=1,
+            billing_provider=BILLING_PROVIDER_STRIPE,
+        ),
+        current_experiments_status="ready",
+    )
+
+    assert handoff is not None
+    assert handoff.title == "Experiments are ready for a fresh read"
+    assert handoff.action["href"] == "/app/experiments"
+
+
+def test_build_setup_home_experiments_handoff_view_stays_hidden_before_first_paid_state():
+    handoff = build_setup_home_experiments_handoff_view(
+        readiness=_readiness(
+            billing_connect_status="connected",
+            billing_connected=True,
+            billable_now=True,
+            ready_to_track=True,
+            waiting_for_first_paid_result=True,
+            paid_invoice_count=0,
+            billing_provider=BILLING_PROVIDER_STRIPE,
+        ),
+        current_experiments_status="ready",
+    )
+
+    assert handoff is None
 
 
 def test_build_setup_home_attention_summary_view_zero_attention_keeps_inline_handoff():

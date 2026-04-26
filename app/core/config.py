@@ -38,6 +38,11 @@ DEFAULT_MAGIC_LINK_BASE_URL = "http://localhost:8000"
 DEFAULT_MAGIC_LINK_EMAIL_FROM_EMAIL = "no-reply@example.com"
 DEFAULT_MAGIC_LINK_EMAIL_FROM_NAME = "Creator Compass"
 DEFAULT_OPERATOR_EMAIL_ALLOWLIST = ""
+DEFAULT_OPERATOR_EXPERIMENT_DRAFT_MODEL = "gpt-5.4-mini"
+DEFAULT_OPERATOR_EXPERIMENT_DRAFT_PROMPT_VERSION = (
+    "operator_draft_next_content_experiments.prompt.v1"
+)
+DEFAULT_OPENAI_API_BASE_URL = "https://api.openai.com/v1"
 SUPPORTED_MAGIC_LINK_EMAIL_PROVIDERS = frozenset({"stub", "smtp"})
 
 
@@ -249,6 +254,11 @@ class Settings(BaseSettings):
     magic_link_email_smtp_use_ssl: bool = False
     magic_link_email_smtp_timeout_seconds: int = 10
     operator_email_allowlist: str = DEFAULT_OPERATOR_EMAIL_ALLOWLIST
+    openai_api_key: str = ""
+    openai_api_base_url: str = DEFAULT_OPENAI_API_BASE_URL
+    operator_experiment_draft_model: str = DEFAULT_OPERATOR_EXPERIMENT_DRAFT_MODEL
+    operator_experiment_draft_prompt_version: str = DEFAULT_OPERATOR_EXPERIMENT_DRAFT_PROMPT_VERSION
+    operator_experiment_draft_timeout_seconds: int = 30
     paypal_mock_connect_payments_receivable_false_emails: str = ""
     paypal_mock_connect_primary_email_false_emails: str = ""
 

@@ -1,4 +1,5 @@
 import html
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -159,6 +160,15 @@ from app.services.next_content_experiments import (
     get_creator_next_content_experiments_run,
     get_current_creator_next_content_experiments_readiness_summary,
 )
+from app.services.operator_experiment_drafts import (
+    CreatorOperatorExperimentDraftRunResult,
+    OperatorExperimentDraftNotReadyError,
+    OperatorExperimentDraftProviderError,
+    OperatorExperimentDraftUnavailableError,
+    create_creator_operator_experiment_draft_run,
+    get_creator_operator_experiment_draft_run,
+    get_latest_creator_operator_experiment_draft_run,
+)
 from app.services.paypal_provider import build_default_paypal_provider
 from app.services.rate_limit import (
     DEFAULT_SHARED_RATE_LIMITER,
@@ -203,6 +213,8 @@ from app.services.support_requests import (
     transition_support_request_status,
 )
 from app.services.stripe_provider import build_default_stripe_provider
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(include_in_schema=False)
 
@@ -1592,6 +1604,10 @@ def creator_experiments_page(
     request: Request,
     status_value: str | None = Query(default=None, alias="status"),
     claim_snapshot_id: uuid.UUID | None = Query(default=None, alias="claim_snapshot_id"),
+    operator_draft_run_id: uuid.UUID | None = Query(
+        default=None,
+        alias="operator_draft_run_id",
+    ),
     current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -1617,6 +1633,30 @@ def creator_experiments_page(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="experiment snapshot not found",
         )
+    operator_can_review_drafts = browser_auth_user_is_allowlisted_operator(
+        current_user,
+        settings=_request_settings(request),
+    )
+    operator_draft_run = None
+    operator_draft_provider = _operator_experiment_draft_provider(request)
+    if operator_can_review_drafts:
+        operator_draft_run = (
+            get_creator_operator_experiment_draft_run(
+                creator_id=current_user.creator_id,
+                draft_run_id=operator_draft_run_id,
+                db=db,
+            )
+            if operator_draft_run_id is not None
+            else get_latest_creator_operator_experiment_draft_run(
+                creator_id=current_user.creator_id,
+                db=db,
+            )
+        )
+        if operator_draft_run_id is not None and operator_draft_run is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="operator draft run not found",
+            )
 
     return _html_response(
         _render_experiments_page(
@@ -1625,6 +1665,10 @@ def creator_experiments_page(
             status_value=status_value,
             readiness_summary=readiness_summary,
             showing_specific_snapshot=claim_snapshot_id is not None,
+            operator_can_review_drafts=operator_can_review_drafts,
+            operator_draft_provider_configured=operator_draft_provider.is_configured(),
+            operator_draft_run=operator_draft_run,
+            showing_specific_operator_draft=operator_draft_run_id is not None,
         )
     )
 
@@ -1646,6 +1690,48 @@ def creator_experiments_generate(
     db.commit()
     return _redirect(
         f"/app/experiments?status=generated&claim_snapshot_id={experiment_run.claim_snapshot_id}"
+    )
+
+
+@router.post("/app/operator/experiments/drafts")
+def operator_experiments_draft_generate(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    operator_user = _allowlisted_operator_from_browser_request(
+        request=request,
+        current_user=current_user,
+    )
+    if isinstance(operator_user, Response):
+        return operator_user
+
+    try:
+        draft_run = create_creator_operator_experiment_draft_run(
+            creator_id=operator_user.creator_id,
+            creator_name=operator_user.creator.name,
+            db=db,
+            provider=_operator_experiment_draft_provider(request),
+        )
+    except OperatorExperimentDraftUnavailableError:
+        db.rollback()
+        return _redirect("/app/experiments?status=operator-draft-unavailable")
+    except OperatorExperimentDraftProviderError as exc:
+        db.rollback()
+        logger.warning(
+            "operator_experiment_draft_generation_failed creator_id=%s error=%s",
+            operator_user.creator_id,
+            exc,
+            exc_info=True,
+        )
+        return _redirect("/app/experiments?status=operator-draft-failed")
+    except OperatorExperimentDraftNotReadyError:
+        db.rollback()
+        return _redirect("/app/experiments?status=operator-draft-not-ready")
+
+    db.commit()
+    return _redirect(
+        f"/app/experiments?status=operator-draft-generated&operator_draft_run_id={draft_run.draft_run_id}"
     )
 
 
@@ -5205,6 +5291,10 @@ def _render_experiments_page(
     status_value: str | None,
     readiness_summary: CreatorNextContentExperimentsReadinessSummary,
     showing_specific_snapshot: bool,
+    operator_can_review_drafts: bool,
+    operator_draft_provider_configured: bool,
+    operator_draft_run: CreatorOperatorExperimentDraftRunResult | None,
+    showing_specific_operator_draft: bool,
 ) -> str:
     snapshot_heading = _experiments_snapshot_heading(
         experiment_run=experiment_run,
@@ -5251,6 +5341,14 @@ def _render_experiments_page(
           readiness_summary=readiness_summary,
       )}
     </section>
+    {_render_operator_experiment_draft_section(
+        current_user=current_user,
+        readiness_summary=readiness_summary,
+        operator_can_review_drafts=operator_can_review_drafts,
+        operator_draft_provider_configured=operator_draft_provider_configured,
+        operator_draft_run=operator_draft_run,
+        showing_specific_operator_draft=showing_specific_operator_draft,
+    )}
     """
     return _page_layout(title="Experiments", body=body)
 
@@ -5405,14 +5503,196 @@ def _render_experiments_next_steps(
 
 
 def _render_experiments_notice(*, status_value: str | None) -> str:
-    if status_value != "generated":
+    if status_value == "generated":
+        return """
+        <section class="notice success">
+          <p class="eyebrow">Fresh snapshot ready</p>
+          <p>Generated a new experiment snapshot from the current authoritative content and settled paid evidence.</p>
+        </section>
+        """
+    if status_value == "operator-draft-generated":
+        return """
+        <section class="notice success">
+          <p class="eyebrow">Operator draft ready</p>
+          <p>Generated a new operator-only draft snapshot from the current evidence-backed candidate set.</p>
+        </section>
+        """
+    if status_value == "operator-draft-unavailable":
+        return """
+        <section class="notice error">
+          <p class="eyebrow">Operator draft generator unavailable</p>
+          <p>Configure the OpenAI draft provider before generating an operator-only draft snapshot.</p>
+        </section>
+        """
+    if status_value == "operator-draft-not-ready":
+        return """
+        <section class="notice error">
+          <p class="eyebrow">Operator draft generator is blocked</p>
+          <p>Current helper readiness must be <code>ready</code> before the operator-only draft generator can run.</p>
+        </section>
+        """
+    if status_value == "operator-draft-failed":
+        return """
+        <section class="notice error">
+          <p class="eyebrow">Operator draft generation failed</p>
+          <p>The provider call did not produce a valid draft snapshot. No operator draft was stored.</p>
+        </section>
+        """
+    return ""
+
+
+def _render_operator_experiment_draft_section(
+    *,
+    current_user: AuthUser,
+    readiness_summary: CreatorNextContentExperimentsReadinessSummary,
+    operator_can_review_drafts: bool,
+    operator_draft_provider_configured: bool,
+    operator_draft_run: CreatorOperatorExperimentDraftRunResult | None,
+    showing_specific_operator_draft: bool,
+) -> str:
+    if not operator_can_review_drafts:
         return ""
 
-    return """
-    <section class="notice success">
-      <p class="eyebrow">Fresh snapshot ready</p>
-      <p>Generated a new experiment snapshot from the current authoritative content and settled paid evidence.</p>
+    current_ready = readiness_summary.current_status == EXPERIMENT_RUN_STATUS_READY
+    availability_copy = ""
+    if not current_ready:
+        availability_copy = """
+        <section class="empty-state">
+          <p class="eyebrow">Operator-only draft generator</p>
+          <h2>Draft generation stays locked until current readiness is ready</h2>
+          <p>The deterministic helper above remains the source of current helper truth. Come back here only after the current workspace clears the normal evidence bar.</p>
+        </section>
+        """
+    elif not operator_draft_provider_configured:
+        availability_copy = """
+        <section class="empty-state">
+          <p class="eyebrow">Operator-only draft generator</p>
+          <h2>OpenAI draft provider is not configured</h2>
+          <p>This draft layer stays internal and operator-only. Configure the OpenAI API key before generating any draft hypotheses.</p>
+        </section>
+        """
+    elif operator_draft_run is None:
+        availability_copy = """
+        <section class="empty-state">
+          <p class="eyebrow">No operator draft yet</p>
+          <h2>No operator-only draft snapshot exists yet</h2>
+          <p>The deterministic helper above remains the shipped control path. Generate a separate operator-only draft when you want to compare an LLM-backed hypothesis pass against that baseline.</p>
+        </section>
+        """
+
+    generate_button = ""
+    if current_ready and operator_draft_provider_configured:
+        generate_button = """
+        <form action="/app/operator/experiments/drafts" method="post">
+          <button type="submit" class="secondary">Generate operator draft</button>
+        </form>
+        """
+
+    snapshot_heading = (
+        "Selected operator draft"
+        if showing_specific_operator_draft and operator_draft_run is not None
+        else "Latest operator draft"
+    )
+    draft_results = ""
+    if operator_draft_run is not None:
+        draft_results = _render_operator_experiment_draft_results(
+            operator_draft_run=operator_draft_run,
+            snapshot_heading=snapshot_heading,
+        )
+
+    return f"""
+    <section class="card stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Operator-only draft experiments</p>
+          <h2>Review non-canonical LLM draft hypotheses beside the shipped helper</h2>
+        </div>
+        <p>Allowlisted operator only</p>
+      </div>
+      <p>Signed in as <strong class="wrap-anywhere">{html.escape(current_user.email)}</strong> for <strong class="wrap-anywhere">{html.escape(current_user.creator.name)}</strong>.</p>
+      <p>The deterministic helper above remains the control path. This section stores separate operator-only draft runs so LLM output never becomes current creator-visible helper truth by accident.</p>
+      {availability_copy}
+      {generate_button}
+      {draft_results}
     </section>
+    """
+
+
+def _render_operator_experiment_draft_results(
+    *,
+    operator_draft_run: CreatorOperatorExperimentDraftRunResult,
+    snapshot_heading: str,
+) -> str:
+    items = "".join(
+        _render_operator_experiment_draft_card(
+            card=card,
+            index=index,
+        )
+        for index, card in enumerate(operator_draft_run.cards, start=1)
+    )
+    return f"""
+    <section class="stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Stored operator draft</p>
+          <h2>{html.escape(snapshot_heading)}</h2>
+        </div>
+        <p>{_format_timestamp_in_utc(operator_draft_run.created_at)}</p>
+      </div>
+      <p><strong>Draft run ID</strong>: <code>{html.escape(str(operator_draft_run.draft_run_id))}</code></p>
+      <p>{html.escape(operator_draft_run.summary)}</p>
+      {_render_experiment_lineage_block(label="Draft run lineage", lineage=operator_draft_run.lineage)}
+      {_render_experiment_version_semantics_block(
+          label="Draft version semantics",
+          version_semantics=operator_draft_run.version_semantics,
+      )}
+      {_render_experiment_freshness_policy_block(
+          label="Draft freshness policy",
+          freshness_policy=operator_draft_run.freshness_policy,
+      )}
+      <div class="content-list">{items}</div>
+    </section>
+    """
+
+
+def _render_operator_experiment_draft_card(
+    *,
+    card,
+    index: int,
+) -> str:
+    authoritative_topics = ", ".join(card.authoritative_topics) or "None recorded"
+    paid_result_count = len(card.settled_paid_results)
+    paid_revenue_by_currency: dict[str, int] = {}
+    for paid_result in card.settled_paid_results:
+        paid_revenue_by_currency[paid_result.currency] = (
+            paid_revenue_by_currency.get(paid_result.currency, 0) + paid_result.amount_cents
+        )
+    paid_revenue_summary = ", ".join(
+        f"{currency} {_format_money_from_cents(amount_cents)}"
+        for currency, amount_cents in sorted(paid_revenue_by_currency.items())
+    )
+    if not paid_revenue_summary:
+        paid_revenue_summary = "No settled paid revenue recorded"
+
+    return f"""
+    <article class="topic-summary stack">
+      <div>
+        <p class="eyebrow">Draft card {index}</p>
+        <h3>{html.escape(card.title)}</h3>
+      </div>
+      <p><strong>Hypothesis</strong>: {html.escape(card.hypothesis)}</p>
+      <p><strong>Why this might work</strong>: {html.escape(card.why_this_might_work)}</p>
+      <p><strong>Evidence summary</strong>: {html.escape(card.evidence_summary)}</p>
+      <p><strong>Ranking rationale</strong>: {html.escape(card.ranking_rationale or "Not recorded")}</p>
+      <p><strong>Caution</strong>: {html.escape(card.caution)}</p>
+      <p><strong>Tracking ID</strong>: <code>{html.escape(card.content_tid)}</code></p>
+      <p><strong>Authoritative source</strong>: <a href="{html.escape(card.authoritative_source_url)}" class="inline-link">{html.escape(card.authoritative_source_url)}</a></p>
+      <p><strong>Authoritative title</strong>: {html.escape(card.authoritative_artifact_title or "Untitled artifact")}</p>
+      <p><strong>Confirmed topics</strong>: {html.escape(authoritative_topics)}</p>
+      <p><strong>Settled paid pattern</strong>: {paid_result_count} paid result{"s" if paid_result_count != 1 else ""} totaling {html.escape(paid_revenue_summary)}.</p>
+      <p><strong>Claim snapshot</strong>: <code>{html.escape(str(card.claim_snapshot_id))}</code></p>
+      {_render_experiment_lineage_block(label="Draft card lineage", lineage=card.lineage)}
+    </article>
     """
 
 
@@ -8718,6 +8998,10 @@ def _support_request_submit_policy(request: Request):
 
 def _request_settings(request: Request):
     return getattr(request.app.state, "settings", get_settings())
+
+
+def _operator_experiment_draft_provider(request: Request):
+    return getattr(request.app.state, "operator_experiment_draft_provider")
 
 
 def _paypal_available_to_creator(

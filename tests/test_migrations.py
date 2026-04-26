@@ -93,6 +93,7 @@ def test_migrations_upgrade_and_downgrade():
         command.downgrade(cfg, "-1")
         with engine.connect() as conn:
             inspector = inspect(conn)
+            table_names = inspector.get_table_names(schema="public")
             invoice_columns = {column["name"] for column in inspector.get_columns("invoices")}
             blocked_billing_columns = {
                 column["name"] for column in inspector.get_columns("blocked_billing_cases")
@@ -100,10 +101,12 @@ def test_migrations_upgrade_and_downgrade():
             payment_event_columns = {
                 column["name"] for column in inspector.get_columns("invoice_payment_events")
             }
+            assert "creator_operator_experiment_draft_runs" not in table_names
+            assert "creator_operator_experiment_draft_run_cards" not in table_names
             assert "payment_provider" in invoice_columns
             assert "provider_account_id" in invoice_columns
             assert "provider_invoice_id" in invoice_columns
-            assert "provider_action_url" not in invoice_columns
+            assert "provider_action_url" in invoice_columns
             assert "payment_provider" in blocked_billing_columns
             assert "provider_account_id" in blocked_billing_columns
             assert "payment_provider" in payment_event_columns
@@ -159,8 +162,8 @@ def test_migrations_upgrade_and_downgrade():
             assert "provider_account_id" in invoice_columns
             assert "provider_invoice_id" in invoice_columns
             assert "provider_action_url" not in invoice_columns
-            assert "payment_provider" not in blocked_billing_columns
-            assert "provider_account_id" not in blocked_billing_columns
+            assert "payment_provider" in blocked_billing_columns
+            assert "provider_account_id" in blocked_billing_columns
             assert "payment_provider" in payment_event_columns
             assert "provider_event_id" in payment_event_columns
             assert "provider_event_type" in payment_event_columns
@@ -214,7 +217,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
             assert "card_id" in experiment_run_card_columns
-            assert "ranking_rationale" not in experiment_run_card_columns
+            assert "ranking_rationale" in experiment_run_card_columns
             assert "calendly_webhook_events" in table_names
             assert "fullscope_webhook_events" in table_names
             assert "content_topic_candidates" in table_names
@@ -287,7 +290,7 @@ def test_migrations_upgrade_and_downgrade():
             assert "creator_experiment_runs" in table_names
             assert "creator_claim_paid_evidence_refs" in table_names
             assert "creator_claim_snapshots" in table_names
-            assert "card_id" not in experiment_run_card_columns
+            assert "card_id" in experiment_run_card_columns
             assert "ranking_rationale" not in experiment_run_card_columns
             assert "calendly_webhook_events" in table_names
             assert "fullscope_webhook_events" in table_names
@@ -1277,6 +1280,119 @@ def test_creator_experiment_run_cards_table_has_expected_columns_fk_indexes_and_
             index["name"] == "ix_creator_experiment_run_cards_claim_snapshot_id"
             and index["column_names"] == ["claim_snapshot_id"]
             for index in indexes
+        )
+
+
+def test_creator_operator_experiment_draft_runs_table_has_expected_columns_fk_and_indexes():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {
+            column["name"]
+            for column in inspector.get_columns("creator_operator_experiment_draft_runs")
+        }
+        assert columns == {
+            "id",
+            "creator_id",
+            "status",
+            "summary_text",
+            "run_generator_type",
+            "run_model_name",
+            "run_config_version",
+            "run_contract_version",
+            "run_reducer_version",
+            "run_prompt_version",
+            "created_at",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("creator_operator_experiment_draft_runs")
+        assert any(
+            fk["referred_table"] == "creators"
+            and fk["constrained_columns"] == ["creator_id"]
+            for fk in foreign_keys
+        )
+
+        indexes = inspector.get_indexes("creator_operator_experiment_draft_runs")
+        assert any(
+            index["name"] == "ix_creator_operator_experiment_draft_runs_creator_id"
+            and index["column_names"] == ["creator_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_creator_operator_experiment_draft_runs_status"
+            and index["column_names"] == ["status"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_creator_operator_experiment_draft_runs_created_at"
+            and index["column_names"] == ["created_at"]
+            for index in indexes
+        )
+
+
+def test_creator_operator_experiment_draft_run_cards_table_has_expected_columns_fk_indexes_and_unique_constraints():
+    db_url = os.getenv("TEST_DATABASE_URL")
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        columns = {
+            column["name"]
+            for column in inspector.get_columns("creator_operator_experiment_draft_run_cards")
+        }
+        assert columns == {
+            "id",
+            "run_id",
+            "claim_snapshot_id",
+            "content_tid",
+            "title",
+            "hypothesis",
+            "why_this_might_work",
+            "evidence_summary",
+            "ranking_rationale",
+            "caution",
+            "card_order",
+        }
+
+        foreign_keys = inspector.get_foreign_keys("creator_operator_experiment_draft_run_cards")
+        assert any(
+            fk["referred_table"] == "creator_operator_experiment_draft_runs"
+            and fk["constrained_columns"] == ["run_id"]
+            for fk in foreign_keys
+        )
+        assert any(
+            fk["referred_table"] == "creator_claim_snapshots"
+            and fk["constrained_columns"] == ["claim_snapshot_id"]
+            for fk in foreign_keys
+        )
+
+        indexes = inspector.get_indexes("creator_operator_experiment_draft_run_cards")
+        assert any(
+            index["name"] == "ix_creator_op_experiment_draft_cards_run_id"
+            and index["column_names"] == ["run_id"]
+            for index in indexes
+        )
+        assert any(
+            index["name"] == "ix_creator_op_experiment_draft_cards_claim_snapshot_id"
+            and index["column_names"] == ["claim_snapshot_id"]
+            for index in indexes
+        )
+
+        unique_constraints = inspector.get_unique_constraints(
+            "creator_operator_experiment_draft_run_cards"
+        )
+        assert any(
+            constraint["name"] == "uq_creator_op_experiment_draft_cards_run_order"
+            and constraint["column_names"] == ["run_id", "card_order"]
+            for constraint in unique_constraints
+        )
+        assert any(
+            constraint["name"]
+            == "uq_creator_op_experiment_draft_cards_run_claim_snapshot"
+            and constraint["column_names"] == ["run_id", "claim_snapshot_id"]
+            for constraint in unique_constraints
         )
 
         unique_constraints = inspector.get_unique_constraints("creator_experiment_run_cards")

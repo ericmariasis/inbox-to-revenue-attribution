@@ -31,6 +31,11 @@ from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
 )
 from app.services.next_content_experiments import UNSUPPORTED_EXPERIMENTS_SUMMARY
+from app.services.operator_experiment_drafts import (
+    OperatorExperimentDraftProviderOutput,
+    OperatorExperimentDraftUnavailableError,
+    _OperatorExperimentDraftCardPayload,
+)
 from app.services.paypal_provider import PayPalConnectOnboardingResult, PayPalProviderError
 from app.services.rate_limit import (
     DEFAULT_SHARED_RATE_LIMITER,
@@ -1029,6 +1034,35 @@ class _StubPayPalProvider:
 
     def get_verified_seller_status(self, *, tracking_id: str):
         raise AssertionError(f"unexpected seller lookup tracking_id={tracking_id}")
+
+
+class _StubOperatorExperimentDraftProvider:
+    def __init__(
+        self,
+        *,
+        configured: bool = True,
+        model_name: str = "gpt-5.4-mini",
+        prompt_version: str = "operator_draft_next_content_experiments.prompt.v1",
+        cards: list[_OperatorExperimentDraftCardPayload] | None = None,
+    ):
+        self._configured = configured
+        self._model_name = model_name
+        self._prompt_version = prompt_version
+        self._cards = cards or []
+        self.calls = []
+
+    def is_configured(self) -> bool:
+        return self._configured
+
+    def generate_draft(self, *, prompt_input):
+        self.calls.append(prompt_input)
+        if not self._configured:
+            raise OperatorExperimentDraftUnavailableError("provider unavailable")
+        return OperatorExperimentDraftProviderOutput(
+            model_name=self._model_name,
+            prompt_version=self._prompt_version,
+            cards=self._cards,
+        )
 
 
 class _FailingEmailProvider:
@@ -4312,8 +4346,95 @@ def test_experiments_page_without_prior_run_renders_current_unsupported_readines
     assert '<button type="submit" class="secondary">Generate next experiments</button>' in response.text
     assert "Refreshing the page does not create a new helper run." in response.text
     assert 'action="/app/experiments"' in response.text
+    assert "Operator-only draft experiments" not in response.text
     assert before_count == 0
     assert after_count == 0
+
+
+def _seed_ready_experiments_workspace(*, email: str, name: str, stripe_account_id: str) -> tuple[dict[str, str], str, str]:
+    inserted = _insert_creator_user(
+        email=email,
+        name=name,
+        stripe_connect_status="connected",
+        stripe_account_id=stripe_account_id,
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name=f"{name} Link",
+        calendly_url="https://calendly.com/example/operator-ready-no-snapshot",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    content_tid = f"uiexperimentsoperator{uuid.uuid4().hex[:8]}"
+    content_id = _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/experiments-operator-ready",
+        tid=content_tid,
+    )
+    snapshot_id = _insert_fetch_snapshot(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        requested_url="https://example.com/posts/experiments-operator-ready",
+        fetched_url="https://example.com/posts/experiments-operator-ready",
+        fetch_status="succeeded",
+        http_status=200,
+        snapshot_text="<html><body><article><p>Operator ready experiments.</p></article></body></html>",
+        fetched_at=datetime(2026, 3, 12, 11, 0, tzinfo=timezone.utc),
+    )
+    artifact_id = _insert_extraction_artifact(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        fetch_snapshot_id=snapshot_id,
+        extraction_status="succeeded",
+        title="Operator Ready Artifact",
+        extracted_text="Retention review content for operator experiments.",
+        created_at=datetime(2026, 3, 12, 11, 5, tzinfo=timezone.utc),
+    )
+    _insert_confirmed_topic(
+        content_id=content_id,
+        creator_id=inserted["creator_id"],
+        extraction_artifact_id=artifact_id,
+        label="Retention Reviews",
+    )
+    _set_authoritative_extraction_artifact(
+        content_id=content_id,
+        artifact_id=artifact_id,
+    )
+    booking_id = _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=content_tid,
+        calendly_booking_uuid=f"BOOK_UI_EXPERIMENTS_OPERATOR_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime(2026, 3, 12, 12, 0, tzinfo=timezone.utc),
+    )
+    stripe_invoice_id = f"in_ui_experiments_operator_{uuid.uuid4().hex[:8]}"
+    invoice_id = _insert_invoice(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        stripe_account_id=stripe_account_id,
+        stripe_invoice_id=stripe_invoice_id,
+        amount_cents=19500,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=content_tid,
+        invoice_id=invoice_id,
+        stripe_account_id=stripe_account_id,
+        stripe_event_id=f"evt_ui_experiments_operator_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=stripe_invoice_id,
+        paid_at=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+    return inserted, access_token, content_tid
 
 
 def test_experiments_page_without_prior_run_renders_current_ready_readiness_without_writing():
@@ -4423,8 +4544,96 @@ def test_experiments_page_without_prior_run_renders_current_ready_readiness_with
         "Current evidence is ready, but no stored snapshot exists yet" in response.text
     )
     assert '<button type="submit">Generate next experiments</button>' in response.text
+    assert "Operator-only draft experiments" not in response.text
     assert before_count == 0
     assert after_count == 0
+
+
+def test_experiments_page_shows_operator_draft_section_for_allowlisted_ready_operator():
+    inserted, access_token, _ = _seed_ready_experiments_workspace(
+        email=f"ui_experiments_operator_{uuid.uuid4().hex}@example.com",
+        name="Operator Draft Creator",
+        stripe_account_id="acct_ui_experiments_operator",
+    )
+    settings = _operator_allowlist_settings(inserted["email"])
+    provider = _StubOperatorExperimentDraftProvider(cards=[])
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("operator_experiment_draft_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.get("/app/experiments", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Operator-only draft experiments" in response.text
+    assert "Review non-canonical LLM draft hypotheses beside the shipped helper" in response.text
+    assert "Generate operator draft" in response.text
+    assert 'action="/app/operator/experiments/drafts"' in response.text
+    assert "No operator-only draft snapshot exists yet" in response.text
+
+
+def test_operator_experiment_draft_generate_route_creates_run_and_renders_results():
+    inserted, access_token, content_tid = _seed_ready_experiments_workspace(
+        email=f"ui_experiments_operator_generate_{uuid.uuid4().hex}@example.com",
+        name="Operator Draft Generate Creator",
+        stripe_account_id="acct_ui_experiments_operator_generate",
+    )
+    settings = _operator_allowlist_settings(inserted["email"])
+    provider = _StubOperatorExperimentDraftProvider(
+        cards=[
+            _OperatorExperimentDraftCardPayload(
+                content_tid=content_tid,
+                title="Test another retention-review proof angle",
+                hypothesis="Test whether another retention-review proof post may drive more attributed paid bookings.",
+                why_this_might_work="The authoritative retention-review pattern already has a settled paid result to build on.",
+                evidence_summary="Retention Reviews already has one paid booking and one paid invoice totaling USD 195.00.",
+                ranking_rationale="It is the only supported candidate in this operator draft set, so it remains first.",
+            )
+        ]
+    )
+
+    with _override_app_state("settings", settings):
+        with _override_app_state("operator_experiment_draft_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                create_response = client.post(
+                    "/app/operator/experiments/drafts",
+                    headers=HTML_ACCEPT_HEADERS,
+                    follow_redirects=False,
+                )
+                page_response = client.get(
+                    create_response.headers["location"],
+                    headers=HTML_ACCEPT_HEADERS,
+                )
+
+    with _engine().connect() as conn:
+        run_count = conn.execute(
+            text(
+                "SELECT COUNT(*) FROM creator_operator_experiment_draft_runs WHERE creator_id = :creator_id"
+            ),
+            {"creator_id": inserted["creator_id"]},
+        ).scalar_one()
+        card_count = conn.execute(
+            text(
+                "SELECT COUNT(*) FROM creator_operator_experiment_draft_run_cards WHERE run_id IN ("
+                "SELECT id FROM creator_operator_experiment_draft_runs WHERE creator_id = :creator_id"
+                ")"
+            ),
+            {"creator_id": inserted["creator_id"]},
+        ).scalar_one()
+
+    assert create_response.status_code == 303
+    assert create_response.headers["location"].startswith(
+        "/app/experiments?status=operator-draft-generated&operator_draft_run_id="
+    )
+    assert page_response.status_code == 200
+    assert "Operator draft ready" in page_response.text
+    assert "Stored operator draft" in page_response.text
+    assert "Test another retention-review proof angle" in page_response.text
+    assert "Operator-only draft experiments" in page_response.text
+    assert "Draft run lineage" in page_response.text
+    assert run_count == 1
+    assert card_count == 1
 
 
 def test_experiments_generate_route_creates_ready_snapshot_and_renders_cards():

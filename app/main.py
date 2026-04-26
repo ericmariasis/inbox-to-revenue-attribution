@@ -21,6 +21,9 @@ from app.services.calendly_webhooks import build_default_calendly_webhook_router
 from app.services.content_fetch import build_default_content_fetch_provider
 from app.services.email_provider import build_default_email_provider
 from app.services.fullscope_webhooks import build_default_fullscope_webhook_router
+from app.services.operator_experiment_drafts import (
+    build_default_operator_experiment_draft_provider,
+)
 from app.services.paypal_provider import build_default_paypal_provider
 from app.services.paypal_webhooks import build_default_paypal_webhook_router
 from app.services.stripe_provider import build_default_stripe_provider
@@ -49,6 +52,10 @@ async def lifespan(app: FastAPI):
         app.state.stripe_provider = build_default_stripe_provider(settings=app.state.settings)
     if not hasattr(app.state, "paypal_provider"):
         app.state.paypal_provider = build_default_paypal_provider(settings=app.state.settings)
+    if not hasattr(app.state, "operator_experiment_draft_provider"):
+        app.state.operator_experiment_draft_provider = build_default_operator_experiment_draft_provider(
+            settings=app.state.settings
+        )
     app.state.billing_providers = build_billing_provider_registry(
         providers=[
             app.state.stripe_provider,

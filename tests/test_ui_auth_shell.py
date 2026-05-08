@@ -1085,10 +1085,13 @@ def test_sign_in_page_is_browser_accessible():
     assert "<form" in response.text
     assert 'action="/sign-in"' in response.text
     assert 'name="email"' in response.text
-    assert "Sign in to your creator workspace" in response.text
-    assert "Independent tutors create or reopen their workspace here" in response.text
-    assert "open it on this same device and browser" in response.text
-    assert "you opened the email on another device" in response.text
+    assert "Getting started" in response.text
+    assert "Start or reopen your tutor workspace." in response.text
+    assert "Enter your email to request a secure sign-in link for your workspace." in response.text
+    assert "Send sign-in link" in response.text
+    assert "open the email on this same device and browser where you requested it" in response.text
+    assert "finish billing, booking-link, and tracked-link setup" not in response.text
+    assert "Independent tutors create or reopen their workspace here" not in response.text
     assert 'href="/terms"' in response.text
     assert 'href="/privacy"' in response.text
 

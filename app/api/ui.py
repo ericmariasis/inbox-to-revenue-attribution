@@ -2677,19 +2677,20 @@ def _render_sign_in_page(status_value: str | None) -> str:
         )
 
     body = f"""
-    <section class="hero">
-      <p class="eyebrow">Self-serve setup</p>
-      <h1>Sign in to your creator workspace</h1>
-      <p class="lede">Use your email to get a secure sign-in link, then open it on this same device and browser to finish billing, booking-link, and tracked-link setup inside the app.</p>
-      {message_block}
-      <form action="/sign-in" method="post" class="card">
-        <label for="email">Email</label>
-        <input id="email" name="email" type="email" autocomplete="email" placeholder="creator@example.com" required />
-        <p class="form-help">Independent tutors create or reopen their workspace here, then connect their own billing account inside the app.</p>
-        <button type="submit">Send magic link</button>
-      </form>
-      <p class="footnote">If the last link expired, the setup tab was closed, or you opened the email on another device, request another email here and continue from this browser.</p>
-      <p class="footnote">{_PUBLIC_LEGAL_LINKS_HTML}</p>
+    <section class="sign-in-shell">
+      <section class="hero sign-in-card">
+        <p class="eyebrow">Getting started</p>
+        <h1>Start or reopen your tutor workspace.</h1>
+        <p class="lede">Enter your email to request a secure sign-in link for your workspace.</p>
+        {message_block}
+        <form action="/sign-in" method="post" class="sign-in-form">
+          <label for="email">Email address</label>
+          <input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required />
+          <button type="submit">Send sign-in link</button>
+        </form>
+        <p class="form-help sign-in-guidance">For best results, open the email on this same device and browser where you requested it.</p>
+        <p class="footnote">{_PUBLIC_LEGAL_LINKS_HTML}</p>
+      </section>
     </section>
     """
     return _page_layout(title="Creator sign in", body=body)
@@ -10529,6 +10530,30 @@ def _page_layout(*, title: str, body: str) -> str:
         gap: 8px;
         max-width: 720px;
         margin: 0 auto;
+      }}
+
+      .sign-in-shell {{
+        min-height: calc(100vh - 112px);
+        display: grid;
+        place-items: center;
+      }}
+
+      .sign-in-card {{
+        width: min(100%, 560px);
+      }}
+
+      .sign-in-form button {{
+        width: 100%;
+        justify-content: center;
+      }}
+
+      .sign-in-guidance {{
+        margin-top: 16px;
+        padding: 14px 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(47, 95, 91, 0.18);
+        background: rgba(47, 95, 91, 0.08);
+        color: #224845;
       }}
 
       .benefit-grid,

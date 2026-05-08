@@ -1098,12 +1098,20 @@ def test_public_home_page_explains_tutor_onboarding_and_links_to_legal_pages():
         response = client.get("/", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Career Code Pro tutor setup" in response.text
-    assert "Independent tutors register here by email" in response.text
-    assert "Tutors use their own payment-provider account" in response.text
+    assert "Know what's actually bringing in paid students." in response.text
+    assert "Connect your booking links, content, and outreach to confirmed paid bookings" in response.text
+    assert "Run your tutoring like a real business." in response.text
+    assert "Connect your PayPal account." in response.text
+    assert "Your PayPal stays yours." in response.text
+    assert "Payouts go directly to you, never through us." in response.text
+    assert "Quick answers before you get started." in response.text
+    assert "Create your workspace" in response.text
     assert 'href="/sign-in"' in response.text
     assert 'href="/terms"' in response.text
     assert 'href="/privacy"' in response.text
+    assert "How tutors register" not in response.text
+    assert "Start with email sign-in" not in response.text
+    assert "Pricing" not in response.text
 
 
 def test_public_terms_and_privacy_pages_are_browser_accessible():

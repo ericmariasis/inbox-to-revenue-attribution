@@ -2399,40 +2399,174 @@ def _sign_in_path(*, status_value: str | None = None) -> str:
 
 def _render_public_home_page() -> str:
     body = f"""
-    <section class="hero stack">
-      <div>
-        <p class="eyebrow">Independent tutor onboarding</p>
-        <h1>Career Code Pro tutor setup</h1>
-        <p class="lede">Independent tutors register here by email, open the magic link on the same device and browser, and complete billing, booking-link, and tracked-content setup inside the hosted app.</p>
+    <header class="public-nav">
+      <a href="/" class="brand-link">Career Code Pro</a>
+      <nav aria-label="Landing page sections">
+        <a href="#benefits">Benefits</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="#faqs">FAQs</a>
+      </nav>
+      <div class="public-nav-actions">
+        <a href="/sign-in" class="inline-link">Sign in</a>
+        <a href="/sign-in" class="button-link">Create workspace</a>
       </div>
-      <div class="grid">
-        <article class="topic-summary stack">
-          <div>
-            <p class="eyebrow">How tutors register</p>
-            <h2>Start with email sign-in</h2>
-          </div>
-          <p>Use the hosted sign-in page to request a magic link. Opening that link creates or reopens the tutor workspace for that email on this website.</p>
-        </article>
-        <article class="topic-summary stack">
-          <div>
-            <p class="eyebrow">Own payment account</p>
-            <h2>Tutors use their own account</h2>
-          </div>
-          <p>Tutors use their own payment-provider account to accept payments for their services. The workspace keeps billing setup, booking links, tracked content, and reporting in one place.</p>
-        </article>
-      </div>
-      <section class="card stack">
-        <div>
-          <p class="eyebrow">Hosted review flow</p>
-          <h2>What happens after sign-in</h2>
+    </header>
+
+    <section class="landing-hero">
+      <div class="landing-hero-copy">
+        <p class="eyebrow">The workspace for independent tutors</p>
+        <h1>Know what's actually bringing in paid students.</h1>
+        <p class="lede">Connect your booking links, content, and outreach to confirmed paid bookings so you stop guessing where your students came from.</p>
+        <div class="hero-actions">
+          <a href="/sign-in" class="button-link">Create your workspace</a>
+          <p class="footnote">Free to start. Takes about 30 seconds. No credit card required.</p>
         </div>
-        <p>After sign-in, the tutor can connect billing, add or review booking links, add tracked content, and return to the account page later to reconnect or disconnect a billing provider when needed.</p>
-        <p><a href="/sign-in" class="inline-link">Start tutor sign-in</a></p>
-        <p class="footnote">{_PUBLIC_LEGAL_LINKS_HTML}</p>
-      </section>
+      </div>
+      <div class="product-mockup" aria-label="Static preview of a Career Code Pro paid-booking report">
+        <div class="mockup-window">
+          <div class="mockup-topbar">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <div class="mockup-header">
+            <p class="eyebrow">Paid result</p>
+            <h2>What was attached?</h2>
+          </div>
+          <div class="mockup-stat-row">
+            <div>
+              <strong>$125.00</strong>
+              <span>Paid booking</span>
+            </div>
+            <div>
+              <strong>3</strong>
+              <span>Sources attached</span>
+            </div>
+            <div>
+              <strong>PayPal</strong>
+              <span>Confirmed</span>
+            </div>
+          </div>
+          <div class="mockup-body">
+            <div class="mockup-chart" aria-hidden="true">
+              <span style="height: 38%"></span>
+              <span style="height: 62%"></span>
+              <span style="height: 47%"></span>
+              <span style="height: 82%"></span>
+              <span style="height: 55%"></span>
+              <span style="height: 74%"></span>
+            </div>
+            <div class="mockup-sources">
+              <p><strong>Booking link</strong><span>Calculus consult</span></p>
+              <p><strong>Content</strong><span>AP exam prep guide</span></p>
+              <p><strong>Outreach</strong><span>Parent email follow-up</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="benefits" class="landing-section card stack">
+      <div class="section-heading-centered">
+        <p class="eyebrow">Tutor business clarity</p>
+        <h2>Run your tutoring like a real business.</h2>
+        <p>See exactly which booking links, content, and outreach show up next to your paid bookings without spreadsheets or guesswork.</p>
+      </div>
+      <div class="benefit-grid">
+        <article class="benefit-card">
+          <p class="benefit-icon">01</p>
+          <h3>Stop guessing where students came from.</h3>
+          <p>Every paid booking can show the links, content, and outreach attached to it so you can see what is actually working.</p>
+        </article>
+        <article class="benefit-card">
+          <p class="benefit-icon">02</p>
+          <h3>Trust the numbers, not your memory.</h3>
+          <p>Results come from confirmed PayPal payments, not vanity metrics or self-reported guesses.</p>
+        </article>
+        <article class="benefit-card">
+          <p class="benefit-icon">03</p>
+          <h3>Spend your time on what works.</h3>
+          <p>Use real paid-result evidence to decide what to share, improve, or stop doing next.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="how-it-works" class="landing-section how-it-works">
+      <div class="how-copy">
+        <p class="eyebrow">How it works</p>
+        <h2>A short setup checklist gets your workspace ready before your next paid booking arrives.</h2>
+        <a href="/sign-in" class="button-link">Create your workspace</a>
+      </div>
+      <ol class="how-steps">
+        <li>
+          <span>1</span>
+          <div>
+            <h3>Connect your PayPal account.</h3>
+            <p>Use your own PayPal account so confirmed payments can appear as paid results in your workspace.</p>
+          </div>
+        </li>
+        <li>
+          <span>2</span>
+          <div>
+            <h3>Create and share tracked links.</h3>
+            <p>Add booking links and tracked content or outreach links before students book with you.</p>
+          </div>
+        </li>
+        <li>
+          <span>3</span>
+          <div>
+            <h3>Review what was attached to a paid booking.</h3>
+            <p>When a student pays, review the booking link, content, and outreach connected to that result.</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="trust-panel">
+      <div>
+        <p class="eyebrow">Payment-account trust</p>
+        <h2>Your PayPal stays yours.</h2>
+        <p>You connect your existing PayPal account. Career Code Pro never holds your money or processes payouts.</p>
+      </div>
+      <div class="trust-list">
+        <p>Payouts go directly to you, never through us.</p>
+        <p>We only read confirmed payment-backed records for reporting.</p>
+        <p>You can disconnect anytime in your account settings.</p>
+        <a href="/sign-in" class="button-link trust-cta">Create your workspace</a>
+      </div>
+    </section>
+
+    <section id="faqs" class="landing-section faq-section">
+      <div>
+        <p class="eyebrow">FAQs</p>
+        <h2>Quick answers before you get started.</h2>
+      </div>
+      <div class="faq-grid">
+        <article>
+          <h3>Do I need to be technical to use this?</h3>
+          <p>No. If you can copy and paste a link, you can use Career Code Pro. The setup starts from your email and PayPal account.</p>
+        </article>
+        <article>
+          <h3>What if I already use PayPal?</h3>
+          <p>You can connect your existing PayPal account. You keep using PayPal for payouts while Career Code Pro organizes paid-result context.</p>
+        </article>
+        <article>
+          <h3>How long until I see my first paid result?</h3>
+          <p>As soon as a student pays through a connected setup and the booking can be matched, the result can appear in reports.</p>
+        </article>
+        <article>
+          <h3>Is my data shared or sold?</h3>
+          <p>No. Your booking, content, payment, and student information stays in your workspace and is not sold to third parties.</p>
+        </article>
+        <article>
+          <h3>Can I cancel and take my data with me?</h3>
+          <p>You can disconnect PayPal anytime, and your historical workspace records remain available during beta review.</p>
+        </article>
+      </div>
+      <p class="footnote">{_PUBLIC_LEGAL_LINKS_HTML}</p>
     </section>
     """
-    return _page_layout(title="Career Code Pro tutor setup", body=body)
+    return _page_layout(title="Career Code Pro for independent tutors", body=body)
 
 
 def _render_terms_page() -> str:
@@ -10232,6 +10366,320 @@ def _page_layout(*, title: str, body: str) -> str:
         font-weight: 700;
       }}
 
+      .public-nav {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 28px;
+        font-size: 0.94rem;
+      }}
+
+      .brand-link {{
+        color: var(--ink);
+        font-weight: 800;
+        text-decoration: none;
+      }}
+
+      .public-nav nav,
+      .public-nav-actions {{
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }}
+
+      .public-nav nav a {{
+        color: var(--ink);
+        font-weight: 700;
+        text-decoration: none;
+      }}
+
+      .public-nav .button-link {{
+        padding: 9px 14px;
+      }}
+
+      .landing-hero {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 0.95fr);
+        align-items: center;
+        gap: 40px;
+        margin-bottom: 36px;
+        padding: 40px 0 24px;
+      }}
+
+      .landing-hero-copy {{
+        display: grid;
+        gap: 18px;
+      }}
+
+      .hero-actions {{
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 14px;
+      }}
+
+      .product-mockup {{
+        padding: 16px;
+        border-radius: 28px;
+        background:
+          radial-gradient(circle at top right, rgba(47, 95, 91, 0.16), transparent 34%),
+          rgba(255, 252, 245, 0.72);
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
+      }}
+
+      .mockup-window {{
+        display: grid;
+        gap: 18px;
+        padding: 18px;
+        border-radius: 20px;
+        background: #fffdf8;
+        border: 1px solid var(--line);
+      }}
+
+      .mockup-topbar {{
+        display: flex;
+        gap: 7px;
+      }}
+
+      .mockup-topbar span {{
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        background: rgba(31, 28, 26, 0.18);
+      }}
+
+      .mockup-header h2 {{
+        margin-bottom: 0;
+      }}
+
+      .mockup-stat-row {{
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+      }}
+
+      .mockup-stat-row div {{
+        padding: 12px;
+        border-radius: 14px;
+        background: var(--panel-strong);
+        border: 1px solid var(--line);
+      }}
+
+      .mockup-stat-row strong,
+      .mockup-stat-row span {{
+        display: block;
+      }}
+
+      .mockup-stat-row span {{
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }}
+
+      .mockup-body {{
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 14px;
+        align-items: stretch;
+      }}
+
+      .mockup-chart {{
+        min-height: 180px;
+        display: flex;
+        align-items: end;
+        gap: 9px;
+        padding: 16px;
+        border-radius: 16px;
+        background: linear-gradient(180deg, #fffaf1, #f4e7da);
+        border: 1px solid var(--line);
+      }}
+
+      .mockup-chart span {{
+        flex: 1;
+        min-height: 28px;
+        border-radius: 999px 999px 6px 6px;
+        background: #1f1c1a;
+      }}
+
+      .mockup-sources {{
+        display: grid;
+        gap: 10px;
+      }}
+
+      .mockup-sources p {{
+        display: grid;
+        gap: 3px;
+        padding: 12px;
+        border-radius: 14px;
+        background: rgba(47, 95, 91, 0.08);
+        border: 1px solid rgba(47, 95, 91, 0.14);
+        font-size: 0.92rem;
+      }}
+
+      .landing-section {{
+        margin-bottom: 36px;
+      }}
+
+      .section-heading-centered {{
+        display: grid;
+        justify-items: center;
+        text-align: center;
+        gap: 8px;
+        max-width: 720px;
+        margin: 0 auto;
+      }}
+
+      .benefit-grid,
+      .faq-grid {{
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }}
+
+      .benefit-card {{
+        display: grid;
+        gap: 12px;
+        padding: 18px;
+        border-radius: 18px;
+        background: var(--panel-strong);
+        border: 1px solid var(--line);
+      }}
+
+      .benefit-card h3,
+      .faq-grid h3,
+      .how-steps h3 {{
+        margin: 0;
+        color: var(--ink);
+        line-height: 1.25;
+      }}
+
+      .benefit-icon {{
+        width: 34px;
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        background: rgba(47, 95, 91, 0.1);
+        color: #224845;
+        font-weight: 800;
+        font-size: 0.82rem;
+      }}
+
+      .how-it-works {{
+        display: grid;
+        grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.2fr);
+        gap: 34px;
+        align-items: start;
+      }}
+
+      .how-copy {{
+        display: grid;
+        gap: 16px;
+      }}
+
+      .how-steps {{
+        display: grid;
+        gap: 16px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }}
+
+      .how-steps li {{
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 14px;
+        align-items: start;
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px solid var(--line);
+        background: rgba(255, 249, 239, 0.74);
+      }}
+
+      .how-steps li > span {{
+        width: 34px;
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        background: var(--accent);
+        color: #fff8f3;
+        font-weight: 800;
+      }}
+
+      .how-steps li div {{
+        display: grid;
+        gap: 7px;
+      }}
+
+      .trust-panel {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 28px;
+        margin-bottom: 36px;
+        padding: 32px;
+        border-radius: 24px;
+        background: #1f1c1a;
+        box-shadow: var(--shadow);
+      }}
+
+      .trust-panel h2,
+      .trust-panel p,
+      .trust-panel .eyebrow {{
+        color: #fff8f3;
+      }}
+
+      .trust-panel p {{
+        opacity: 0.86;
+      }}
+
+      .trust-list {{
+        display: grid;
+        gap: 12px;
+        align-content: start;
+      }}
+
+      .trust-list p {{
+        padding-left: 24px;
+        position: relative;
+      }}
+
+      .trust-list p::before {{
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.75em;
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #d9ede8;
+      }}
+
+      .trust-cta {{
+        background: #fff8f3;
+        color: #1f1c1a;
+        box-shadow: none;
+        margin-top: 6px;
+      }}
+
+      .faq-section {{
+        display: grid;
+        gap: 18px;
+      }}
+
+      .faq-grid {{
+        grid-template-columns: repeat(2, 1fr);
+      }}
+
+      .faq-grid article {{
+        display: grid;
+        gap: 8px;
+      }}
+
       .empty-state,
       .booking-link-card,
       .content-card,
@@ -10468,6 +10916,42 @@ def _page_layout(*, title: str, body: str) -> str:
 
         .shell-nav {{
           gap: 8px;
+        }}
+
+        .public-nav {{
+          align-items: flex-start;
+          flex-direction: column;
+        }}
+
+        .public-nav nav,
+        .public-nav-actions,
+        .hero-actions {{
+          width: 100%;
+          flex-direction: column;
+          align-items: stretch;
+        }}
+
+        .public-nav .button-link,
+        .hero-actions .button-link {{
+          width: 100%;
+        }}
+
+        .landing-hero,
+        .how-it-works,
+        .trust-panel {{
+          grid-template-columns: 1fr;
+        }}
+
+        .landing-hero {{
+          gap: 24px;
+          padding-top: 18px;
+        }}
+
+        .mockup-body,
+        .mockup-stat-row,
+        .benefit-grid,
+        .faq-grid {{
+          grid-template-columns: 1fr;
         }}
 
         .nav-link,

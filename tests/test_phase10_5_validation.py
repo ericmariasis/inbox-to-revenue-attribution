@@ -431,10 +431,9 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
 
     assert initial_home_response.status_code == 200
     assert "Setup Home" in initial_home_response.text
-    assert "Current milestone" in initial_home_response.text
-    assert "Choose billing provider" in initial_home_response.text
+    assert "Your path to first paid proof" in initial_home_response.text
+    assert "Connect billing provider" in initial_home_response.text
     assert "0 of 4 setup milestones done" in initial_home_response.text
-    assert "Start billing setup" in initial_home_response.text
     assert "Blocked billing and unresolved payments will appear" in initial_home_response.text
 
     assert invalid_link_response.status_code == 303
@@ -461,10 +460,9 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert "Amount and currency set: USD 195.00" in booking_links_page_response.text
 
     assert booking_link_setup_response.status_code == 200
-    assert "Current milestone" in booking_link_setup_response.text
-    assert "Choose billing provider" in booking_link_setup_response.text
+    assert "Your path to first paid proof" in booking_link_setup_response.text
+    assert "Connect billing provider" in booking_link_setup_response.text
     assert "2 of 4 setup milestones done" in booking_link_setup_response.text
-    assert "Start billing setup" in booking_link_setup_response.text
     assert "Billable links" in booking_link_setup_response.text
 
     assert content_page_response.status_code == 200
@@ -479,10 +477,9 @@ def test_phase10_5_self_serve_trust_flow_end_to_end():
     assert created_tid in content_success_page_response.text
 
     assert content_setup_response.status_code == 200
-    assert "Current milestone" in content_setup_response.text
-    assert "Choose billing provider" in content_setup_response.text
+    assert "Your path to first paid proof" in content_setup_response.text
+    assert "Connect billing provider" in content_setup_response.text
     assert "3 of 4 setup milestones done" in content_setup_response.text
-    assert "Start billing setup" in content_setup_response.text
 
     assert connect_start_response.status_code == 303
     assert connect_start_response.headers["location"].startswith(

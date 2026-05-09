@@ -1402,11 +1402,18 @@ def test_setup_home_pending_billing_state_keeps_provider_choice_for_allowlisted_
     assert response.status_code == 200
     assert "Setup Home" in response.text
     assert "0 of 4 setup milestones done" in response.text
-    assert "Current milestone" in response.text
-    assert "Choose billing provider" in response.text
+    assert "Your path to first paid proof" in response.text
+    assert "Current milestone" not in response.text
+    assert "Connect billing provider" in response.text
     assert "What do I need to do first?" in response.text
     assert "No provider is connected yet" in response.text
-    assert "No billing provider is preselected for this workspace." in response.text
+    assert "Complete the few setup steps that let booking links turn into trackable paid proof." in response.text
+    assert "Connect the account that will receive payments for your tutoring services." in response.text
+    assert 'class="checklist-item todo active"' in response.text
+    assert 'class="checklist-item todo locked"' in response.text
+    assert 'class="checklist-item next locked"' in response.text
+    assert "Why this matters" in response.text
+    assert "Your billing provider lets the workspace create invoices when tracked bookings arrive." in response.text
     assert "Start Stripe setup" in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
     assert "Start PayPal setup" in response.text
@@ -1416,7 +1423,8 @@ def test_setup_home_pending_billing_state_keeps_provider_choice_for_allowlisted_
     assert "Add billing defaults" in response.text
     assert "Create a tracked link" in response.text
     assert 'href="/app/content"' in response.text
-    assert "Choose Stripe or PayPal to start billing setup." in response.text
+    assert "Choose Stripe or PayPal to start billing setup." not in response.text
+    assert "Milestone path" not in response.text
     assert 'href="/app/reports"' in response.text
     assert 'class="wrap-anywhere"' in response.text
     assert "Blocked billing and unresolved payments will appear on" in response.text
@@ -1442,8 +1450,9 @@ def test_setup_home_pending_billing_state_hides_paypal_choice_for_non_operator_c
             response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Choose billing provider" in response.text
-    assert "Choose Stripe to start billing setup." in response.text
+    assert "Connect billing provider" in response.text
+    assert "Connect Stripe to start billing setup. PayPal setup is not yet available for general creators." in response.text
+    assert "Stripe is the available billing provider for this workspace right now." in response.text
     assert "Start Stripe setup" in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
     assert "Start PayPal setup" not in response.text
@@ -1471,8 +1480,9 @@ def test_setup_home_pending_billing_state_hides_paypal_choice_for_non_operator_l
             response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Choose billing provider" in response.text
-    assert "Choose Stripe to start billing setup." in response.text
+    assert "Connect billing provider" in response.text
+    assert "Connect Stripe to start billing setup. PayPal setup is not yet available for general creators." in response.text
+    assert "Stripe is the available billing provider for this workspace right now." in response.text
     assert "Start Stripe setup" in response.text
     assert 'action="/app/stripe/connect/start"' in response.text
     assert "Start PayPal setup" not in response.text
@@ -1500,7 +1510,8 @@ def test_setup_home_pending_billing_state_keeps_paypal_choice_for_allowlisted_li
             response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
 
     assert response.status_code == 200
-    assert "Choose Stripe or PayPal to start billing setup." in response.text
+    assert "Connect the account that will receive payments for your tutoring services." in response.text
+    assert "Your billing provider lets the workspace create invoices when tracked bookings arrive." in response.text
     assert "Start Stripe setup" in response.text
     assert "Start PayPal setup" in response.text
     assert 'action="/app/paypal/connect/start"' in response.text
@@ -1531,16 +1542,22 @@ def test_setup_home_missing_billing_defaults_state_shows_blocked_next_action():
 
     assert response.status_code == 200
     assert "2 of 4 setup milestones done" in response.text
+    assert "Your path to first paid proof" in response.text
+    assert 'class="checklist-item todo active"' in response.text
+    assert 'class="checklist-item next locked"' in response.text
     assert "Connected, but not billable now" in response.text
     assert (
         "A billing provider is connected, but this workspace still needs amount and currency on at least one saved booking link."
         in response.text
     )
-    assert "Become billable now" in response.text
+    assert "Add billing defaults" in response.text
     assert (
         "The workspace has moved beyond connection. The remaining gap is making one saved link usable for creator billing."
         in response.text
     )
+    assert "Add billing defaults" in response.text
+    assert "Why this matters" in response.text
+    assert "Milestone path" not in response.text
     assert 'href="/app/booking-links"' in response.text
 
 
@@ -1635,7 +1652,8 @@ def test_setup_and_account_pages_reuse_connected_but_not_billable_now_vocabulary
         "The workspace has moved beyond connection. The remaining gap is making one saved link usable for creator billing."
         in setup_response.text
     )
-    assert "Become billable now" in setup_response.text
+    assert "Add billing defaults" in setup_response.text
+    assert "Why this matters" in setup_response.text
     assert "Connected</strong>: Done. A billing provider is connected to this workspace." in account_response.text
     assert "Billable now</strong>: Not yet. Add amount and currency to at least one saved booking link." in account_response.text
     assert "Ready to track</strong>: Not yet. This milestone starts after the workspace is billable now." in account_response.text
@@ -5380,7 +5398,8 @@ def test_setup_home_connected_stripe_state_shows_connected_details():
 
     assert response.status_code == 200
     assert "Connected, but not billable now" in response.text
-    assert "Add your first booking link" in response.text
+    assert "Save a booking link" in response.text
+    assert "Open booking links" in response.text
     assert "acct_ui_connected" in response.text
     assert 'action="/app/stripe/connect/start"' not in response.text
     assert "Billing account" in response.text
@@ -6062,6 +6081,9 @@ def test_setup_and_account_pages_reuse_waiting_for_first_paid_result_vocabulary(
     assert "Ready to track" in setup_response.text
     assert "Am I set up correctly?" in setup_response.text
     assert "Copy or share a tracked link" in setup_response.text
+    assert "Your path to first paid proof" not in setup_response.text
+    assert "Setup path" in setup_response.text
+    assert "4 of 4 setup milestones done" in setup_response.text
     assert "1 tracked link ready to share" in setup_response.text
     assert (
         "Tracking is ready. Reports stay quiet until real activity lands, which is different from setup failing."
@@ -6122,6 +6144,9 @@ def test_setup_home_bookings_without_paid_result_promotes_reports_review():
     assert response.status_code == 200
     assert "Bookings are landing; paid proof is next" in response.text
     assert "Why do bookings show up before revenue?" in response.text
+    assert "Your path to first paid proof" not in response.text
+    assert "Setup path" in response.text
+    assert "4 of 4 setup milestones done" in response.text
     assert "1 tracked booking already recorded" in response.text
     assert "Activity is already visible. This is a waiting-on-paid-truth state, not a broken-tracking state." in response.text
     assert 'href="/app/reports"' in response.text
@@ -6250,6 +6275,9 @@ def test_setup_home_first_paid_result_promotes_reports_review():
     assert response.status_code == 200
     assert "First paid result is already landing" in response.text
     assert "What is working and where should I look next?" in response.text
+    assert "Your path to first paid proof" not in response.text
+    assert "Setup path" in response.text
+    assert "4 of 4 setup milestones done" in response.text
     assert "1 paid result already counted" in response.text
     assert (
         "This is the first-value milestone, not just booking activity. Canonical paid invoices are already counted."
@@ -6932,7 +6960,8 @@ def test_setup_home_connect_cta_redirects_to_stripe_and_callback_returns_to_app(
 
     assert app_response.status_code == 200
     assert "Connected, but not billable now" in app_response.text
-    assert "Add your first booking link" in app_response.text
+    assert "Save a booking link" in app_response.text
+    assert "Open booking links" in app_response.text
     assert "acct_story38_browser" in app_response.text
     assert creator_row["billing_provider"] == "stripe"
     assert creator_row["billing_connect_status"] == "connected"

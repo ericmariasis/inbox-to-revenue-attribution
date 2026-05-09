@@ -2716,13 +2716,59 @@ def _render_app_shell(
         paypal_available_to_creator=paypal_available_to_creator,
     )
     tracked_booking_count = sum(row.booking_count for row in reports_summary.rows)
+    progressed_setup_state = _setup_home_is_progressed_state(
+        readiness=readiness,
+    )
+    if progressed_setup_state:
+        setup_primary_section = _render_setup_home_milestone_section(
+            current_user=current_user,
+            workspace_state=workspace_state,
+            setup_progress=setup_progress,
+            tracked_booking_count=tracked_booking_count,
+            show_provider_choice=show_provider_choice,
+            paypal_available_to_creator=paypal_available_to_creator,
+            experiments_readiness_summary=experiments_readiness_summary,
+        )
+        setup_secondary_section = f"""
+        <section class="grid setup-secondary-grid">
+          {_render_setup_home_checklist_card(
+              setup_progress=setup_progress,
+              compact=True,
+          )}
+          {_render_setup_home_workspace_proof_card(
+              current_user=current_user,
+              setup_progress=setup_progress,
+              readiness=readiness,
+              tracked_booking_count=tracked_booking_count,
+          )}
+        </section>
+        """
+    else:
+        setup_primary_section = _render_setup_home_checklist_hero(
+            current_user=current_user,
+            workspace_state=workspace_state,
+            setup_progress=setup_progress,
+            tracked_booking_count=tracked_booking_count,
+            show_provider_choice=show_provider_choice,
+            paypal_available_to_creator=paypal_available_to_creator,
+        )
+        setup_secondary_section = f"""
+        <section class="grid setup-secondary-grid">
+          {_render_setup_home_workspace_proof_card(
+              current_user=current_user,
+              setup_progress=setup_progress,
+              readiness=readiness,
+              tracked_booking_count=tracked_booking_count,
+          )}
+        </section>
+        """
 
     body = f"""
     <header class="shell-header">
       <div>
         <p class="eyebrow">Creator Home</p>
         <h1>Setup Home</h1>
-        <p class="lede">See the current milestone, the next action that matters, and the proof that this workspace is or is not moving toward first value.</p>
+        <p class="lede">Complete the few setup steps that let booking links turn into trackable paid proof.</p>
       </div>
       <form action="/sign-out" method="post">
         <button type="submit" class="secondary">Sign out</button>
@@ -2730,63 +2776,8 @@ def _render_app_shell(
     </header>
     {_render_shell_nav(current_path="/app")}
     {_render_setup_home_notice(status_value=status_value)}
-    {_render_setup_home_milestone_section(
-        current_user=current_user,
-        workspace_state=workspace_state,
-        setup_progress=setup_progress,
-        tracked_booking_count=tracked_booking_count,
-        show_provider_choice=show_provider_choice,
-        paypal_available_to_creator=paypal_available_to_creator,
-        experiments_readiness_summary=experiments_readiness_summary,
-    )}
-    <section class="grid">
-      <article class="card stack">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">Milestone path</p>
-            <h2>{html.escape(str(setup_progress['completed_count']))} of {html.escape(str(setup_progress['total_steps']))} setup milestones done</h2>
-          </div>
-          <p>{html.escape(str(setup_progress['progress_copy']))}</p>
-        </div>
-        <ul class="checklist">
-          {_render_setup_checklist_items(setup_progress['steps'])}
-        </ul>
-      </article>
-        <article class="card accent stack">
-          <div>
-            <p class="eyebrow">Workspace proof</p>
-            <h2>What is already true in this workspace</h2>
-          </div>
-        <div class="stat-grid">
-          <article class="stat-tile">
-            <p class="eyebrow">Booking links</p>
-            <p class="stat-value">{html.escape(str(setup_progress['booking_links_count']))}</p>
-            <p>Saved destinations in this workspace.</p>
-          </article>
-          <article class="stat-tile">
-            <p class="eyebrow">Billable links</p>
-            <p class="stat-value">{html.escape(str(setup_progress['billing_ready_count']))}</p>
-            <p>Links with amount and currency saved.</p>
-          </article>
-          <article class="stat-tile">
-            <p class="eyebrow">Tracked links</p>
-            <p class="stat-value">{html.escape(str(setup_progress['tracked_content_count']))}</p>
-            <p>Creator-visible links ready to share.</p>
-          </article>
-          <article class="stat-tile">
-            <p class="eyebrow">Tracked bookings</p>
-            <p class="stat-value">{html.escape(str(tracked_booking_count))}</p>
-            <p>Bookings already visible in the funnel.</p>
-          </article>
-          <article class="stat-tile">
-            <p class="eyebrow">Paid results</p>
-            <p class="stat-value">{html.escape(str(readiness.paid_invoice_count))}</p>
-            <p>Canonical paid invoices counted so far.</p>
-          </article>
-        </div>
-        {_render_setup_home_attention_summary(setup_progress['attention_count'])}
-      </article>
-    </section>
+    {setup_primary_section}
+    {setup_secondary_section}
     """
     return _page_layout(title="Creator Home", body=body)
 
@@ -3561,17 +3552,61 @@ def _render_setup_progress_section(*, setup_progress: dict[str, object]) -> str:
     """
 
 
-def _render_setup_checklist_items(steps: list[dict[str, object]]) -> str:
+def _render_setup_checklist_items(
+    steps: list[dict[str, object]],
+    *,
+    active_action: dict[str, object] | None = None,
+    paypal_available_to_creator: bool = False,
+    compact: bool = False,
+) -> str:
     items = []
-    for step in steps:
+    active_index = None
+    if not compact:
+        active_index = next(
+            (index for index, step in enumerate(steps) if not step["is_complete"]),
+            None,
+        )
+
+    for index, step in enumerate(steps):
+        is_active = active_index == index and active_action is not None
+        is_future_locked = (
+            active_index is not None
+            and index > active_index
+            and not bool(step["is_complete"])
+        )
+        item_class = str(step["item_class"])
+        if is_active:
+            item_class = f"{item_class} active"
+        elif is_future_locked:
+            item_class = f"{item_class} locked"
+        if compact:
+            item_class = f"{item_class} compact"
+        badge_class = str(step["badge_class"])
+        label = str(step["label"])
+        if is_future_locked:
+            badge_class = "pending"
+            label = "Waiting"
+        action_html = ""
+        if is_active and active_action is not None:
+            action_html = f"""
+              <div class="active-step-action">
+                {_render_setup_next_action_cta(
+                    active_action,
+                    paypal_available_to_creator=paypal_available_to_creator,
+                )}
+                <p><strong>Why this matters</strong>: {active_action['copy_html']}</p>
+              </div>
+            """
+        copy_html = step.get("locked_copy_html") if is_future_locked else step["copy_html"]
         items.append(
             f"""
-            <li class="checklist-item {html.escape(str(step['item_class']))}">
+            <li class="checklist-item {html.escape(item_class)}">
               <div>
                 <strong>{html.escape(str(step['title']))}</strong>
-                <p>{step['copy_html']}</p>
+                <p>{copy_html}</p>
+                {action_html}
               </div>
-              <span class="status-pill {html.escape(str(step['badge_class']))}">{html.escape(str(step['label']))}</span>
+              <span class="status-pill {html.escape(badge_class)}">{html.escape(label)}</span>
             </li>
             """
         )
@@ -3598,6 +3633,136 @@ def _render_setup_next_action_cta(
         f'<p><a href="{html.escape(next_action["action_href"])}" class="button-link">'
         f"{html.escape(next_action['action_label'])}</a></p>"
     )
+
+
+def _setup_home_is_progressed_state(*, readiness: CreatorWorkspaceReadiness) -> bool:
+    return readiness.waiting_for_first_paid_result or readiness.paid_invoice_count > 0
+
+
+def _render_setup_home_checklist_hero(
+    *,
+    current_user: AuthUser,
+    workspace_state: CreatorWorkspaceState,
+    setup_progress: dict[str, object],
+    tracked_booking_count: int,
+    show_provider_choice: bool,
+    paypal_available_to_creator: bool,
+) -> str:
+    readiness = workspace_state.readiness
+    milestone = _build_setup_home_milestone(
+        readiness=readiness,
+        attention_count=workspace_state.attention_count,
+        tracked_booking_count=tracked_booking_count,
+        show_provider_choice=show_provider_choice,
+        paypal_available_to_creator=paypal_available_to_creator,
+    )
+    next_action = setup_progress["next_action"]
+    return f"""
+    <section class="hero milestone-hero setup-checklist-hero stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Your path to first paid proof</p>
+          <h2>{html.escape(milestone['title'])}</h2>
+        </div>
+        <span class="status-pill {html.escape(milestone['badge_class'])}">
+          {html.escape(str(setup_progress['completed_count']))} of {html.escape(str(setup_progress['total_steps']))} setup milestones done
+        </span>
+      </div>
+      <div class="milestone-copy">
+        <p class="milestone-question"><strong>Main question</strong>: {html.escape(milestone['question'])}</p>
+        <p>{html.escape(milestone['body'])}</p>
+        <p><strong>{html.escape(milestone['proof_title'])}</strong>: {html.escape(milestone['proof_copy'])}</p>
+      </div>
+      <ul class="checklist setup-checklist primary-checklist">
+        {_render_setup_checklist_items(
+            setup_progress['steps'],
+            active_action=next_action,
+            paypal_available_to_creator=paypal_available_to_creator,
+        )}
+      </ul>
+      <p class="footnote">
+        Signed in as <strong class="wrap-anywhere">{html.escape(current_user.email)}</strong>.
+        Future steps stay waiting until the active step is ready.
+      </p>
+    </section>
+    """
+
+
+def _render_setup_home_checklist_card(
+    *,
+    setup_progress: dict[str, object],
+    compact: bool = False,
+) -> str:
+    compact_class = " compact-checklist" if compact else ""
+    return f"""
+    <article class="card stack setup-checklist-card{compact_class}">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Setup path</p>
+          <h2>{html.escape(str(setup_progress['completed_count']))} of {html.escape(str(setup_progress['total_steps']))} setup milestones done</h2>
+        </div>
+        <p>{html.escape(str(setup_progress['progress_copy']))}</p>
+      </div>
+      <ul class="checklist setup-checklist">
+        {_render_setup_checklist_items(setup_progress['steps'], compact=compact)}
+      </ul>
+    </article>
+    """
+
+
+def _render_setup_home_workspace_proof_card(
+    *,
+    current_user: AuthUser,
+    setup_progress: dict[str, object],
+    readiness: CreatorWorkspaceReadiness,
+    tracked_booking_count: int,
+) -> str:
+    billing_detail_html = ""
+    if current_user.creator.resolved_billing_account_id:
+        billing_detail_html = f"""
+        <div class="stat-tile">
+          <p class="eyebrow">Billing connection</p>
+          <p><strong>Provider</strong>: {html.escape(_billing_provider_label(current_user.creator.resolved_billing_provider))}</p>
+          <p><strong>Billing account</strong>: <span class="wrap-anywhere">{html.escape(current_user.creator.resolved_billing_account_id)}</span></p>
+        </div>
+        """
+    return f"""
+    <article class="card accent stack setup-proof-card">
+      <div>
+        <p class="eyebrow">Workspace proof</p>
+        <h2>What is already true in this workspace</h2>
+      </div>
+      <div class="stat-grid">
+        {billing_detail_html}
+        <article class="stat-tile">
+          <p class="eyebrow">Booking links</p>
+          <p class="stat-value">{html.escape(str(setup_progress['booking_links_count']))}</p>
+          <p>Saved destinations in this workspace.</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Billable links</p>
+          <p class="stat-value">{html.escape(str(setup_progress['billing_ready_count']))}</p>
+          <p>Links with amount and currency saved.</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Tracked links</p>
+          <p class="stat-value">{html.escape(str(setup_progress['tracked_content_count']))}</p>
+          <p>Creator-visible links ready to share.</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Tracked bookings</p>
+          <p class="stat-value">{html.escape(str(tracked_booking_count))}</p>
+          <p>Bookings already visible in the funnel.</p>
+        </article>
+        <article class="stat-tile">
+          <p class="eyebrow">Paid results</p>
+          <p class="stat-value">{html.escape(str(readiness.paid_invoice_count))}</p>
+          <p>Canonical paid invoices counted so far.</p>
+        </article>
+      </div>
+      {_render_setup_home_attention_summary(setup_progress['attention_count'])}
+    </article>
+    """
 
 
 def _render_setup_home_milestone_section(
@@ -4085,18 +4250,16 @@ def _build_setup_home_progress(
     else:
         if show_provider_choice:
             billing_step_copy_html = (
-                "Choose Stripe or PayPal to start billing setup. No billing provider is preselected "
-                "for this workspace."
+                "Connect the account that will receive payments for your tutoring services."
                 if paypal_available_to_creator
-                else "Choose Stripe to start billing setup. PayPal setup is not yet available for general creators."
+                else "Connect Stripe to start billing setup. PayPal setup is not yet available for general creators."
             )
             next_action = {
-                "title": "Choose billing provider",
+                "title": "Connect billing provider",
                 "copy_html": (
-                    "Choose Stripe or PayPal to start billing setup. This release still keeps one "
-                    "active billing provider per creator."
+                    "Your billing provider lets the workspace create invoices when tracked bookings arrive."
                     if paypal_available_to_creator
-                    else "Choose Stripe to start billing setup. PayPal setup is not yet available for general creators."
+                    else "Stripe is the available billing provider for this workspace right now."
                 ),
                 "action_label": "",
                 "action_href": "",
@@ -4171,6 +4334,7 @@ def _build_setup_home_progress(
         booking_link_step = _setup_step(
             title="Save a booking link",
             copy_html='Add the booking link you want this workspace to track. <a href="/app/booking-links" class="inline-link">Open booking links</a>.',
+            locked_copy_html="Waiting for billing setup first.",
             label="Needs action",
             badge_class="pending",
             item_class="todo",
@@ -4264,6 +4428,7 @@ def _build_setup_home_progress(
         billing_defaults_step = _setup_step(
             title="Add billing defaults",
             copy_html="Save a booking link first, then return here to add the amount and currency you want invoices to use.",
+            locked_copy_html="Waiting for a saved booking link.",
             label="Waiting",
             badge_class="pending",
             item_class="next",
@@ -4309,6 +4474,7 @@ def _build_setup_home_progress(
         tracked_link_step = _setup_step(
             title="Create a tracked link",
             copy_html="Create tracked content after the workspace is billable now so the shared link can lead to attributable bookings.",
+            locked_copy_html="Waiting until the workspace is billable now.",
             label="Waiting",
             badge_class="pending",
             item_class="next",
@@ -4384,10 +4550,12 @@ def _setup_step(
     badge_class: str,
     item_class: str,
     is_complete: bool,
+    locked_copy_html: str | None = None,
 ) -> dict[str, object]:
     return {
         "title": title,
         "copy_html": copy_html,
+        "locked_copy_html": locked_copy_html or copy_html,
         "label": label,
         "badge_class": badge_class,
         "item_class": item_class,
@@ -8940,8 +9108,6 @@ def _render_billing_provider_choice_actions(
         """
     return f"""
     <section class="stack">
-      <p><strong>Choose billing provider</strong></p>
-      <p>No billing provider is preselected for this workspace. Choose one provider to continue setup.</p>
       <div class="grid">
         <article class="topic-summary stack">
           <div>
@@ -10028,6 +10194,10 @@ def _page_layout(*, title: str, body: str) -> str:
         flex-shrink: 0;
       }}
 
+      .shell-header h1 {{
+        font-size: clamp(2.2rem, 3vw, 3.4rem);
+      }}
+
       .shell-nav {{
         display: flex;
         flex-wrap: wrap;
@@ -10216,6 +10386,56 @@ def _page_layout(*, title: str, body: str) -> str:
 
       .checklist-item.next {{
         background: #faf4eb;
+      }}
+
+      .checklist-item.active {{
+        border-color: rgba(163, 74, 40, 0.32);
+        background:
+          linear-gradient(145deg, rgba(255, 249, 239, 0.98), rgba(255, 238, 226, 0.92));
+        box-shadow: 0 16px 36px rgba(163, 74, 40, 0.12);
+      }}
+
+      .checklist-item.active strong {{
+        font-size: 1.08rem;
+      }}
+
+      .checklist-item.locked {{
+        background: rgba(250, 244, 235, 0.62);
+        color: var(--muted);
+      }}
+
+      .checklist-item.locked p {{
+        font-size: 0.94rem;
+      }}
+
+      .checklist-item.compact {{
+        padding: 14px 16px;
+      }}
+
+      .active-step-action {{
+        display: grid;
+        gap: 12px;
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--line);
+      }}
+
+      .active-step-action .button-link,
+      .active-step-action button {{
+        width: fit-content;
+      }}
+
+      .active-step-action form,
+      .active-step-action p {{
+        margin: 0;
+      }}
+
+      .setup-checklist-hero .checklist {{
+        margin-top: 24px;
+      }}
+
+      .setup-checklist-card .checklist {{
+        margin-top: 12px;
       }}
 
       .list-state {{

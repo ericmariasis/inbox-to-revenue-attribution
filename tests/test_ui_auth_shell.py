@@ -31,6 +31,11 @@ from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
 )
 from app.services.next_content_experiments import UNSUPPORTED_EXPERIMENTS_SUMMARY
+from app.services.narration import (
+    NarrationAudioResult,
+    NarrationProviderError,
+    NarrationUnavailableError,
+)
 from app.services.operator_experiment_drafts import (
     OperatorExperimentDraftProviderOutput,
     OperatorExperimentDraftUnavailableError,
@@ -133,6 +138,21 @@ def _paypal_operator_only_settings(*emails: str, environment: str = "sandbox"):
 
 def _live_paypal_operator_only_settings(*emails: str):
     return _paypal_operator_only_settings(*emails, environment="live")
+
+
+def _narration_enabled_settings(**overrides):
+    settings = get_settings().model_copy(
+        update={
+            "app_env": "test",
+            "narration_feature_enabled": True,
+            "openai_api_key": "sk-test-narration-key",
+            "narration_max_input_chars": 6000,
+            "narration_daily_generation_limit": 10,
+        }
+    )
+    if overrides:
+        settings = settings.model_copy(update=overrides)
+    return settings
 
 
 def _insert_creator_user(
@@ -1065,6 +1085,31 @@ class _StubOperatorExperimentDraftProvider:
         )
 
 
+class _StubNarrationProvider:
+    def __init__(
+        self,
+        *,
+        configured: bool = True,
+        audio: bytes = b"story123-audio",
+        error: Exception | None = None,
+    ):
+        self._configured = configured
+        self._audio = audio
+        self._error = error
+        self.calls: list[str] = []
+
+    def is_configured(self) -> bool:
+        return self._configured
+
+    def generate_audio(self, *, text: str) -> NarrationAudioResult:
+        self.calls.append(text)
+        if self._error is not None:
+            raise self._error
+        if not self._configured:
+            raise NarrationUnavailableError("provider unavailable")
+        return NarrationAudioResult(audio=self._audio)
+
+
 class _FailingEmailProvider:
     def __init__(self, *, error_text: str = "temporary outage"):
         self.error_text = error_text
@@ -1304,6 +1349,218 @@ def test_account_page_redirects_unauthenticated_browser_requests():
 
     assert response.status_code == 303
     assert response.headers["location"] == "/sign-in"
+
+
+def test_narration_page_redirects_unauthenticated_browser_requests():
+    with TestClient(app) as client:
+        response = client.get(
+            "/app/narration",
+            headers=HTML_ACCEPT_HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+
+
+def test_narration_page_renders_enabled_temporary_playback_surface():
+    inserted = _insert_creator_user(
+        email=f"ui_narration_{uuid.uuid4().hex}@example.com",
+        name="Narration Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubNarrationProvider()
+
+    with _override_app_state("settings", _narration_enabled_settings()):
+        with _override_app_state("narration_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.get("/app/narration", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Narration" in response.text
+    assert '<a href="/app/narration" class="nav-link active" aria-current="page">Narration</a>' in response.text
+    assert "Paste study text and generate a temporary AI narration" in response.text
+    assert "This first version does not save the text or generated audio." in response.text
+    assert "Generated voice is AI-generated and should be reviewed before student use." in response.text
+    assert 'id="narration-form"' in response.text
+    assert 'maxlength="6000"' in response.text
+    assert "Daily limit: 10 generations per workspace." in response.text
+
+
+def test_narration_page_renders_disabled_state_when_feature_flag_is_off():
+    inserted = _insert_creator_user(
+        email=f"ui_narration_disabled_{uuid.uuid4().hex}@example.com",
+        name="Narration Disabled Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with _override_app_state(
+        "settings",
+        _narration_enabled_settings(narration_feature_enabled=False),
+    ):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/narration", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Narration is not enabled in this environment yet." in response.text
+    assert "Narration unavailable" in response.text
+    assert "<textarea" in response.text
+    assert "disabled" in response.text
+
+
+def test_narration_generate_returns_temporary_audio_without_persisting_text():
+    inserted = _insert_creator_user(
+        email=f"ui_narration_generate_{uuid.uuid4().hex}@example.com",
+        name="Narration Generate Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubNarrationProvider(audio=b"mp3-bytes")
+
+    with _override_app_state("settings", _narration_enabled_settings()):
+        with _override_app_state("narration_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.post(
+                    "/app/narration/generate",
+                    json={"text": "  Explain factoring quadratics.  "},
+                )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/mpeg")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.content == b"mp3-bytes"
+    assert provider.calls == ["Explain factoring quadratics."]
+
+    with _engine().connect() as conn:
+        content_count = conn.execute(text("SELECT COUNT(*) FROM content")).scalar_one()
+        assert content_count == 0
+
+
+def test_narration_generate_rejects_over_cap_input_before_provider_call():
+    inserted = _insert_creator_user(
+        email=f"ui_narration_over_cap_{uuid.uuid4().hex}@example.com",
+        name="Narration Over Cap Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubNarrationProvider()
+
+    with _override_app_state(
+        "settings",
+        _narration_enabled_settings(narration_max_input_chars=12),
+    ):
+        with _override_app_state("narration_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.post(
+                    "/app/narration/generate",
+                    json={"text": "This input is much too long."},
+                )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "Text must be 12 characters or fewer for this first version."
+    }
+    assert provider.calls == []
+
+
+def test_narration_generate_enforces_daily_creator_limit():
+    inserted = _insert_creator_user(
+        email=f"ui_narration_limit_{uuid.uuid4().hex}@example.com",
+        name="Narration Limit Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    provider = _StubNarrationProvider()
+
+    with _override_app_state(
+        "settings",
+        _narration_enabled_settings(narration_daily_generation_limit=1),
+    ):
+        with _override_app_state("narration_provider", provider):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                first_response = client.post(
+                    "/app/narration/generate",
+                    json={"text": "First narration."},
+                )
+                second_response = client.post(
+                    "/app/narration/generate",
+                    json={"text": "Second narration."},
+                )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 429
+    assert second_response.json() == {
+        "detail": "Daily narration limit reached. Try again after this usage window resets."
+    }
+    assert provider.calls == ["First narration."]
+
+
+def test_narration_generate_releases_limit_attempt_after_provider_failure():
+    inserted = _insert_creator_user(
+        email=f"ui_narration_failure_{uuid.uuid4().hex}@example.com",
+        name="Narration Failure Creator",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    failing_provider = _StubNarrationProvider(
+        error=NarrationProviderError("temporary provider outage")
+    )
+    success_provider = _StubNarrationProvider(audio=b"after-failure")
+
+    with _override_app_state(
+        "settings",
+        _narration_enabled_settings(narration_daily_generation_limit=1),
+    ):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            with _override_app_state("narration_provider", failing_provider):
+                failure_response = client.post(
+                    "/app/narration/generate",
+                    json={"text": "This provider call fails."},
+                )
+            with _override_app_state("narration_provider", success_provider):
+                retry_response = client.post(
+                    "/app/narration/generate",
+                    json={"text": "This retry should still be allowed."},
+                )
+
+    assert failure_response.status_code == 502
+    assert failure_response.json() == {
+        "detail": "Narration could not be generated right now. Try again later."
+    }
+    assert retry_response.status_code == 200
+    assert retry_response.content == b"after-failure"
 
 
 def test_workspace_reset_request_route_redirects_unauthenticated_browser_requests():

@@ -1,12 +1,13 @@
 import html
+import json
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -38,7 +39,7 @@ from app.api.stripe import (
     STRIPE_CONNECT_INTERRUPTED_STATUS,
     build_stripe_connect_start_response,
 )
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.db.session import SessionLocal, get_db
 from app.models.auth_user import AuthUser
 from app.models.billing_provider import (
@@ -160,6 +161,12 @@ from app.services.next_content_experiments import (
     get_creator_next_content_experiments_run,
     get_current_creator_next_content_experiments_readiness_summary,
 )
+from app.services.narration import (
+    NarrationInputError,
+    NarrationProviderError,
+    NarrationUnavailableError,
+    validate_narration_input,
+)
 from app.services.operator_experiment_drafts import (
     CreatorOperatorExperimentDraftRunResult,
     OperatorExperimentDraftNotReadyError,
@@ -172,7 +179,11 @@ from app.services.operator_experiment_drafts import (
 from app.services.paypal_provider import build_default_paypal_provider
 from app.services.rate_limit import (
     DEFAULT_SHARED_RATE_LIMITER,
+    NARRATION_GENERATE_WINDOW,
+    NARRATION_GENERATE_NAMESPACE,
     SUPPORT_REQUEST_SUBMIT_POLICY,
+    RateLimitPolicy,
+    build_narration_generate_rate_limit_bucket_key,
     build_support_request_rate_limit_bucket_key,
 )
 from app.services.reporting import (
@@ -1671,6 +1682,111 @@ def creator_experiments_page(
             showing_specific_operator_draft=operator_draft_run_id is not None,
         )
     )
+
+
+@router.get("/app/narration")
+def creator_narration_page(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    return _html_response(
+        _render_narration_page(
+            current_user=current_user,
+            settings=_request_settings(request),
+            provider_configured=_narration_provider(request).is_configured(),
+        )
+    )
+
+
+@router.post("/app/narration/generate")
+async def creator_narration_generate(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _json_error_response(
+            "Sign in again before generating narration.",
+            status.HTTP_401_UNAUTHORIZED,
+            clear_session=should_clear_cookie,
+        )
+
+    settings = _request_settings(request)
+    if not settings.narration_feature_enabled:
+        return _json_error_response(
+            "Narration is not available in this environment yet.",
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    provider = _narration_provider(request)
+    if not provider.is_configured():
+        return _json_error_response(
+            "Narration is not configured yet.",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return _json_error_response(
+            "Send narration text as JSON.",
+            status.HTTP_400_BAD_REQUEST,
+        )
+    if not isinstance(payload, dict):
+        return _json_error_response(
+            "Send narration text as JSON.",
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        narration_text = validate_narration_input(
+            text=str(payload.get("text", "")),
+            max_chars=settings.narration_max_input_chars,
+        )
+    except NarrationInputError as exc:
+        return _json_error_response(str(exc), status.HTTP_422_UNPROCESSABLE_CONTENT)
+
+    rate_limit_state = _narration_rate_limiter(request).try_acquire(
+        policy=_narration_generate_policy(request),
+        bucket_key=build_narration_generate_rate_limit_bucket_key(
+            creator_id=str(current_user.creator_id),
+        ),
+    )
+    if rate_limit_state.limited:
+        return _json_error_response(
+            (
+                "Daily narration limit reached. Try again after this usage window resets."
+            ),
+            status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    try:
+        narration = provider.generate_audio(text=narration_text)
+    except NarrationUnavailableError:
+        _narration_rate_limiter(request).release(attempt_id=rate_limit_state.attempt_id)
+        return _json_error_response(
+            "Narration is not configured yet.",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    except NarrationProviderError:
+        _narration_rate_limiter(request).release(attempt_id=rate_limit_state.attempt_id)
+        logger.warning(
+            "narration_generation_failed creator_id=%s",
+            current_user.creator_id,
+            exc_info=True,
+        )
+        return _json_error_response(
+            "Narration could not be generated right now. Try again later.",
+            status.HTTP_502_BAD_GATEWAY,
+        )
+
+    response = Response(content=narration.audio, media_type=narration.media_type)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.post("/app/experiments")
@@ -4563,7 +4679,13 @@ def _setup_step(
     }
 
 
-def _render_shell_nav(*, current_path: str) -> str:
+def _render_shell_nav(
+    *,
+    current_path: str,
+    include_narration: bool | None = None,
+) -> str:
+    if include_narration is None:
+        include_narration = get_settings().narration_feature_enabled
     links = [
         ("/app", "Setup Home"),
         ("/app/booking-links", "Booking Links"),
@@ -4575,6 +4697,8 @@ def _render_shell_nav(*, current_path: str) -> str:
         ("/app/attention", "Attention"),
         ("/app/account", "Account"),
     ]
+    if include_narration:
+        links.insert(6, ("/app/narration", "Narration"))
     items = []
     for href, label in links:
         if href == current_path:
@@ -5585,6 +5709,90 @@ def _render_booking_activity_page(
     </section>
     """
     return _page_layout(title="Booking Activity", body=body)
+
+
+def _render_narration_page(
+    *,
+    current_user: AuthUser,
+    settings: Settings,
+    provider_configured: bool,
+) -> str:
+    creator_email = html.escape(current_user.email)
+    max_chars = settings.narration_max_input_chars
+    daily_limit = settings.narration_daily_generation_limit
+    enabled = settings.narration_feature_enabled
+    unavailable_notice = ""
+    form_disabled_attr = ""
+    button_copy = "Generate narration"
+    if not enabled:
+        unavailable_notice = """
+        <section class="notice error">
+          <p class="eyebrow">Narration unavailable</p>
+          <p>Narration is not enabled in this environment yet.</p>
+        </section>
+        """
+        form_disabled_attr = "disabled"
+        button_copy = "Narration unavailable"
+    elif not provider_configured:
+        unavailable_notice = """
+        <section class="notice error">
+          <p class="eyebrow">Provider not configured</p>
+          <p>Narration is enabled, but the audio provider is not configured yet.</p>
+        </section>
+        """
+        form_disabled_attr = "disabled"
+        button_copy = "Narration not configured"
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Creator Home</p>
+        <h1>Narration</h1>
+        <p class="lede">Paste study text and generate a temporary AI narration you can review before sharing the material with a student.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(current_path="/app/narration", include_narration=True)}
+    {unavailable_notice}
+    <section class="grid narration-layout">
+      <article class="card stack narration-generator">
+        <div>
+          <p class="eyebrow">Text to audio</p>
+          <h2>Narrate study material</h2>
+          <p>Signed in as <strong class="wrap-anywhere">{creator_email}</strong>. Paste up to <strong>{max_chars:,}</strong> characters. This first version does not save the text or generated audio.</p>
+        </div>
+        <form id="narration-form" class="stack">
+          <label for="narration_text">Study text</label>
+          <textarea
+            id="narration_text"
+            name="text"
+            rows="12"
+            maxlength="{max_chars}"
+            placeholder="Paste the explanation, walkthrough, or study note you want narrated."
+            {form_disabled_attr}
+          ></textarea>
+          <p class="form-help">Daily limit: {daily_limit} generations per workspace. Generated voice is AI-generated and should be reviewed before student use.</p>
+          <button type="submit" {form_disabled_attr}>{html.escape(button_copy)}</button>
+        </form>
+        <section class="narration-player" aria-live="polite">
+          <p id="narration-status" class="narration-status">No narration generated yet.</p>
+          <audio id="narration-audio" controls hidden></audio>
+        </section>
+      </article>
+      <article class="card accent stack">
+        <div>
+          <p class="eyebrow">MVP boundaries</p>
+          <h2>Temporary playback only</h2>
+        </div>
+        <p>This tool sends the pasted text to the configured AI audio provider and returns an MP3 to this browser session.</p>
+        <p>It does not create a narration library, attach audio to reports, import existing content, or publish student-facing links yet.</p>
+        <p>Use it for short lesson notes, worked examples, and study prompts where hearing the explanation may help a student review.</p>
+      </article>
+    </section>
+    """
+    return _page_layout(title="Narration", body=body)
 
 
 def _render_experiments_page(
@@ -9297,12 +9505,42 @@ def _support_request_submit_policy(request: Request):
     return getattr(request.app.state, "support_request_submit_policy", SUPPORT_REQUEST_SUBMIT_POLICY)
 
 
+def _narration_rate_limiter(request: Request):
+    return getattr(request.app.state, "narration_rate_limiter", DEFAULT_SHARED_RATE_LIMITER)
+
+
+def _narration_generate_policy(request: Request) -> RateLimitPolicy:
+    settings = _request_settings(request)
+    return RateLimitPolicy(
+        namespace=NARRATION_GENERATE_NAMESPACE,
+        window=NARRATION_GENERATE_WINDOW,
+        max_attempts=settings.narration_daily_generation_limit,
+    )
+
+
 def _request_settings(request: Request):
     return getattr(request.app.state, "settings", get_settings())
 
 
 def _operator_experiment_draft_provider(request: Request):
     return getattr(request.app.state, "operator_experiment_draft_provider")
+
+
+def _narration_provider(request: Request):
+    return getattr(request.app.state, "narration_provider")
+
+
+def _json_error_response(
+    detail: str,
+    status_code: int,
+    *,
+    clear_session: bool = False,
+) -> JSONResponse:
+    response = JSONResponse({"detail": detail}, status_code=status_code)
+    response.headers["Cache-Control"] = "no-store"
+    if clear_session:
+        clear_browser_session_cookie(response, settings=get_settings())
+    return response
 
 
 def _paypal_available_to_creator(
@@ -10228,7 +10466,9 @@ def _page_layout(*, title: str, body: str) -> str:
       .inline-link:focus-visible,
       button:focus-visible,
       input:focus-visible,
-      select:focus-visible {{
+      select:focus-visible,
+      textarea:focus-visible,
+      audio:focus-visible {{
         outline: 3px solid rgba(47, 95, 91, 0.34);
         outline-offset: 3px;
       }}
@@ -10484,7 +10724,8 @@ def _page_layout(*, title: str, body: str) -> str:
       }}
 
       input,
-      select {{
+      select,
+      textarea {{
         width: 100%;
         padding: 14px 16px;
         border-radius: 14px;
@@ -10494,8 +10735,15 @@ def _page_layout(*, title: str, body: str) -> str:
         font: inherit;
       }}
 
+      textarea {{
+        resize: vertical;
+        min-height: 220px;
+        line-height: 1.5;
+      }}
+
       input[aria-invalid="true"],
-      select[aria-invalid="true"] {{
+      select[aria-invalid="true"],
+      textarea[aria-invalid="true"] {{
         border-color: rgba(151, 47, 23, 0.42);
         background: #fff3ef;
       }}
@@ -11118,6 +11366,32 @@ def _page_layout(*, title: str, body: str) -> str:
         white-space: nowrap;
       }}
 
+      .narration-layout {{
+        align-items: start;
+      }}
+
+      .narration-generator {{
+        min-width: 0;
+      }}
+
+      .narration-player {{
+        display: grid;
+        gap: 12px;
+        padding: 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(47, 95, 91, 0.18);
+        background: rgba(47, 95, 91, 0.08);
+      }}
+
+      .narration-player audio {{
+        width: 100%;
+      }}
+
+      .narration-status {{
+        color: #224845;
+        font-weight: 700;
+      }}
+
       .data-table {{
         width: 100%;
         border-collapse: collapse;
@@ -11274,6 +11548,65 @@ def _page_layout(*, title: str, body: str) -> str:
             }}, 1500);
           }}
         }} catch {{
+        }}
+      }});
+
+      document.addEventListener("submit", async (event) => {{
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement) || form.id !== "narration-form") {{
+          return;
+        }}
+
+        event.preventDefault();
+        const textarea = document.getElementById("narration_text");
+        const status = document.getElementById("narration-status");
+        const audio = document.getElementById("narration-audio");
+        const button = form.querySelector("button[type='submit']");
+        if (!(textarea instanceof HTMLTextAreaElement) || !status || !(audio instanceof HTMLAudioElement)) {{
+          return;
+        }}
+
+        if (button instanceof HTMLButtonElement) {{
+          button.disabled = true;
+        }}
+        status.textContent = "Generating narration...";
+        audio.hidden = true;
+        audio.removeAttribute("src");
+
+        try {{
+          const response = await fetch("/app/narration/generate", {{
+            method: "POST",
+            headers: {{
+              "Accept": "audio/mpeg, application/json",
+              "Content-Type": "application/json",
+            }},
+            body: JSON.stringify({{ text: textarea.value }}),
+          }});
+
+          if (!response.ok) {{
+            let message = "Narration could not be generated right now.";
+            try {{
+              const payload = await response.json();
+              if (payload && typeof payload.detail === "string") {{
+                message = payload.detail;
+              }}
+            }} catch {{
+            }}
+            status.textContent = message;
+            return;
+          }}
+
+          const audioBlob = await response.blob();
+          const objectUrl = URL.createObjectURL(audioBlob);
+          audio.src = objectUrl;
+          audio.hidden = false;
+          status.textContent = "Narration ready. Review the AI-generated audio before sharing it with a student.";
+        }} catch {{
+          status.textContent = "Narration could not be generated right now.";
+        }} finally {{
+          if (button instanceof HTMLButtonElement) {{
+            button.disabled = false;
+          }}
         }}
       }});
     </script>

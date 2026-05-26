@@ -43,6 +43,10 @@ DEFAULT_OPERATOR_EXPERIMENT_DRAFT_PROMPT_VERSION = (
     "operator_draft_next_content_experiments.prompt.v1"
 )
 DEFAULT_OPENAI_API_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_OPENAI_TTS_MODEL = "gpt-4o-mini-tts"
+DEFAULT_OPENAI_TTS_VOICE = "coral"
+DEFAULT_NARRATION_MAX_INPUT_CHARS = 6000
+DEFAULT_NARRATION_DAILY_GENERATION_LIMIT = 10
 SUPPORTED_MAGIC_LINK_EMAIL_PROVIDERS = frozenset({"stub", "smtp"})
 
 
@@ -259,6 +263,12 @@ class Settings(BaseSettings):
     operator_experiment_draft_model: str = DEFAULT_OPERATOR_EXPERIMENT_DRAFT_MODEL
     operator_experiment_draft_prompt_version: str = DEFAULT_OPERATOR_EXPERIMENT_DRAFT_PROMPT_VERSION
     operator_experiment_draft_timeout_seconds: int = 30
+    narration_feature_enabled: bool = False
+    openai_tts_model: str = DEFAULT_OPENAI_TTS_MODEL
+    openai_tts_voice: str = DEFAULT_OPENAI_TTS_VOICE
+    openai_tts_timeout_seconds: int = 60
+    narration_max_input_chars: int = DEFAULT_NARRATION_MAX_INPUT_CHARS
+    narration_daily_generation_limit: int = DEFAULT_NARRATION_DAILY_GENERATION_LIMIT
     paypal_mock_connect_payments_receivable_false_emails: str = ""
     paypal_mock_connect_primary_email_false_emails: str = ""
 
@@ -391,6 +401,34 @@ class Settings(BaseSettings):
             if not is_local_env and _email_domain_is_example(str(self.magic_link_email_from_email)):
                 errors.append(
                     "magic_link_email_from_email must not use example placeholder domains in non-local environments"
+                )
+
+        if self.narration_max_input_chars < 1:
+            errors.append("narration_max_input_chars must be greater than 0")
+        if self.narration_daily_generation_limit < 1:
+            errors.append("narration_daily_generation_limit must be greater than 0")
+        if self.openai_tts_timeout_seconds < 1:
+            errors.append("openai_tts_timeout_seconds must be greater than 0")
+        if self.narration_feature_enabled:
+            _require_non_placeholder(
+                errors,
+                field_name="openai_tts_model",
+                value=self.openai_tts_model,
+                placeholders=set(),
+            )
+            _require_non_placeholder(
+                errors,
+                field_name="openai_tts_voice",
+                value=self.openai_tts_voice,
+                placeholders=set(),
+            )
+            if not is_local_env:
+                _require_non_placeholder(
+                    errors,
+                    field_name="openai_api_key",
+                    value=self.openai_api_key,
+                    placeholders=set(),
+                    min_length=12,
                 )
 
         if is_local_env:

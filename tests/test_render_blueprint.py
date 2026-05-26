@@ -69,6 +69,7 @@ def test_render_blueprint_covers_required_non_local_config():
     assert env_vars["MAGIC_LINK_EMAIL_SMTP_PORT"]["value"] == "587"
     assert env_vars["MAGIC_LINK_EMAIL_SMTP_STARTTLS"]["value"] == "true"
     assert env_vars["MAGIC_LINK_EMAIL_SMTP_USE_SSL"]["value"] == "false"
+    assert env_vars["NARRATION_FEATURE_ENABLED"]["value"] == "false"
 
     sync_false_keys = {
         "STRIPE_CONNECT_CLIENT_ID",
@@ -82,6 +83,7 @@ def test_render_blueprint_covers_required_non_local_config():
         "PAYPAL_SANDBOX_WEBHOOK_ID",
         "CALENDLY_WEBHOOK_SIGNING_KEY",
         "TRACKED_LINK_BASE_URL",
+        "OPENAI_API_KEY",
         "MAGIC_LINK_BASE_URL",
         "MAGIC_LINK_EMAIL_FROM_EMAIL",
         "MAGIC_LINK_EMAIL_SMTP_HOST",

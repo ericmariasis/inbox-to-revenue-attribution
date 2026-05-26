@@ -8,6 +8,10 @@ from app.core.config import (
     DEFAULT_MAGIC_LINK_BASE_URL,
     DEFAULT_MAGIC_LINK_EMAIL_FROM_EMAIL,
     DEFAULT_MAGIC_LINK_EMAIL_PROVIDER,
+    DEFAULT_NARRATION_DAILY_GENERATION_LIMIT,
+    DEFAULT_NARRATION_MAX_INPUT_CHARS,
+    DEFAULT_OPENAI_TTS_MODEL,
+    DEFAULT_OPENAI_TTS_VOICE,
     DEFAULT_STRIPE_CONNECT_AUTHORIZE_URL,
     DEFAULT_STRIPE_CONNECT_CLIENT_ID,
     DEFAULT_STRIPE_CONNECT_REDIRECT_URI,
@@ -85,6 +89,11 @@ def test_local_defaults_pass_runtime_validation():
     settings = Settings(_env_file=None, app_env="local")
 
     settings.validate_runtime()
+    assert settings.narration_feature_enabled is False
+    assert settings.openai_tts_model == DEFAULT_OPENAI_TTS_MODEL
+    assert settings.openai_tts_voice == DEFAULT_OPENAI_TTS_VOICE
+    assert settings.narration_max_input_chars == DEFAULT_NARRATION_MAX_INPUT_CHARS
+    assert settings.narration_daily_generation_limit == DEFAULT_NARRATION_DAILY_GENERATION_LIMIT
 
 
 def test_non_local_defaults_fail_with_clear_field_names(monkeypatch: pytest.MonkeyPatch):
@@ -138,6 +147,34 @@ def test_non_local_safe_settings_pass_runtime_validation():
     settings = _safe_non_local_settings()
 
     settings.validate_runtime()
+
+
+def test_non_local_narration_requires_openai_key_when_enabled():
+    settings = _safe_non_local_settings(narration_feature_enabled=True, openai_api_key="")
+
+    with pytest.raises(SettingsValidationError, match="openai_api_key"):
+        settings.validate_runtime()
+
+
+def test_non_local_narration_enabled_passes_with_openai_key():
+    settings = _safe_non_local_settings(
+        narration_feature_enabled=True,
+        openai_api_key="sk-story123-narration-live",
+    )
+
+    settings.validate_runtime()
+
+
+def test_invalid_narration_limits_fail_runtime_validation():
+    settings = _safe_non_local_settings(narration_max_input_chars=0)
+
+    with pytest.raises(SettingsValidationError, match="narration_max_input_chars"):
+        settings.validate_runtime()
+
+    settings = _safe_non_local_settings(narration_daily_generation_limit=0)
+
+    with pytest.raises(SettingsValidationError, match="narration_daily_generation_limit"):
+        settings.validate_runtime()
 
 
 def test_app_startup_fails_fast_for_non_local_placeholder_jwt_secret(monkeypatch: pytest.MonkeyPatch):

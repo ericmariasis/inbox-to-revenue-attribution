@@ -14,6 +14,8 @@ REDIRECT_SOFT_LIMIT_WINDOW = timedelta(minutes=5)
 REDIRECT_SOFT_LIMIT_MAX_ATTEMPTS = 10
 SUPPORT_REQUEST_SUBMIT_WINDOW = timedelta(minutes=15)
 SUPPORT_REQUEST_SUBMIT_MAX_ATTEMPTS = 3
+NARRATION_GENERATE_WINDOW = timedelta(days=1)
+NARRATION_GENERATE_NAMESPACE = "narration_generate_creator"
 
 
 @dataclass(frozen=True)
@@ -235,3 +237,7 @@ def build_redirect_rate_limit_bucket_key(*, hashed_ip: str, tid: str) -> str:
 
 def build_support_request_rate_limit_bucket_key(*, creator_id: str, request_type: str) -> str:
     return f"{creator_id}:{request_type}"
+
+
+def build_narration_generate_rate_limit_bucket_key(*, creator_id: str) -> str:
+    return creator_id

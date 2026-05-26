@@ -49,6 +49,10 @@ services:
         sync: false
       - key: TRACKED_LINK_BASE_URL
         sync: false
+      - key: NARRATION_FEATURE_ENABLED
+        value: "false"
+      - key: OPENAI_API_KEY
+        sync: false
       - key: MAGIC_LINK_EMAIL_PROVIDER
         value: smtp
       - key: MAGIC_LINK_BASE_URL

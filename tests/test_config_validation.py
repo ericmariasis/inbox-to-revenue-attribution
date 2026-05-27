@@ -140,6 +140,20 @@ def test_non_local_safe_settings_pass_runtime_validation():
     settings.validate_runtime()
 
 
+def test_growth_loop_agent_feature_flag_defaults_disabled_and_can_enable():
+    settings = Settings(_env_file=None, app_env="local")
+
+    assert settings.growth_loop_agent_feature_enabled is False
+
+    enabled_settings = Settings(
+        _env_file=None,
+        app_env="local",
+        growth_loop_agent_feature_enabled=True,
+    )
+
+    assert enabled_settings.growth_loop_agent_feature_enabled is True
+
+
 def test_app_startup_fails_fast_for_non_local_placeholder_jwt_secret(monkeypatch: pytest.MonkeyPatch):
     _set_non_local_env(monkeypatch, JWT_SECRET=DEFAULT_JWT_SECRET)
 

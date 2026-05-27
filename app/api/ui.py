@@ -131,6 +131,11 @@ from app.services.evidence_ingress_health import (
     ProviderIngressHealthSnapshot,
     get_creator_evidence_ingress_health_snapshot,
 )
+from app.services.growth_loop_agent import (
+    GrowthLoopActionBrief,
+    GrowthLoopWorkspaceEvidence,
+    build_growth_loop_action_brief,
+)
 from app.services.invoice_payment_events import (
     PAYMENT_PROVENANCE_STATE_CONFLICTING,
     PAYMENT_PROVENANCE_STATE_MATCHED,
@@ -555,6 +560,80 @@ def creator_app_shell(
             status_value=status_value,
             paypal_available_to_creator=paypal_available_to_creator,
             experiments_readiness_summary=experiments_readiness_summary,
+            growth_loop_agent_feature_enabled=(
+                _request_settings(request).growth_loop_agent_feature_enabled
+            ),
+        )
+    )
+
+
+@router.get("/app/growth-loop")
+def creator_growth_loop_agent_page(
+    request: Request,
+    current_user: AuthUser | None = Depends(get_optional_browser_auth_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    should_clear_cookie = get_browser_session_token(request) is not None and current_user is None
+    if current_user is None:
+        return _redirect("/sign-in", clear_session=should_clear_cookie)
+
+    if not _request_settings(request).growth_loop_agent_feature_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="growth loop agent disabled",
+        )
+
+    booking_links = list_booking_link_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    content_items = list_content_responses_for_creator(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    summary = get_creator_reports_summary(
+        creator_id=current_user.creator_id,
+        db=db,
+    )
+    billing_provider_guidance = _creator_workspace_billing_provider_guidance(
+        request=request,
+        current_user=current_user,
+    )
+    readiness = build_creator_workspace_readiness(
+        raw_billing_connect_status=current_user.creator.resolved_billing_connect_status,
+        raw_billing_provider=current_user.creator.resolved_billing_provider,
+        booking_links=booking_links,
+        content_items=content_items,
+        paid_invoice_count=summary.paid_invoice_count,
+        billing_provider_ready=billing_provider_guidance.ready,
+        billing_provider_guidance_state=(
+            None
+            if billing_provider_guidance.state == _BILLING_PROVIDER_SETUP_STATE_NOT_APPLICABLE
+            else billing_provider_guidance.state
+        ),
+        billing_provider_actionable_issue_codes=(
+            billing_provider_guidance.actionable_issue_codes
+        ),
+    )
+    tracked_booking_count = sum(row.booking_count for row in summary.rows)
+    brief = build_growth_loop_action_brief(
+        evidence=GrowthLoopWorkspaceEvidence(
+            billing_connected=readiness.billing_connected,
+            billable_now=readiness.billable_now,
+            booking_links_count=readiness.booking_links_count,
+            billing_ready_count=readiness.billing_ready_count,
+            tracked_content_count=readiness.tracked_content_count,
+            booking_count=tracked_booking_count,
+            paid_invoice_count=summary.paid_invoice_count,
+            paid_revenue_cents=summary.paid_revenue_cents,
+            billing_provider=readiness.billing_provider,
+        )
+    )
+
+    return _html_response(
+        _render_growth_loop_agent_page(
+            current_user=current_user,
+            brief=brief,
         )
     )
 
@@ -2704,6 +2783,7 @@ def _render_app_shell(
     status_value: str | None,
     paypal_available_to_creator: bool,
     experiments_readiness_summary: CreatorNextContentExperimentsReadinessSummary,
+    growth_loop_agent_feature_enabled: bool,
 ) -> str:
     readiness = workspace_state.readiness
     show_provider_choice = _creator_needs_initial_billing_provider_choice(
@@ -2774,12 +2854,144 @@ def _render_app_shell(
         <button type="submit" class="secondary">Sign out</button>
       </form>
     </header>
-    {_render_shell_nav(current_path="/app")}
+    {_render_shell_nav(
+        current_path="/app",
+        growth_loop_agent_feature_enabled=growth_loop_agent_feature_enabled,
+    )}
     {_render_setup_home_notice(status_value=status_value)}
     {setup_primary_section}
     {setup_secondary_section}
     """
     return _page_layout(title="Creator Home", body=body)
+
+
+def _render_bullet_list(values: tuple[str, ...]) -> str:
+    if not values:
+        return "<p>No diagnostic context is available for this section.</p>"
+    items = "".join(f"<li>{html.escape(value)}</li>" for value in values)
+    return f'<ul class="reason-list">{items}</ul>'
+
+
+def _render_growth_loop_agent_page(
+    *,
+    current_user: AuthUser,
+    brief: GrowthLoopActionBrief,
+) -> str:
+    app_evidence_items = "".join(
+        f"""
+        <article class="topic-summary stack">
+          <div>
+            <p class="eyebrow">{html.escape(item.label)}</p>
+            <h2>{html.escape(item.value)}</h2>
+          </div>
+          <p>{html.escape(item.detail)}</p>
+        </article>
+        """
+        for item in brief.app_evidence
+    )
+    loomi_segments = _render_bullet_list(brief.loomi_context.segments)
+    loomi_predictions = _render_bullet_list(brief.loomi_context.predictions)
+    loomi_recommendations = _render_bullet_list(brief.loomi_context.recommendations)
+    loomi_analytics = _render_bullet_list(brief.loomi_context.analytics)
+    limitations = _render_bullet_list(brief.limitations + brief.loomi_context.limitations)
+
+    body = f"""
+    <header class="shell-header">
+      <div>
+        <p class="eyebrow">Growth Loop Agent</p>
+        <h1>Growth Loop Agent</h1>
+        <p class="lede">Review one evidence-backed next action using app-owned paid-result evidence and Loomi diagnostic context.</p>
+      </div>
+      <form action="/sign-out" method="post">
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
+    </header>
+    {_render_shell_nav(
+        current_path="/app/growth-loop",
+        growth_loop_agent_feature_enabled=True,
+    )}
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Diagnosis</p>
+          <h2>{html.escape(brief.diagnosis_title)}</h2>
+          <p>{html.escape(brief.diagnosis_summary)}</p>
+        </div>
+        <section class="topic-summary stack">
+          <div class="status-row">
+            <h2>{html.escape(brief.next_action_title)}</h2>
+            <span class="pill-note">Human review</span>
+          </div>
+          <p>{html.escape(brief.next_action_summary)}</p>
+        </section>
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Prepared action</p>
+            <h2>{html.escape(brief.prepared_action_title)}</h2>
+          </div>
+          <p>{html.escape(brief.prepared_action_body)}</p>
+          <p><strong>{html.escape(brief.human_review_note)}</strong></p>
+        </section>
+      </article>
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Confidence</p>
+          <h2>{html.escape(brief.confidence_label)}</h2>
+          <p>{html.escape(brief.confidence_summary)}</p>
+        </div>
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Stage</p>
+            <h2>{html.escape(brief.stage.replace("_", " ").title())}</h2>
+          </div>
+          <p>This stage is rule-backed for Story 124. No live LLM call is required for this slice.</p>
+        </section>
+      </article>
+    </section>
+    <section class="card stack">
+      <div>
+        <p class="eyebrow">Evidence Boundary</p>
+        <h2>App-owned evidence stays separate from Loomi diagnostics</h2>
+        <p>Counts below come from this app's tracked content, bookings, invoices, and payment-backed records. Loomi context is diagnostic and does not become paid truth.</p>
+      </div>
+      <div class="grid">
+        {app_evidence_items}
+      </div>
+    </section>
+    <section class="grid">
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">{html.escape(brief.loomi_context.source_label)}</p>
+          <h2>Loomi diagnostic context</h2>
+          <p>This Story 124 slice uses fixture-backed Loomi context shaped after the authenticated Marketing and Analytics MCP tool families.</p>
+        </div>
+        <section class="topic-summary stack">
+          <h2>Segments</h2>
+          {loomi_segments}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Predictions</h2>
+          {loomi_predictions}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Recommendations</h2>
+          {loomi_recommendations}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Analytics</h2>
+          {loomi_analytics}
+        </section>
+      </article>
+      <article class="card stack">
+        <div>
+          <p class="eyebrow">Limits</p>
+          <h2>What this does not claim</h2>
+        </div>
+        {limitations}
+      </article>
+    </section>
+    """
+    return _page_layout(title="Growth Loop Agent", body=body)
 
 
 def _render_account_page(
@@ -4563,7 +4775,15 @@ def _setup_step(
     }
 
 
-def _render_shell_nav(*, current_path: str) -> str:
+def _render_shell_nav(
+    *,
+    current_path: str,
+    growth_loop_agent_feature_enabled: bool | None = None,
+) -> str:
+    if growth_loop_agent_feature_enabled is None:
+        growth_loop_agent_feature_enabled = (
+            get_settings().growth_loop_agent_feature_enabled
+        )
     links = [
         ("/app", "Setup Home"),
         ("/app/booking-links", "Booking Links"),
@@ -4571,10 +4791,16 @@ def _render_shell_nav(*, current_path: str) -> str:
         ("/app/bookings", "Bookings"),
         ("/app/reports", "Reports"),
         ("/app/health", "Health"),
-        ("/app/experiments", "Experiments"),
-        ("/app/attention", "Attention"),
-        ("/app/account", "Account"),
     ]
+    if growth_loop_agent_feature_enabled:
+        links.append(("/app/growth-loop", "Growth Loop"))
+    links.extend(
+        [
+            ("/app/experiments", "Experiments"),
+            ("/app/attention", "Attention"),
+            ("/app/account", "Account"),
+        ]
+    )
     items = []
     for href, label in links:
         if href == current_path:

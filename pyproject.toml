@@ -19,12 +19,12 @@ dependencies = [
     "passlib",
     "psycopg[binary]",
     "email-validator",
+    "httpx",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "httpx",
     "PyYAML",
 ]
 

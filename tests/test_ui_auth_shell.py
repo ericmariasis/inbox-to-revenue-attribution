@@ -26,6 +26,7 @@ from app.services.email_provider import (
     SupportRequestEmailDeliveryError,
 )
 from app.services.email_stub import get_magic_link_outbox, get_support_request_outbox
+from app.services.growth_loop_agent import LoomiDiagnosticContext
 from app.services.invoice_payment_events import (
     UNATTRIBUTED_REASON_MISSING_TID,
     UNATTRIBUTED_REASON_UNKNOWN_STRIPE_INVOICE_ID,
@@ -135,14 +136,43 @@ def _live_paypal_operator_only_settings(*emails: str):
     return _paypal_operator_only_settings(*emails, environment="live")
 
 
-def _growth_loop_settings(*, enabled: bool):
+def _growth_loop_settings(*, enabled: bool, live_loomi_enabled: bool = False):
     settings = get_settings()
     return settings.model_copy(
         update={
             "app_env": "test",
             "growth_loop_agent_feature_enabled": enabled,
+            "growth_loop_loomi_mcp_enabled": live_loomi_enabled,
+            "growth_loop_loomi_mcp_endpoint": (
+                "https://loomi.example.test/mcp" if live_loomi_enabled else ""
+            ),
+            "growth_loop_loomi_mcp_access_token": (
+                "ui-test-token" if live_loomi_enabled else ""
+            ),
+            "growth_loop_loomi_mcp_project_id": (
+                "project_ui" if live_loomi_enabled else ""
+            ),
         }
     )
+
+
+class _FakeLiveLoomiProvider:
+    def load_context(self) -> LoomiDiagnosticContext:
+        return LoomiDiagnosticContext(
+            source_label="Loomi live MCP diagnostics",
+            source_kind="live_mcp",
+            source_status_label="Loomi live MCP",
+            source_status_kind="live_mcp",
+            source_status_detail="Live Loomi MCP responded through the configured runtime provider.",
+            segments=("Live high-intent booked prospects",),
+            predictions=(),
+            recommendations=("Review a live Loomi recommendation before sending.",),
+            analytics=("Pacific Tutors live overview",),
+            limitations=(
+                "Loomi MCP results are diagnostic context only.",
+                "They do not count revenue, prove causality, or replace app-owned booking and payment records.",
+            ),
+        )
 
 
 def _insert_creator_user(
@@ -1483,11 +1513,46 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "1 paid invoice" in growth_response.text
     assert "$195.00" in growth_response.text
     assert "Loomi fixture diagnostics" in growth_response.text
+    assert "Loomi fixture fallback" in growth_response.text
+    assert "fixture diagnostics are shown" in growth_response.text
     assert "does not become paid truth" in growth_response.text
     assert "Human review" in growth_response.text
     assert "caused revenue" not in growth_response.text.lower()
     assert "causal lift" not in growth_response.text.lower()
     assert "live loomi runtime call" not in growth_response.text.lower()
+
+
+def test_growth_loop_page_renders_live_loomi_status_when_provider_succeeds():
+    inserted = _insert_creator_user(
+        email=f"ui_growth_loop_live_{uuid.uuid4().hex}@example.com",
+        name="Growth Loop Live Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_growth_loop_live",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with _override_app_state("settings", _growth_loop_settings(enabled=True, live_loomi_enabled=True)):
+        with _override_app_state("growth_loop_loomi_provider", _FakeLiveLoomiProvider()):
+            with TestClient(app) as client:
+                client.cookies.set(SESSION_COOKIE_NAME, access_token)
+                response = client.get("/app/growth-loop", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Loomi live MCP diagnostics" in response.text
+    assert "Loomi live MCP" in response.text
+    assert "Live Loomi MCP responded through the configured runtime provider." in response.text
+    assert "Live high-intent booked prospects" in response.text
+    assert "Review a live Loomi recommendation before sending." in response.text
+    assert "Pacific Tutors live overview" in response.text
+    assert "Loomi MCP results are diagnostic context only." in response.text
+    assert "ui-test-token" not in response.text
+    assert "caused revenue" not in response.text.lower()
+    assert "causal lift" not in response.text.lower()
 
 
 def test_browser_magic_link_verify_failure_redirects_without_echoing_token():

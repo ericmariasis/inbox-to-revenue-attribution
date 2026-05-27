@@ -262,6 +262,13 @@ class Settings(BaseSettings):
     paypal_mock_connect_payments_receivable_false_emails: str = ""
     paypal_mock_connect_primary_email_false_emails: str = ""
     growth_loop_agent_feature_enabled: bool = False
+    growth_loop_loomi_mcp_enabled: bool = False
+    growth_loop_loomi_mcp_endpoint: str = ""
+    growth_loop_loomi_mcp_access_token: str = ""
+    growth_loop_loomi_mcp_project_id: str = ""
+    growth_loop_loomi_mcp_workspace_id: str = ""
+    growth_loop_loomi_mcp_organization_id: str = ""
+    growth_loop_loomi_mcp_timeout_seconds: float = 8.0
 
     def is_local_env(self) -> bool:
         return is_local_app_env(self.app_env)
@@ -393,6 +400,18 @@ class Settings(BaseSettings):
                 errors.append(
                     "magic_link_email_from_email must not use example placeholder domains in non-local environments"
                 )
+
+        if self.growth_loop_loomi_mcp_endpoint:
+            _require_absolute_http_url(
+                errors,
+                field_name="growth_loop_loomi_mcp_endpoint",
+                value=self.growth_loop_loomi_mcp_endpoint,
+                allow_http=is_local_env,
+                forbid_local_host=not is_local_env,
+                forbid_example_host=not is_local_env,
+            )
+        if self.growth_loop_loomi_mcp_timeout_seconds <= 0:
+            errors.append("growth_loop_loomi_mcp_timeout_seconds must be greater than 0")
 
         if is_local_env:
             if errors:

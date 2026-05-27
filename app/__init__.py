@@ -1,3 +1,7 @@
+from app.core.windows_platform import disable_hanging_platform_wmi_probe
+
+disable_hanging_platform_wmi_probe()
+
 from app.models.calendly_webhook_event import CalendlyWebhookEventRecord
 from app.models.booking import Booking
 from app.models.blocked_billing_case import BlockedBillingCase

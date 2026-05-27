@@ -136,6 +136,7 @@ from app.services.growth_loop_agent import (
     GrowthLoopWorkspaceEvidence,
     build_growth_loop_action_brief,
 )
+from app.services.loomi_mcp import build_growth_loop_loomi_context
 from app.services.invoice_payment_events import (
     PAYMENT_PROVENANCE_STATE_CONFLICTING,
     PAYMENT_PROVENANCE_STATE_MATCHED,
@@ -577,7 +578,8 @@ def creator_growth_loop_agent_page(
     if current_user is None:
         return _redirect("/sign-in", clear_session=should_clear_cookie)
 
-    if not _request_settings(request).growth_loop_agent_feature_enabled:
+    settings = _request_settings(request)
+    if not settings.growth_loop_agent_feature_enabled:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="growth loop agent disabled",
@@ -616,6 +618,11 @@ def creator_growth_loop_agent_page(
         ),
     )
     tracked_booking_count = sum(row.booking_count for row in summary.rows)
+    loomi_provider = getattr(request.app.state, "growth_loop_loomi_provider", None)
+    loomi_context = build_growth_loop_loomi_context(
+        settings=settings,
+        provider=loomi_provider,
+    )
     brief = build_growth_loop_action_brief(
         evidence=GrowthLoopWorkspaceEvidence(
             billing_connected=readiness.billing_connected,
@@ -627,7 +634,8 @@ def creator_growth_loop_agent_page(
             paid_invoice_count=summary.paid_invoice_count,
             paid_revenue_cents=summary.paid_revenue_cents,
             billing_provider=readiness.billing_provider,
-        )
+        ),
+        loomi_context=loomi_context,
     )
 
     return _html_response(
@@ -2894,6 +2902,22 @@ def _render_growth_loop_agent_page(
     loomi_recommendations = _render_bullet_list(brief.loomi_context.recommendations)
     loomi_analytics = _render_bullet_list(brief.loomi_context.analytics)
     limitations = _render_bullet_list(brief.limitations + brief.loomi_context.limitations)
+    if brief.loomi_context.source_kind == "live_mcp":
+        loomi_demo_copy = (
+            "This request is using live Loomi Marketing and Analytics MCP diagnostics. "
+            "They inform review; they do not become paid truth."
+        )
+        loomi_context_copy = (
+            "Live Loomi MCP results are mapped into this diagnostic context for review only."
+        )
+    else:
+        loomi_demo_copy = (
+            "Local demo diagnostics are fixture-backed and shaped after authenticated Marketing "
+            "and Analytics MCP tool families. They inform review; they do not become paid truth."
+        )
+        loomi_context_copy = (
+            "Fixture-backed Loomi context is shown because live MCP is disabled or unavailable."
+        )
 
     body = f"""
     <header class="shell-header">
@@ -2922,7 +2946,7 @@ def _render_growth_loop_agent_page(
             <p class="eyebrow">Loomi read side</p>
             <h2>Diagnostic context</h2>
           </div>
-          <p>Local demo diagnostics are fixture-backed and shaped after authenticated Marketing and Analytics MCP tool families. They inform review; they do not become paid truth.</p>
+          <p>{html.escape(loomi_demo_copy)}</p>
         </section>
         <section class="topic-summary stack">
           <div>
@@ -2998,9 +3022,13 @@ def _render_growth_loop_agent_page(
     <section class="grid">
       <article class="card stack">
         <div>
-          <p class="eyebrow">{html.escape(brief.loomi_context.source_label)}</p>
+          <div class="status-row">
+            <p class="eyebrow">{html.escape(brief.loomi_context.source_label)}</p>
+            <span class="pill-note">{html.escape(brief.loomi_context.source_status_label)}</span>
+          </div>
           <h2>Loomi diagnostic context</h2>
-          <p>This Story 124 slice uses fixture-backed Loomi context shaped after the authenticated Marketing and Analytics MCP tool families.</p>
+          <p>{html.escape(loomi_context_copy)}</p>
+          <p>{html.escape(brief.loomi_context.source_status_detail)}</p>
         </div>
         <section class="topic-summary stack">
           <h2>Segments</h2>

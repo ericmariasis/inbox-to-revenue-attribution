@@ -144,14 +144,46 @@ def test_growth_loop_agent_feature_flag_defaults_disabled_and_can_enable():
     settings = Settings(_env_file=None, app_env="local")
 
     assert settings.growth_loop_agent_feature_enabled is False
+    assert settings.growth_loop_loomi_mcp_enabled is False
+    assert settings.growth_loop_loomi_mcp_endpoint == ""
+    assert settings.growth_loop_loomi_mcp_access_token == ""
+    assert settings.growth_loop_loomi_mcp_timeout_seconds == 8.0
 
     enabled_settings = Settings(
         _env_file=None,
         app_env="local",
         growth_loop_agent_feature_enabled=True,
+        growth_loop_loomi_mcp_enabled=True,
+        growth_loop_loomi_mcp_endpoint="https://mcp.example.test/mcp",
+        growth_loop_loomi_mcp_access_token="token",
+        growth_loop_loomi_mcp_project_id="project_123",
+        growth_loop_loomi_mcp_workspace_id="workspace_123",
+        growth_loop_loomi_mcp_organization_id="org_123",
     )
 
     assert enabled_settings.growth_loop_agent_feature_enabled is True
+    assert enabled_settings.growth_loop_loomi_mcp_enabled is True
+    assert enabled_settings.growth_loop_loomi_mcp_endpoint == "https://mcp.example.test/mcp"
+    assert enabled_settings.growth_loop_loomi_mcp_access_token == "token"
+    assert enabled_settings.growth_loop_loomi_mcp_project_id == "project_123"
+    assert enabled_settings.growth_loop_loomi_mcp_workspace_id == "workspace_123"
+    assert enabled_settings.growth_loop_loomi_mcp_organization_id == "org_123"
+
+
+def test_growth_loop_loomi_mcp_rejects_invalid_endpoint_and_timeout():
+    settings = Settings(
+        _env_file=None,
+        app_env="local",
+        growth_loop_loomi_mcp_endpoint="not-a-url",
+        growth_loop_loomi_mcp_timeout_seconds=0,
+    )
+
+    with pytest.raises(SettingsValidationError) as error:
+        settings.validate_runtime()
+
+    message = str(error.value)
+    assert "growth_loop_loomi_mcp_endpoint" in message
+    assert "growth_loop_loomi_mcp_timeout_seconds" in message
 
 
 def test_app_startup_fails_fast_for_non_local_placeholder_jwt_secret(monkeypatch: pytest.MonkeyPatch):

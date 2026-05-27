@@ -60,6 +60,7 @@ def test_render_blueprint_covers_required_non_local_config():
     assert env_vars["PAYPAL_CREATOR_ACCESS"]["value"] == "public"
     assert env_vars["PAYPAL_PARTNER_ATTRIBUTION_ID"]["value"] == "CAREERCODE_SP_PPCP"
     assert env_vars["GROWTH_LOOP_AGENT_FEATURE_ENABLED"]["value"] == "false"
+    assert env_vars["GROWTH_LOOP_LOOMI_MCP_ENABLED"]["value"] == "false"
     assert env_vars["DATABASE_URL"]["fromDatabase"] == {
         "name": "inbox-to-revenue-attribution-db",
         "property": "connectionString",
@@ -81,6 +82,11 @@ def test_render_blueprint_covers_required_non_local_config():
         "PAYPAL_SANDBOX_PARTNER_ID",
         "PAYPAL_CONNECT_REDIRECT_URI",
         "PAYPAL_SANDBOX_WEBHOOK_ID",
+        "GROWTH_LOOP_LOOMI_MCP_ENDPOINT",
+        "GROWTH_LOOP_LOOMI_MCP_ACCESS_TOKEN",
+        "GROWTH_LOOP_LOOMI_MCP_PROJECT_ID",
+        "GROWTH_LOOP_LOOMI_MCP_WORKSPACE_ID",
+        "GROWTH_LOOP_LOOMI_MCP_ORGANIZATION_ID",
         "CALENDLY_WEBHOOK_SIGNING_KEY",
         "TRACKED_LINK_BASE_URL",
         "MAGIC_LINK_BASE_URL",

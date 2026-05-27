@@ -7,11 +7,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from app.core.windows_platform import disable_hanging_platform_wmi_probe
+
+disable_hanging_platform_wmi_probe()
+
+from sqlalchemy import create_engine, text
 
 from app.core.config import get_settings
 from app.db.url import normalize_database_url

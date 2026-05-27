@@ -37,6 +37,11 @@ class LoomiDiagnosticContext:
     recommendations: tuple[str, ...]
     analytics: tuple[str, ...]
     limitations: tuple[str, ...]
+    source_status_label: str = "Loomi fixture fallback"
+    source_status_kind: str = "fixture_fallback"
+    source_status_detail: str = (
+        "Live Loomi MCP is not configured for this request, so fixture diagnostics are shown."
+    )
 
 
 @dataclass(frozen=True)
@@ -56,7 +61,10 @@ class GrowthLoopActionBrief:
     human_review_note: str
 
 
-def build_fixture_loomi_diagnostic_context() -> LoomiDiagnosticContext:
+def build_fixture_loomi_diagnostic_context(
+    *,
+    source_status_detail: str | None = None,
+) -> LoomiDiagnosticContext:
     return LoomiDiagnosticContext(
         source_label="Loomi fixture diagnostics",
         source_kind="diagnostic_fixture",
@@ -79,6 +87,10 @@ def build_fixture_loomi_diagnostic_context() -> LoomiDiagnosticContext:
         limitations=(
             "Loomi context is diagnostic fixture data in this slice.",
             "It does not count revenue, prove causality, or replace app-owned booking and payment records.",
+        ),
+        source_status_detail=(
+            source_status_detail
+            or "Live Loomi MCP is not configured for this request, so fixture diagnostics are shown."
         ),
     )
 

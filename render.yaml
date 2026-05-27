@@ -27,6 +27,18 @@ services:
         value: CAREERCODE_SP_PPCP
       - key: GROWTH_LOOP_AGENT_FEATURE_ENABLED
         value: "false"
+      - key: GROWTH_LOOP_LOOMI_MCP_ENABLED
+        value: "false"
+      - key: GROWTH_LOOP_LOOMI_MCP_ENDPOINT
+        sync: false
+      - key: GROWTH_LOOP_LOOMI_MCP_ACCESS_TOKEN
+        sync: false
+      - key: GROWTH_LOOP_LOOMI_MCP_PROJECT_ID
+        sync: false
+      - key: GROWTH_LOOP_LOOMI_MCP_WORKSPACE_ID
+        sync: false
+      - key: GROWTH_LOOP_LOOMI_MCP_ORGANIZATION_ID
+        sync: false
       - key: PAYPAL_SANDBOX_CLIENT_ID
         sync: false
       - key: PAYPAL_SANDBOX_CLIENT_SECRET

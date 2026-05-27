@@ -2910,6 +2910,43 @@ def _render_growth_loop_agent_page(
         current_path="/app/growth-loop",
         growth_loop_agent_feature_enabled=True,
     )}
+    <section class="card stack">
+      <div>
+        <p class="eyebrow">Cross-system demo map</p>
+        <h2>Loomi context, app attribution, and PayPal proof meet here</h2>
+        <p>This demo loop reads Loomi Marketing and Analytics MCP-shaped diagnostics, checks this app's tracked content, booking, invoice, and payment evidence, then prepares one action for human review.</p>
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Loomi read side</p>
+            <h2>Diagnostic context</h2>
+          </div>
+          <p>Local demo diagnostics are fixture-backed and shaped after authenticated Marketing and Analytics MCP tool families. They inform review; they do not become paid truth.</p>
+        </section>
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">App evidence</p>
+            <h2>Attribution truth</h2>
+          </div>
+          <p>Tracked content, creator-scoped bookings, and canonical paid invoices decide what counted in this workspace.</p>
+        </section>
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">PayPal outcome proof</p>
+            <h2>Paid result state</h2>
+          </div>
+          <p>The local seed uses PayPal-shaped order and capture evidence to show the paid-result state without requiring a live PayPal payment.</p>
+        </section>
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Review gate</p>
+            <h2>Prepared action only</h2>
+          </div>
+          <p>The agent prepares a next-step brief for review. It does not send campaigns, mutate external systems, or replace reporting totals.</p>
+        </section>
+      </div>
+    </section>
     <section class="grid">
       <article class="card stack">
         <div>

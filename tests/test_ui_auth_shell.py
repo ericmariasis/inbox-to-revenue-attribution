@@ -1469,6 +1469,13 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert growth_response.status_code == 200
     assert '<a href="/app/growth-loop" class="nav-link active" aria-current="page">Growth Loop</a>' in growth_response.text
     assert "Growth Loop Agent" in growth_response.text
+    assert "Cross-system demo map" in growth_response.text
+    assert "Loomi context, app attribution, and PayPal proof meet here" in growth_response.text
+    assert "Marketing and Analytics MCP-shaped diagnostics" in growth_response.text
+    assert "fixture-backed and shaped after authenticated Marketing and Analytics MCP tool families" in growth_response.text
+    assert "Tracked content, creator-scoped bookings, and canonical paid invoices decide what counted" in growth_response.text
+    assert "PayPal-shaped order and capture evidence" in growth_response.text
+    assert "does not send campaigns, mutate external systems, or replace reporting totals" in growth_response.text
     assert "Paid proof exists; choose the next reviewed action." in growth_response.text
     assert "App-owned evidence stays separate from Loomi diagnostics" in growth_response.text
     assert "1 content item" in growth_response.text
@@ -1480,6 +1487,7 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "Human review" in growth_response.text
     assert "caused revenue" not in growth_response.text.lower()
     assert "causal lift" not in growth_response.text.lower()
+    assert "live loomi runtime call" not in growth_response.text.lower()
 
 
 def test_browser_magic_link_verify_failure_redirects_without_echoing_token():

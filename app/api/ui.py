@@ -2880,6 +2880,13 @@ def _render_bullet_list(values: tuple[str, ...]) -> str:
     return f'<ul class="reason-list">{items}</ul>'
 
 
+def _render_growth_loop_chip_list(values: tuple[str, ...]) -> str:
+    if not values:
+        return "<p>No schema properties are available.</p>"
+    chips = "".join(f'<span class="topic-chip">{html.escape(value)}</span>' for value in values)
+    return f'<div class="topic-chip-list">{chips}</div>'
+
+
 def _render_growth_loop_agent_page(
     *,
     current_user: AuthUser,
@@ -2902,6 +2909,12 @@ def _render_growth_loop_agent_page(
     loomi_recommendations = _render_bullet_list(brief.loomi_context.recommendations)
     loomi_analytics = _render_bullet_list(brief.loomi_context.analytics)
     limitations = _render_bullet_list(brief.limitations + brief.loomi_context.limitations)
+    opportunity = brief.schema_opportunity
+    opportunity_segment = _render_bullet_list(opportunity.required_segment)
+    opportunity_action = _render_bullet_list(opportunity.recommended_action)
+    opportunity_proof = _render_bullet_list(opportunity.proof_evidence)
+    opportunity_limitations = _render_bullet_list(opportunity.limitations)
+    opportunity_chips = _render_growth_loop_chip_list(opportunity.event_properties)
     if brief.loomi_context.source_kind == "live_mcp":
         loomi_demo_copy = (
             "This request is using live Loomi Marketing and Analytics MCP diagnostics. "
@@ -2970,6 +2983,55 @@ def _render_growth_loop_agent_page(
           <p>The agent prepares a next-step brief for review. It does not send campaigns, mutate external systems, or replace reporting totals.</p>
         </section>
       </div>
+    </section>
+    <section class="card stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">{html.escape(opportunity.source_label)}</p>
+          <h2>{html.escape(opportunity.opportunity_title)}</h2>
+          <p>{html.escape(opportunity.source_summary)}</p>
+          <p><strong>Project</strong>: {html.escape(opportunity.project_name)} <code>{html.escape(opportunity.project_id)}</code></p>
+        </div>
+        <span class="pill-note">{html.escape(opportunity.source_status_label)}</span>
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">Opportunity</p>
+            <h2>Recover high-intent carts</h2>
+          </div>
+          <p>{html.escape(opportunity.opportunity_summary)}</p>
+        </section>
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">App bridge</p>
+            <h2>Booking-step recovery analogue</h2>
+          </div>
+          <p>{html.escape(opportunity.app_bridge_summary)}</p>
+        </section>
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <h2>Required segment definition</h2>
+          {opportunity_segment}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Recommended action</h2>
+          {opportunity_action}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Evidence that would prove it worked</h2>
+          {opportunity_proof}
+        </section>
+      </div>
+      <section class="topic-summary stack">
+        <h2>Event and property proof</h2>
+        {opportunity_chips}
+      </section>
+      <section class="topic-summary stack">
+        <h2>Boundary</h2>
+        {opportunity_limitations}
+      </section>
     </section>
     <section class="grid">
       <article class="card stack">

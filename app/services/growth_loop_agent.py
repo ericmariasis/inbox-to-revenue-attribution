@@ -29,6 +29,23 @@ class GrowthLoopEvidenceItem:
 
 
 @dataclass(frozen=True)
+class GrowthLoopSchemaOpportunity:
+    source_label: str
+    source_status_label: str
+    source_summary: str
+    project_name: str
+    project_id: str
+    opportunity_title: str
+    opportunity_summary: str
+    app_bridge_summary: str
+    required_segment: tuple[str, ...]
+    recommended_action: tuple[str, ...]
+    proof_evidence: tuple[str, ...]
+    event_properties: tuple[str, ...]
+    limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class LoomiDiagnosticContext:
     source_label: str
     source_kind: str
@@ -55,6 +72,7 @@ class GrowthLoopActionBrief:
     prepared_action_body: str
     app_evidence: tuple[GrowthLoopEvidenceItem, ...]
     loomi_context: LoomiDiagnosticContext
+    schema_opportunity: GrowthLoopSchemaOpportunity
     confidence_label: str
     confidence_summary: str
     limitations: tuple[str, ...]
@@ -114,6 +132,7 @@ def build_growth_loop_action_brief(
         prepared_action_body=stage_copy["prepared_action_body"],
         app_evidence=_app_evidence_items(evidence),
         loomi_context=context,
+        schema_opportunity=build_sleepy_goose_schema_opportunity(),
         confidence_label=stage_copy["confidence_label"],
         confidence_summary=stage_copy["confidence_summary"],
         limitations=(
@@ -124,6 +143,73 @@ def build_growth_loop_action_brief(
         ),
         human_review_note=(
             "Review this action before sending, publishing, or changing any external system."
+        ),
+    )
+
+
+def build_sleepy_goose_schema_opportunity() -> GrowthLoopSchemaOpportunity:
+    return GrowthLoopSchemaOpportunity(
+        source_label="Live Loomi schema proof",
+        source_status_label="Verified via Cursor MCP",
+        source_summary=(
+            "Cursor authenticated to the live Loomi MCP server and inspected the sleepy-goose "
+            "project. The sandbox has no saved segmentations, recommendations, reports, funnels, "
+            "scenarios, or campaigns yet, but its event schema is rich enough to plan a reviewed "
+            "growth loop."
+        ),
+        project_name="sleepy-goose",
+        project_id="b15c09b0-5469-11f1-b333-862b79b06b65",
+        opportunity_title="Cart-abandon recover & convert",
+        opportunity_summary=(
+            "Find customers with meaningful cart activity who have not completed a later purchase, "
+            "then prepare a reviewed recovery action tied to the last known cart context."
+        ),
+        app_bridge_summary=(
+            "For this tutoring app, the same pattern maps to booking-step recovery: Loomi schema "
+            "intelligence suggests the recovery loop, while app-owned bookings, invoices, and "
+            "payments decide whether the loop later produced paid truth."
+        ),
+        required_segment=(
+            "Include customers with cart_update activity where total_quantity is greater than zero.",
+            "Prioritize high-intent carts using total_price, checkout product IDs, or product/category views.",
+            "Exclude customers with a later completed purchase inside the chosen recovery window.",
+        ),
+        recommended_action=(
+            "Prepare a message-based recovery flow for human review before sending.",
+            "Reference the last cart items or categories so the recovery message stays relevant.",
+            "Track downstream engagement with campaign events and retargeting audience actions.",
+        ),
+        proof_evidence=(
+            "Completed purchase events after the recovery send increase inside the target segment.",
+            "Revenue lift is measured with purchase total_price and purchase_item quantity/product IDs.",
+            "Campaign opens, clicks, URLs, and retargeting actions provide diagnostic engagement context.",
+        ),
+        event_properties=(
+            "cart_update.action",
+            "cart_update.total_quantity",
+            "cart_update.total_price",
+            "checkout.total_price",
+            "checkout.product_ids",
+            "view_item.product_id",
+            "view_item.category_level_1",
+            "view_item.category_level_2",
+            "view_item.category_level_3",
+            "purchase.purchase_status",
+            "purchase.total_price",
+            "purchase_item.quantity",
+            "purchase_item.product_id",
+            "campaign.campaign_name",
+            "campaign.action_type",
+            "campaign.status",
+            "campaign.url",
+            "retargeting.audience",
+            "retargeting.platform",
+            "retargeting.action",
+        ),
+        limitations=(
+            "This is a deterministic blueprint from verified live Loomi schema proof, not a live page-load MCP call.",
+            "It does not send campaigns, mutate Bloomreach, or create a saved Loomi segmentation.",
+            "It does not count revenue, prove causality, or replace app-owned booking, invoice, and payment records.",
         ),
     )
 

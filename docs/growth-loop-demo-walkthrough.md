@@ -10,7 +10,8 @@ Seed one local paid PayPal-shaped demo workspace and use it to show the Growth L
 - Local test database is available through `TEST_DATABASE_URL`.
 - Use a local or test-safe app environment only.
 - Story 124 Growth Loop Agent code is present.
-- Loomi context remains fixture-backed for this walkthrough; no live MCP token is required.
+- The browser walkthrough remains deterministic; no live MCP token is required.
+- Optional live proof can be captured in Cursor MCP before the walkthrough. The app section should describe that proof as verified schema evidence, not as a live page-load MCP call.
 
 ## Seed The Demo Workspace
 
@@ -55,6 +56,14 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 - The diagnosis is `Paid proof exists; choose the next reviewed action.`
 - The next action is `Prepare one follow-up brief from the proven path`.
 - The stage is `Paid Result Exists`.
+- The page includes `Live Loomi schema proof` with `Verified via Cursor MCP`.
+- The schema opportunity is `Cart-abandon recover & convert`.
+- The opportunity is bridged back to this app as a `Booking-step recovery analogue`.
+- The event/property proof includes:
+  - `cart_update.total_quantity`
+  - `purchase.purchase_status`
+  - `campaign.status`
+  - `retargeting.action`
 - App-owned evidence shows:
   - `1 content item`
   - `1 booking`
@@ -62,14 +71,16 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
   - `$195.00`
 - Loomi context is labeled `Loomi fixture diagnostics`.
 - Limits state that revenue remains canonical invoice/payment truth from this app, Loomi diagnostics are not a second paid-result ledger, and no external mutation is executed.
+- The schema opportunity boundary states that it is not a live page-load MCP call, does not send campaigns, and does not count revenue or prove causality.
 
 ## Demo Talk Track
 
 1. This is a real signed-in creator workspace in the existing app, not a standalone prototype.
 2. The app owns the commercial truth: tracked content, attributed booking, local invoice, and PayPal-shaped capture event.
-3. Loomi context is used as diagnostic intelligence only in this branch.
-4. The agent does not claim causal lift or invent paid truth.
-5. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
+3. Cursor MCP provides the live Loomi proof: the authenticated `sleepy-goose` project has a rich commerce event schema.
+4. The in-app schema blueprint is deterministic and review-only; it does not claim the page made a live Loomi call.
+5. The agent does not claim causal lift or invent paid truth.
+6. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
 
 ## Optional Report Cross-Check
 

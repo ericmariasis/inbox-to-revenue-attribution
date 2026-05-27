@@ -1,5 +1,9 @@
 import os
 
+from app.core.windows_platform import disable_hanging_platform_wmi_probe
+
+disable_hanging_platform_wmi_probe()
+
 import pytest
 from alembic import command
 from alembic.config import Config

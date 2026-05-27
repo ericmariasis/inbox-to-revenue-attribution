@@ -1506,6 +1506,20 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "Tracked content, creator-scoped bookings, and canonical paid invoices decide what counted" in growth_response.text
     assert "PayPal-shaped order and capture evidence" in growth_response.text
     assert "does not send campaigns, mutate external systems, or replace reporting totals" in growth_response.text
+    assert "Live Loomi schema proof" in growth_response.text
+    assert "Verified via Cursor MCP" in growth_response.text
+    assert "Cart-abandon recover &amp; convert" in growth_response.text
+    assert "sleepy-goose" in growth_response.text
+    assert "b15c09b0-5469-11f1-b333-862b79b06b65" in growth_response.text
+    assert "Booking-step recovery analogue" in growth_response.text
+    assert "Required segment definition" in growth_response.text
+    assert "Evidence that would prove it worked" in growth_response.text
+    assert "cart_update.total_quantity" in growth_response.text
+    assert "purchase.purchase_status" in growth_response.text
+    assert "campaign.status" in growth_response.text
+    assert "retargeting.action" in growth_response.text
+    assert "not a live page-load MCP call" in growth_response.text
+    assert "does not count revenue, prove causality, or replace app-owned booking" in growth_response.text
     assert "Paid proof exists; choose the next reviewed action." in growth_response.text
     assert "App-owned evidence stays separate from Loomi diagnostics" in growth_response.text
     assert "1 content item" in growth_response.text

@@ -5,6 +5,7 @@ from app.services.growth_loop_agent import (
     GROWTH_LOOP_STAGE_SETUP_INCOMPLETE,
     GROWTH_LOOP_STAGE_TRACKED_NO_BOOKINGS,
     GrowthLoopWorkspaceEvidence,
+    build_sleepy_goose_schema_opportunity,
     build_fixture_loomi_diagnostic_context,
     build_growth_loop_action_brief,
 )
@@ -102,6 +103,8 @@ def test_growth_loop_stage_paid_result_exists_keeps_paid_truth_app_owned():
     assert any(item.label == "Canonical payment truth" and item.value == "$195.00" for item in brief.app_evidence)
     assert "stored invoices and payment records" in brief.diagnosis_summary
     assert "Loomi diagnostics are context for review, not a second paid-result ledger." in brief.limitations
+    assert brief.schema_opportunity.opportunity_title == "Cart-abandon recover & convert"
+    assert brief.schema_opportunity.source_status_label == "Verified via Cursor MCP"
 
 
 def test_growth_loop_loomi_fixture_is_diagnostic_and_no_autonomous_action():
@@ -132,3 +135,36 @@ def test_growth_loop_loomi_fixture_is_diagnostic_and_no_autonomous_action():
     assert "causal lift" not in combined_text
     assert "caused revenue" not in combined_text
     assert "send automatically" not in combined_text
+
+
+def test_sleepy_goose_schema_opportunity_is_review_only_and_event_grounded():
+    opportunity = build_sleepy_goose_schema_opportunity()
+    combined_text = " ".join(
+        (
+            opportunity.source_summary,
+            opportunity.opportunity_summary,
+            opportunity.app_bridge_summary,
+            " ".join(opportunity.required_segment),
+            " ".join(opportunity.recommended_action),
+            " ".join(opportunity.proof_evidence),
+            " ".join(opportunity.event_properties),
+            " ".join(opportunity.limitations),
+        )
+    ).lower()
+
+    assert opportunity.source_label == "Live Loomi schema proof"
+    assert opportunity.source_status_label == "Verified via Cursor MCP"
+    assert opportunity.project_name == "sleepy-goose"
+    assert opportunity.project_id == "b15c09b0-5469-11f1-b333-862b79b06b65"
+    assert opportunity.opportunity_title == "Cart-abandon recover & convert"
+    assert "booking-step recovery" in opportunity.app_bridge_summary
+    assert "cart_update.total_quantity" in opportunity.event_properties
+    assert "purchase.purchase_status" in opportunity.event_properties
+    assert "campaign.status" in opportunity.event_properties
+    assert "retargeting.action" in opportunity.event_properties
+    assert "not a live page-load mcp call" in combined_text
+    assert "does not send campaigns" in combined_text
+    assert "does not count revenue" in combined_text
+    assert "prove causality" in combined_text
+    assert "caused revenue" not in combined_text
+    assert "second paid-result ledger" not in combined_text

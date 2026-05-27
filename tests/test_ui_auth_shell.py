@@ -135,6 +135,16 @@ def _live_paypal_operator_only_settings(*emails: str):
     return _paypal_operator_only_settings(*emails, environment="live")
 
 
+def _growth_loop_settings(*, enabled: bool):
+    settings = get_settings()
+    return settings.model_copy(
+        update={
+            "app_env": "test",
+            "growth_loop_agent_feature_enabled": enabled,
+        }
+    )
+
+
 def _insert_creator_user(
     *,
     email: str,
@@ -1258,6 +1268,19 @@ def test_experiments_page_redirects_unauthenticated_browser_requests():
     assert response.headers["location"] == "/sign-in"
 
 
+def test_growth_loop_page_redirects_unauthenticated_browser_requests_when_enabled():
+    with _override_app_state("settings", _growth_loop_settings(enabled=True)):
+        with TestClient(app) as client:
+            response = client.get(
+                "/app/growth-loop",
+                headers=HTML_ACCEPT_HEADERS,
+                follow_redirects=False,
+            )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/sign-in"
+
+
 def test_experiment_card_page_redirects_unauthenticated_browser_requests():
     with TestClient(app) as client:
         response = client.get(
@@ -1354,6 +1377,109 @@ def test_browser_magic_link_verify_sets_session_cookie_and_lands_in_app_shell():
     assert email in shell_response.text
     assert raw_token not in shell_response.text
     assert _auth_state_for_email(email) == {"auth_users": 1, "creators": 1, "pending": 1}
+
+
+def test_growth_loop_page_is_disabled_by_default_for_signed_in_creator():
+    inserted = _insert_creator_user(
+        email=f"ui_growth_loop_disabled_{uuid.uuid4().hex}@example.com",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_growth_loop_disabled",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with _override_app_state("settings", _growth_loop_settings(enabled=False)):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            home_response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+            growth_response = client.get("/app/growth-loop", headers=HTML_ACCEPT_HEADERS)
+
+    assert home_response.status_code == 200
+    assert 'href="/app/growth-loop"' not in home_response.text
+    assert "Growth Loop" not in home_response.text
+    assert growth_response.status_code == 404
+
+
+def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
+    inserted = _insert_creator_user(
+        email=f"ui_growth_loop_paid_{uuid.uuid4().hex}@example.com",
+        name="Growth Loop Paid Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_growth_loop_paid",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Growth Loop Call",
+        calendly_url="https://calendly.com/example/growth-loop",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    tid = f"uigrowthloop{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/growth-loop",
+        tid=tid,
+    )
+    booking_id = _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=tid,
+        calendly_booking_uuid=f"BOOK_GROWTH_LOOP_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime.now(timezone.utc),
+    )
+    invoice_id = _insert_invoice(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=tid,
+        stripe_account_id="acct_ui_growth_loop_paid",
+        stripe_invoice_id=f"in_growth_loop_{uuid.uuid4().hex[:8]}",
+        amount_cents=19500,
+        paid_at=datetime.now(timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=tid,
+        invoice_id=invoice_id,
+        stripe_account_id="acct_ui_growth_loop_paid",
+        stripe_event_id=f"evt_growth_loop_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=f"in_growth_loop_{uuid.uuid4().hex[:8]}",
+        paid_at=datetime.now(timezone.utc),
+    )
+
+    with _override_app_state("settings", _growth_loop_settings(enabled=True)):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            home_response = client.get("/app", headers=HTML_ACCEPT_HEADERS)
+            growth_response = client.get("/app/growth-loop", headers=HTML_ACCEPT_HEADERS)
+
+    assert home_response.status_code == 200
+    assert 'href="/app/growth-loop" class="nav-link">Growth Loop</a>' in home_response.text
+    assert growth_response.status_code == 200
+    assert '<a href="/app/growth-loop" class="nav-link active" aria-current="page">Growth Loop</a>' in growth_response.text
+    assert "Growth Loop Agent" in growth_response.text
+    assert "Paid proof exists; choose the next reviewed action." in growth_response.text
+    assert "App-owned evidence stays separate from Loomi diagnostics" in growth_response.text
+    assert "1 content item" in growth_response.text
+    assert "1 booking" in growth_response.text
+    assert "1 paid invoice" in growth_response.text
+    assert "$195.00" in growth_response.text
+    assert "Loomi fixture diagnostics" in growth_response.text
+    assert "does not become paid truth" in growth_response.text
+    assert "Human review" in growth_response.text
+    assert "caused revenue" not in growth_response.text.lower()
+    assert "causal lift" not in growth_response.text.lower()
 
 
 def test_browser_magic_link_verify_failure_redirects_without_echoing_token():

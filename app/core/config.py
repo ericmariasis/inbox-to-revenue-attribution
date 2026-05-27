@@ -261,6 +261,7 @@ class Settings(BaseSettings):
     operator_experiment_draft_timeout_seconds: int = 30
     paypal_mock_connect_payments_receivable_false_emails: str = ""
     paypal_mock_connect_primary_email_false_emails: str = ""
+    growth_loop_agent_feature_enabled: bool = False
 
     def is_local_env(self) -> bool:
         return is_local_app_env(self.app_env)

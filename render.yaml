@@ -25,6 +25,8 @@ services:
         value: public
       - key: PAYPAL_PARTNER_ATTRIBUTION_ID
         value: CAREERCODE_SP_PPCP
+      - key: GROWTH_LOOP_AGENT_FEATURE_ENABLED
+        value: "false"
       - key: PAYPAL_SANDBOX_CLIENT_ID
         sync: false
       - key: PAYPAL_SANDBOX_CLIENT_SECRET

@@ -1,0 +1,134 @@
+from app.services.growth_loop_agent import (
+    GROWTH_LOOP_STAGE_BILLABLE_NO_TRACKED_CONTENT,
+    GROWTH_LOOP_STAGE_BOOKINGS_NO_PAID_RESULTS,
+    GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS,
+    GROWTH_LOOP_STAGE_SETUP_INCOMPLETE,
+    GROWTH_LOOP_STAGE_TRACKED_NO_BOOKINGS,
+    GrowthLoopWorkspaceEvidence,
+    build_fixture_loomi_diagnostic_context,
+    build_growth_loop_action_brief,
+)
+
+
+def _evidence(**overrides: object) -> GrowthLoopWorkspaceEvidence:
+    values = {
+        "billing_connected": False,
+        "billable_now": False,
+        "booking_links_count": 0,
+        "billing_ready_count": 0,
+        "tracked_content_count": 0,
+        "booking_count": 0,
+        "paid_invoice_count": 0,
+        "paid_revenue_cents": 0,
+        "billing_provider": None,
+    }
+    values.update(overrides)
+    return GrowthLoopWorkspaceEvidence(**values)
+
+
+def test_growth_loop_stage_setup_incomplete():
+    brief = build_growth_loop_action_brief(evidence=_evidence())
+
+    assert brief.stage == GROWTH_LOOP_STAGE_SETUP_INCOMPLETE
+    assert "Finish billable tracking setup" == brief.next_action_title
+    assert "paid-result evidence is not available" in brief.confidence_summary
+
+
+def test_growth_loop_stage_billable_but_no_tracked_content():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+        )
+    )
+
+    assert brief.stage == GROWTH_LOOP_STAGE_BILLABLE_NO_TRACKED_CONTENT
+    assert brief.next_action_title == "Add one tracked content item"
+    assert "no app-owned content path" in brief.confidence_summary
+
+
+def test_growth_loop_stage_tracked_but_no_bookings():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+        )
+    )
+
+    assert brief.stage == GROWTH_LOOP_STAGE_TRACKED_NO_BOOKINGS
+    assert brief.next_action_title == "Promote one tracked booking path"
+    assert "no booking evidence" in brief.confidence_summary
+
+
+def test_growth_loop_stage_bookings_but_no_paid_results():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=2,
+        )
+    )
+
+    assert brief.stage == GROWTH_LOOP_STAGE_BOOKINGS_NO_PAID_RESULTS
+    assert brief.next_action_title == "Review booking-to-paid follow-up"
+    assert "revenue is not counted yet" in brief.confidence_summary
+
+
+def test_growth_loop_stage_paid_result_exists_keeps_paid_truth_app_owned():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=2,
+            paid_invoice_count=1,
+            paid_revenue_cents=19500,
+        )
+    )
+
+    assert brief.stage == GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS
+    assert brief.next_action_title == "Prepare one follow-up brief from the proven path"
+    assert any(item.label == "Canonical invoices" and item.value == "1 paid invoice" for item in brief.app_evidence)
+    assert any(item.label == "Canonical payment truth" and item.value == "$195.00" for item in brief.app_evidence)
+    assert "stored invoices and payment records" in brief.diagnosis_summary
+    assert "Loomi diagnostics are context for review, not a second paid-result ledger." in brief.limitations
+
+
+def test_growth_loop_loomi_fixture_is_diagnostic_and_no_autonomous_action():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=1,
+        ),
+        loomi_context=build_fixture_loomi_diagnostic_context(),
+    )
+    combined_text = " ".join(
+        [
+            brief.diagnosis_summary,
+            brief.next_action_summary,
+            brief.prepared_action_body,
+            " ".join(brief.loomi_context.recommendations),
+            " ".join(brief.limitations),
+        ]
+    ).lower()
+
+    assert brief.loomi_context.source_kind == "diagnostic_fixture"
+    assert "not a second paid-result ledger" in combined_text
+    assert "does not execute external mutations" in combined_text
+    assert "causal lift" not in combined_text
+    assert "caused revenue" not in combined_text
+    assert "send automatically" not in combined_text

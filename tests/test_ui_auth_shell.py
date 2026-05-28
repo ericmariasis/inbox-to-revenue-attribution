@@ -1455,6 +1455,9 @@ def test_growth_loop_page_hides_reviewable_recovery_brief_without_paid_result():
     assert response.status_code == 200
     assert "Growth Loop Agent" in response.text
     assert "Live Loomi schema proof" in response.text
+    assert "Agent console" not in response.text
+    assert "View review packet" not in response.text
+    assert "Review packet" not in response.text
     assert "Reviewable recovery brief" not in response.text
     assert "Copy-ready recovery brief" not in response.text
     assert "Decision trace" not in response.text
@@ -1528,6 +1531,29 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert growth_response.status_code == 200
     assert '<a href="/app/growth-loop" class="nav-link active" aria-current="page">Growth Loop</a>' in growth_response.text
     assert "Growth Loop Agent" in growth_response.text
+    assert "Hackathon demo cockpit" in growth_response.text
+    assert "Agent console" in growth_response.text
+    assert "View review packet" in growth_response.text
+    assert 'href="#growth-loop-review-packet"' in growth_response.text
+    assert 'href="#growth-loop-proof"' in growth_response.text
+    assert 'href="#growth-loop-action"' in growth_response.text
+    assert 'href="#growth-loop-segment"' in growth_response.text
+    assert 'href="#growth-loop-measure"' in growth_response.text
+    assert 'href="#growth-loop-boundaries"' in growth_response.text
+    assert "Proof" in growth_response.text
+    assert "Schema" in growth_response.text
+    assert "Action" in growth_response.text
+    assert "Segment" in growth_response.text
+    assert "Measure" in growth_response.text
+    assert "App-owned paid truth" in growth_response.text
+    assert "Cursor MCP schema proof" in growth_response.text
+    assert "PayPal-shaped outcome proof" in growth_response.text
+    assert "Review-only action" in growth_response.text
+    assert "Review packet" in growth_response.text
+    assert "Review-ready artifact" in growth_response.text
+    assert "Proof chain" in growth_response.text
+    assert "Boundaries" in growth_response.text
+    assert "App-owned invoice and payment records remain paid truth." in growth_response.text
     assert "Cross-system demo map" in growth_response.text
     assert "Loomi context, app attribution, and PayPal proof meet here" in growth_response.text
     assert "Marketing and Analytics MCP-shaped diagnostics" in growth_response.text

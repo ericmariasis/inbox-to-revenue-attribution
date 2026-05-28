@@ -2887,6 +2887,101 @@ def _render_growth_loop_chip_list(values: tuple[str, ...]) -> str:
     return f'<div class="topic-chip-list">{chips}</div>'
 
 
+def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
+    if brief.agent_console is None:
+        return ""
+
+    console = brief.agent_console
+    steps = "".join(
+        f"""
+        <li class="agent-step">
+          <div class="agent-step-label">
+            <span>{html.escape(step.label)}</span>
+            <small>{html.escape(step.status_label)}</small>
+          </div>
+          <div>
+            <h3>{html.escape(step.title)}</h3>
+            <p>{html.escape(step.detail)}</p>
+          </div>
+        </li>
+        """
+        for step in console.steps
+    )
+    capabilities = "".join(
+        f"""
+        <article class="agent-capability">
+          <p class="eyebrow">{html.escape(signal.label)}</p>
+          <h3>{html.escape(signal.value)}</h3>
+          <p>{html.escape(signal.detail)}</p>
+        </article>
+        """
+        for signal in console.capability_signals
+    )
+    packet = console.review_packet
+    packet_proof = _render_bullet_list(packet.proof_chain)
+    packet_boundaries = _render_bullet_list(packet.boundaries)
+
+    return f"""
+    <section class="card stack agent-console">
+      <div class="agent-console-header">
+        <div>
+          <p class="eyebrow">Hackathon demo cockpit</p>
+          <h2>{html.escape(console.title)}</h2>
+          <p>{html.escape(console.summary)}</p>
+        </div>
+        <a href="#growth-loop-review-packet" class="button-link">{html.escape(console.primary_action_label)}</a>
+      </div>
+      <div class="agent-console-actions" aria-label="Growth loop artifact shortcuts">
+        <a href="#growth-loop-proof">Proof</a>
+        <a href="#growth-loop-action">Action</a>
+        <a href="#growth-loop-segment">Segment</a>
+        <a href="#growth-loop-measure">Measure</a>
+        <a href="#growth-loop-boundaries">Boundaries</a>
+      </div>
+      <ol class="agent-step-list">
+        {steps}
+      </ol>
+      <div class="agent-capability-strip">
+        {capabilities}
+      </div>
+    </section>
+    <section id="growth-loop-review-packet" class="card stack review-packet">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Review-ready artifact</p>
+          <h2>{html.escape(packet.title)}</h2>
+          <p>{html.escape(packet.summary)}</p>
+        </div>
+        <span class="pill-note">Human review</span>
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <h2>Selected action</h2>
+          <p>{html.escape(packet.selected_action)}</p>
+        </section>
+        <section class="topic-summary stack">
+          <h2>Segment recipe</h2>
+          <p>{html.escape(packet.segment_summary)}</p>
+        </section>
+        <section class="topic-summary stack">
+          <h2>Measurement plan</h2>
+          <p>{html.escape(packet.measurement_summary)}</p>
+        </section>
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <h2>Proof chain</h2>
+          {packet_proof}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Boundaries</h2>
+          {packet_boundaries}
+        </section>
+      </div>
+    </section>
+    """
+
+
 def _render_growth_loop_agent_page(
     *,
     current_user: AuthUser,
@@ -2915,6 +3010,7 @@ def _render_growth_loop_agent_page(
     opportunity_proof = _render_bullet_list(opportunity.proof_evidence)
     opportunity_limitations = _render_bullet_list(opportunity.limitations)
     opportunity_chips = _render_growth_loop_chip_list(opportunity.event_properties)
+    agent_console_section = _render_growth_loop_agent_console(brief)
     reviewable_action_section = ""
     if brief.reviewable_action is not None:
         action = brief.reviewable_action
@@ -2925,7 +3021,9 @@ def _render_growth_loop_agent_page(
         action_diagnostic_signals = _render_bullet_list(action.diagnostic_signals)
         action_limitations = _render_bullet_list(action.limitations)
         reviewable_action_section = f"""
-    <section class="card stack">
+    <details id="growth-loop-action" class="growth-loop-detail">
+      <summary><span>Action artifact</span><strong>{html.escape(action.title)}</strong></summary>
+      <section class="card stack">
       <div>
         <p class="eyebrow">Reviewable action artifact</p>
         <h2>{html.escape(action.title)}</h2>
@@ -2966,7 +3064,8 @@ def _render_growth_loop_agent_page(
         <h2>Review boundary</h2>
         {action_limitations}
       </section>
-    </section>
+      </section>
+    </details>
         """
     decision_trace_section = ""
     if brief.decision_trace is not None:
@@ -2992,7 +3091,9 @@ def _render_growth_loop_agent_page(
             for candidate in trace.candidates
         )
         decision_trace_section = f"""
-    <section class="card stack">
+    <details class="growth-loop-detail">
+      <summary><span>Decision artifact</span><strong>{html.escape(trace.title)}</strong></summary>
+      <section class="card stack">
       <div class="status-row">
         <div>
           <p class="eyebrow">Rule-backed decision trace</p>
@@ -3018,7 +3119,8 @@ def _render_growth_loop_agent_page(
           {trace_evidence_chain}
         </section>
       </div>
-    </section>
+      </section>
+    </details>
         """
     segment_recipe_section = ""
     if brief.segment_recipe is not None:
@@ -3030,7 +3132,9 @@ def _render_growth_loop_agent_page(
         recipe_measurement = _render_bullet_list(recipe.measurement_plan)
         recipe_limitations = _render_bullet_list(recipe.limitations)
         segment_recipe_section = f"""
-    <section class="card stack">
+    <details id="growth-loop-segment" class="growth-loop-detail">
+      <summary><span>Segment artifact</span><strong>{html.escape(recipe.title)}</strong></summary>
+      <section class="card stack">
       <div class="status-row">
         <div>
           <p class="eyebrow">Manual Bloomreach recreation</p>
@@ -3071,7 +3175,8 @@ def _render_growth_loop_agent_page(
         <h2>Review boundary</h2>
         {recipe_limitations}
       </section>
-    </section>
+      </section>
+    </details>
         """
     measurement_plan_section = ""
     if brief.measurement_plan is not None:
@@ -3090,7 +3195,9 @@ def _render_growth_loop_agent_page(
         )
         plan_limitations = _render_bullet_list(plan.limitations)
         measurement_plan_section = f"""
-    <section class="card stack">
+    <details id="growth-loop-measure" class="growth-loop-detail">
+      <summary><span>Measurement artifact</span><strong>{html.escape(plan.title)}</strong></summary>
+      <section class="card stack">
       <div class="status-row">
         <div>
           <p class="eyebrow">Holdout-first measurement</p>
@@ -3106,7 +3213,8 @@ def _render_growth_loop_agent_page(
         <h2>Claim boundary</h2>
         {plan_limitations}
       </section>
-    </section>
+      </section>
+    </details>
         """
     if brief.loomi_context.source_kind == "live_mcp":
         loomi_demo_copy = (
@@ -3140,7 +3248,10 @@ def _render_growth_loop_agent_page(
         current_path="/app/growth-loop",
         growth_loop_agent_feature_enabled=True,
     )}
-    <section class="card stack">
+    {agent_console_section}
+    <details class="growth-loop-detail" open>
+      <summary><span>Demo map</span><strong>Cross-system proof map</strong></summary>
+      <section class="card stack">
       <div>
         <p class="eyebrow">Cross-system demo map</p>
         <h2>Loomi context, app attribution, and PayPal proof meet here</h2>
@@ -3176,8 +3287,11 @@ def _render_growth_loop_agent_page(
           <p>The agent prepares a next-step brief for review. It does not send campaigns, mutate external systems, or replace reporting totals.</p>
         </section>
       </div>
-    </section>
-    <section class="card stack">
+      </section>
+    </details>
+    <details id="growth-loop-proof" class="growth-loop-detail" open>
+      <summary><span>Proof artifact</span><strong>Live Loomi schema proof</strong></summary>
+      <section class="card stack">
       <div class="status-row">
         <div>
           <p class="eyebrow">{html.escape(opportunity.source_label)}</p>
@@ -3225,7 +3339,8 @@ def _render_growth_loop_agent_page(
         <h2>Boundary</h2>
         {opportunity_limitations}
       </section>
-    </section>
+      </section>
+    </details>
     {reviewable_action_section}
     {decision_trace_section}
     {segment_recipe_section}
@@ -3306,7 +3421,7 @@ def _render_growth_loop_agent_page(
           {loomi_analytics}
         </section>
       </article>
-      <article class="card stack">
+      <article id="growth-loop-boundaries" class="card stack">
         <div>
           <p class="eyebrow">Limits</p>
           <h2>What this does not claim</h2>
@@ -11648,6 +11763,158 @@ def _page_layout(*, title: str, body: str) -> str:
         font-weight: 700;
       }}
 
+      .agent-console {{
+        border-color: rgba(47, 95, 91, 0.22);
+        background:
+          linear-gradient(145deg, rgba(255, 253, 248, 0.98), rgba(238, 247, 242, 0.86));
+      }}
+
+      .agent-console-header {{
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 18px;
+      }}
+
+      .agent-console-header p {{
+        max-width: 52rem;
+      }}
+
+      .agent-console-actions {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }}
+
+      .agent-console-actions a {{
+        display: inline-flex;
+        align-items: center;
+        padding: 9px 13px;
+        border-radius: 999px;
+        border: 1px solid rgba(47, 95, 91, 0.18);
+        background: rgba(47, 95, 91, 0.08);
+        color: var(--ink);
+        font-weight: 700;
+        text-decoration: none;
+      }}
+
+      .agent-step-list {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 12px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }}
+
+      .agent-step {{
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 12px;
+        min-height: 132px;
+        padding: 16px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255, 249, 239, 0.76);
+      }}
+
+      .agent-step h3,
+      .agent-capability h3 {{
+        margin: 0 0 8px;
+        font-size: 1.02rem;
+      }}
+
+      .agent-step p,
+      .agent-capability p {{
+        margin: 0;
+      }}
+
+      .agent-step-label {{
+        display: grid;
+        align-content: start;
+        gap: 8px;
+        min-width: 58px;
+      }}
+
+      .agent-step-label span {{
+        display: inline-flex;
+        justify-content: center;
+        padding: 8px 10px;
+        border-radius: 999px;
+        background: rgba(163, 74, 40, 0.12);
+        color: var(--accent);
+        font-size: 0.8rem;
+        font-weight: 800;
+      }}
+
+      .agent-step-label small {{
+        color: var(--muted);
+        font-weight: 700;
+      }}
+
+      .agent-capability-strip {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+      }}
+
+      .agent-capability {{
+        padding: 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(47, 95, 91, 0.18);
+        background: rgba(47, 95, 91, 0.08);
+      }}
+
+      .review-packet {{
+        border-color: rgba(163, 74, 40, 0.2);
+      }}
+
+      .growth-loop-detail {{
+        display: grid;
+        gap: 12px;
+      }}
+
+      .growth-loop-detail summary {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+        margin: 0 0 12px;
+        padding: 14px 16px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255, 249, 239, 0.72);
+        color: var(--ink);
+        cursor: pointer;
+      }}
+
+      .growth-loop-detail summary::-webkit-details-marker {{
+        display: none;
+      }}
+
+      .growth-loop-detail summary::after {{
+        content: "Open";
+        color: var(--accent);
+        font-size: 0.86rem;
+        font-weight: 800;
+      }}
+
+      .growth-loop-detail[open] summary::after {{
+        content: "Hide";
+      }}
+
+      .growth-loop-detail summary span {{
+        color: var(--accent);
+        font-size: 0.82rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }}
+
+      .growth-loop-detail summary strong {{
+        margin-right: auto;
+      }}
+
       .copy-field {{
         display: grid;
         gap: 10px;
@@ -11767,6 +12034,7 @@ def _page_layout(*, title: str, body: str) -> str:
         }}
 
         .status-row,
+        .agent-console-header,
         .checklist-item,
         .section-heading,
         .booking-link-header,
@@ -11787,6 +12055,7 @@ def _page_layout(*, title: str, body: str) -> str:
         }}
 
         .filter-actions,
+        .agent-console-actions,
         .report-row-actions,
         .copy-row {{
           flex-direction: column;
@@ -11794,6 +12063,7 @@ def _page_layout(*, title: str, body: str) -> str:
         }}
 
         .copy-button,
+        .agent-console-actions a,
         .primary-action button,
         .primary-action .button-link {{
           width: 100%;

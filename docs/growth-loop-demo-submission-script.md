@@ -27,13 +27,16 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 7. Point to `Bloomreach-ready segment recipe`.
    - "The next artifact is the exact recipe a marketer could manually recreate in Bloomreach: who to include, who to exclude, the 24-hour recovery window, message variables, and how to measure later paid results. It still does not create a saved segment, send a campaign, or mutate Bloomreach."
 
-8. Point to the diagnosis and prepared action.
+8. Point to `Measurement plan`.
+   - "The agent also defines how the loop would be measured after review: paid revenue from app-owned invoice and payment records, a withheld holdout first, a 24-hour recovery send window, and a 7-day paid-outcome observation window. It explicitly says no lift is claimed yet."
+
+9. Point to the diagnosis and prepared action.
    - "The agent classifies the workspace as `Paid Result Exists`, identifies the next reviewed action, and prepares a follow-up brief instead of mutating an external system."
 
-9. Point to the evidence boundary.
+10. Point to the evidence boundary.
    - "Tracked content, bookings, canonical invoices, and payment-backed records stay separate from Loomi context. That keeps the claim honest."
 
-10. Open Reports, then `Why this revenue counted`.
+11. Open Reports, then `Why this revenue counted`.
    - "The paid outcome can be inspected through the reporting evidence chain: tracked content to booking to paid invoice to supporting PayPal-shaped capture event."
 
 ## Track 6 Framing
@@ -45,6 +48,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - Agentic action layer: a bounded, copy-ready recovery brief for human review.
 - Decision-trace layer: deterministic candidate ranking that explains why recovery was selected and direct mutation was blocked.
 - Segment-recipe layer: a review-only Bloomreach recreation recipe with include/exclude/window/measure logic.
+- Measurement-plan layer: a no-lift-yet plan that would evaluate later paid revenue through app-owned invoice/payment records against a withheld holdout.
 
 ## Claims To Make
 
@@ -53,6 +57,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - "The agent turns that blueprint into a concrete recovery brief with target segment, message outline, draft Bloomreach segment spec, and evidence plan."
 - "The decision trace ranks candidate actions with schema fit, app evidence fit, and review safety, so judges can see why recovery was selected."
 - "The segment recipe translates the selected recovery action into include, exclude, 24-hour window, message-variable, and measurement guidance that a marketer could recreate manually in Bloomreach."
+- "The measurement plan keeps the loop honest: paid revenue is the primary metric, holdout comparison is preferred, and campaign or retargeting engagement is diagnostic only."
 - "The app keeps revenue truth grounded in canonical booking, invoice, and payment records."
 - "Loomi context informs the recommendation but does not replace reporting truth."
 - "The action is prepared for review; it is not sent automatically."
@@ -65,6 +70,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - Do not say the schema-derived cart-abandon blueprint is a saved Loomi segmentation or campaign.
 - Do not say the copy-ready recovery brief was sent, exported, or created inside Bloomreach.
 - Do not say the segment recipe was saved, exported, or created inside Bloomreach.
+- Do not say the measurement plan reports measured lift, causal impact, statistical confidence, or revenue improvement.
 - Do not say the agent sends campaigns or mutates external systems.
 - Do not say the decision scores are measured lift, statistical confidence, or live LLM output.
 - Do not say the Conversation MCP proof supplied support, checkout, booking, refund, or payment-failure telemetry; it only exposed catalog-proxy signals and was deferred.

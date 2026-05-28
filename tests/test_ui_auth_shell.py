@@ -1460,6 +1460,7 @@ def test_growth_loop_page_hides_reviewable_recovery_brief_without_paid_result():
     assert "Decision trace" not in response.text
     assert "Rule-backed decision trace" not in response.text
     assert "Bloomreach-ready segment recipe" not in response.text
+    assert "Measurement plan" not in response.text
 
 
 def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
@@ -1597,6 +1598,27 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "support, checkout, booking, refund, or payment-failure telemetry" in growth_response.text
     assert "does not create a saved Bloomreach segment" in growth_response.text
     assert "No campaign is sent and no external system is mutated" in growth_response.text
+    assert "Measurement plan" in growth_response.text
+    assert "Holdout-first measurement" in growth_response.text
+    assert "No lift yet" in growth_response.text
+    assert "Primary metric" in growth_response.text
+    assert "Paid revenue" in growth_response.text
+    assert "app-owned paid invoices and payment-backed records" in growth_response.text
+    assert "Supporting metric" in growth_response.text
+    assert "Paid conversion rate" in growth_response.text
+    assert "Comparison design" in growth_response.text
+    assert "Withheld holdout first" in growth_response.text
+    assert "non-targeted comparison" in growth_response.text
+    assert "Timing" in growth_response.text
+    assert "24h send, 7d observe" in growth_response.text
+    assert "within 24 hours" in growth_response.text
+    assert "for 7 days" in growth_response.text
+    assert "Diagnostic context" in growth_response.text
+    assert "Engagement is not revenue" in growth_response.text
+    assert "campaign.status" in growth_response.text
+    assert "retargeting.audience" in growth_response.text
+    assert "does not report measured lift or causal impact" in growth_response.text
+    assert "canonical invoice and payment records remain paid truth" in growth_response.text
     assert "Paid proof exists; choose the next reviewed action." in growth_response.text
     assert "App-owned evidence stays separate from Loomi diagnostics" in growth_response.text
     assert "1 content item" in growth_response.text

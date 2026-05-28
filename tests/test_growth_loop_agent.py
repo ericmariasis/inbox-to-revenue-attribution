@@ -113,6 +113,8 @@ def test_growth_loop_stage_paid_result_exists_keeps_paid_truth_app_owned():
     assert "$195.00 canonical payment truth" in " ".join(brief.decision_trace.evidence_chain)
     assert brief.segment_recipe is not None
     assert brief.segment_recipe.title == "Bloomreach-ready segment recipe"
+    assert brief.measurement_plan is not None
+    assert brief.measurement_plan.title == "Measurement plan"
 
 
 def test_growth_loop_loomi_fixture_is_diagnostic_and_no_autonomous_action():
@@ -177,6 +179,7 @@ def test_growth_loop_reviewable_action_is_paid_result_only():
         assert brief.reviewable_action is None
         assert brief.decision_trace is None
         assert brief.segment_recipe is None
+        assert brief.measurement_plan is None
 
 
 def test_growth_loop_reviewable_action_is_review_only_and_paid_evidence_grounded():
@@ -363,3 +366,51 @@ def test_growth_loop_segment_recipe_is_bloomreach_ready_and_review_only():
     assert "do not count revenue" in combined_text
     assert "prove causality" in combined_text
     assert "caused revenue" not in combined_text
+
+
+def test_growth_loop_measurement_plan_is_holdout_first_and_no_lift_yet():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=1,
+            paid_invoice_count=1,
+            paid_revenue_cents=19500,
+        )
+    )
+
+    assert brief.measurement_plan is not None
+    plan = brief.measurement_plan
+    combined_text = " ".join(
+        (
+            plan.title,
+            plan.summary,
+            " ".join(card.label for card in plan.cards),
+            " ".join(card.title for card in plan.cards),
+            " ".join(card.detail for card in plan.cards),
+            " ".join(plan.limitations),
+        )
+    ).lower()
+
+    assert plan.title == "Measurement plan"
+    assert "paid revenue" in combined_text
+    assert "app-owned paid invoices and payment-backed records" in combined_text
+    assert "paid conversion rate" in combined_text
+    assert "paid invoice count" in combined_text
+    assert "withheld holdout first" in combined_text
+    assert "non-targeted comparison" in combined_text
+    assert "within 24 hours" in combined_text
+    assert "for 7 days" in combined_text
+    assert "campaign.status" in combined_text
+    assert "retargeting.audience" in combined_text
+    assert "engagement, not to count revenue" in combined_text
+    assert "no lift yet" in combined_text
+    assert "do not claim lift" in combined_text
+    assert "causality" in combined_text
+    assert "statistical confidence" in combined_text
+    assert "revenue improvement until the campaign runs" in combined_text
+    assert "does not report measured lift or causal impact" in combined_text
+    assert "canonical invoice and payment records remain paid truth" in combined_text

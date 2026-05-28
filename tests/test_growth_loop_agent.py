@@ -117,6 +117,60 @@ def test_growth_loop_stage_paid_result_exists_keeps_paid_truth_app_owned():
     assert brief.measurement_plan.title == "Measurement plan"
     assert brief.agent_console is not None
     assert brief.agent_console.title == "Agent console"
+    assert brief.agent_console.guided_run.title == "Run agent"
+    assert [step.title for step in brief.agent_console.guided_run.steps] == [
+        "Inspect paid proof",
+        "Read Loomi schema evidence",
+        "Score candidate actions",
+        "Prepare recovery brief",
+        "Generate segment recipe",
+        "Attach measurement plan",
+    ]
+    assert "No campaign is sent." in brief.agent_console.guided_run.boundaries
+    assert "App-owned invoice and payment records remain paid truth." in brief.agent_console.guided_run.boundaries
+    assert "#growth-loop-review-packet" in brief.agent_console.primary_action_label or brief.agent_console.primary_action_label == "View review packet"
+
+
+def test_growth_loop_guided_run_is_paid_result_only_and_review_bounded():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=1,
+            paid_invoice_count=1,
+            paid_revenue_cents=19500,
+        )
+    )
+
+    assert brief.agent_console is not None
+    run = brief.agent_console.guided_run
+    combined_text = " ".join(
+        [run.summary, run.completion_summary]
+        + [step.title for step in run.steps]
+        + [step.summary for step in run.steps]
+        + [step.evidence_detail for step in run.steps]
+        + list(run.boundaries)
+    ).lower()
+
+    assert len(run.steps) == 6
+    assert run.steps[0].target_anchor == "#growth-loop-boundaries"
+    assert run.steps[1].target_anchor == "#growth-loop-proof"
+    assert run.steps[2].target_anchor == "#growth-loop-decision"
+    assert run.steps[3].target_anchor == "#growth-loop-action"
+    assert run.steps[4].target_anchor == "#growth-loop-segment"
+    assert run.steps[5].target_anchor == "#growth-loop-measure"
+    assert "$195.00 canonical payment truth" in combined_text
+    assert "mcp-derived schema" in " ".join(step.evidence_label.lower() for step in run.steps)
+    assert "does not create a saved segment" in combined_text
+    assert "paid revenue is primary" in combined_text
+    assert "not for automatic send, export, or mutation" in combined_text
+    assert "no campaign is sent" in combined_text
+    assert "no bloomreach object is mutated" in combined_text
+    assert "no lift or causality is claimed" in combined_text
+    assert "caused revenue" not in combined_text
 
 
 def test_growth_loop_loomi_fixture_is_diagnostic_and_no_autonomous_action():

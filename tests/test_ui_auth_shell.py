@@ -1534,9 +1534,24 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "Hackathon demo cockpit" in growth_response.text
     assert "Agent console" in growth_response.text
     assert "View review packet" in growth_response.text
+    assert "Guided agent workflow" in growth_response.text
+    assert "Run agent" in growth_response.text
+    assert "Step 1 of 6" in growth_response.text
+    assert "Run next step" in growth_response.text
+    assert "Inspect paid proof" in growth_response.text
+    assert "Read Loomi schema evidence" in growth_response.text
+    assert "Score candidate actions" in growth_response.text
+    assert "Prepare recovery brief" in growth_response.text
+    assert "Generate segment recipe" in growth_response.text
+    assert "Attach measurement plan" in growth_response.text
+    assert "Review packet assembled" in growth_response.text
+    assert "not for automatic send, export, or mutation" in growth_response.text
+    assert "data-agent-run" in growth_response.text
+    assert "data-agent-run-next" in growth_response.text
     assert 'href="#growth-loop-review-packet"' in growth_response.text
     assert 'href="#growth-loop-proof"' in growth_response.text
     assert 'href="#growth-loop-action"' in growth_response.text
+    assert 'href="#growth-loop-decision"' in growth_response.text
     assert 'href="#growth-loop-segment"' in growth_response.text
     assert 'href="#growth-loop-measure"' in growth_response.text
     assert 'href="#growth-loop-boundaries"' in growth_response.text
@@ -1583,6 +1598,8 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "Diagnostic signals" in growth_response.text
     assert "Static copy-ready block" in growth_response.text
     assert "Copy-ready recovery brief" in growth_response.text
+    assert "Copy review brief" in growth_response.text
+    assert "Copies review text only; it does not send, export, or mutate Bloomreach." in growth_response.text
     assert "app-owned paid conversion lift" in growth_response.text
     assert "stored booking, invoice, and payment-backed records" in growth_response.text
     assert "campaign.status" in growth_response.text

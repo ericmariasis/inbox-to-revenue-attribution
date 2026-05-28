@@ -81,6 +81,19 @@ class GrowthLoopDecisionTrace:
 
 
 @dataclass(frozen=True)
+class GrowthLoopSegmentRecipe:
+    title: str
+    summary: str
+    include_rules: tuple[str, ...]
+    exclude_rules: tuple[str, ...]
+    recovery_window: tuple[str, ...]
+    message_variables: tuple[str, ...]
+    measurement_plan: tuple[str, ...]
+    conversation_mcp_note: str
+    limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class LoomiDiagnosticContext:
     source_label: str
     source_kind: str
@@ -110,6 +123,7 @@ class GrowthLoopActionBrief:
     schema_opportunity: GrowthLoopSchemaOpportunity
     reviewable_action: GrowthLoopReviewableActionBrief | None
     decision_trace: GrowthLoopDecisionTrace | None
+    segment_recipe: GrowthLoopSegmentRecipe | None
     confidence_label: str
     confidence_summary: str
     limitations: tuple[str, ...]
@@ -172,6 +186,7 @@ def build_growth_loop_action_brief(
         schema_opportunity=build_sleepy_goose_schema_opportunity(),
         reviewable_action=_build_reviewable_action_brief(stage),
         decision_trace=_build_decision_trace(stage, evidence),
+        segment_recipe=_build_segment_recipe(stage),
         confidence_label=stage_copy["confidence_label"],
         confidence_summary=stage_copy["confidence_summary"],
         limitations=(
@@ -182,6 +197,53 @@ def build_growth_loop_action_brief(
         ),
         human_review_note=(
             "Review this action before sending, publishing, or changing any external system."
+        ),
+    )
+
+
+def _build_segment_recipe(stage: str) -> GrowthLoopSegmentRecipe | None:
+    if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS:
+        return None
+
+    return GrowthLoopSegmentRecipe(
+        title="Bloomreach-ready segment recipe",
+        summary=(
+            "Use this as the reviewed recipe a marketer can recreate in Bloomreach. "
+            "It translates the verified cart-abandon schema into this app's booking-step "
+            "recovery analogue without creating or mutating any Bloomreach object."
+        ),
+        include_rules=(
+            "Include people with cart_update activity where total_quantity is greater than zero.",
+            "Prioritize checkout starts, product IDs, total cart value, or view_item category activity when available.",
+            "For this app, map the same pattern to prospects who reached a booking or checkout-like step from tracked content.",
+        ),
+        exclude_rules=(
+            "Exclude anyone with a later completed purchase event inside the recovery window.",
+            "Exclude anyone with a later app-owned paid invoice or payment-backed result in this workspace.",
+            "Exclude suppressed, unsubscribed, or otherwise ineligible contacts before recreating the segment in Bloomreach.",
+        ),
+        recovery_window=(
+            "Default to a 24-hour recovery window after the last qualifying cart, checkout, or booking-step activity.",
+            "Keep the first reviewed slice narrow; widen the window only after comparing paid results and engagement quality.",
+        ),
+        message_variables=(
+            "Last product ID, category, or app interest area.",
+            "Last cart value, total quantity, or booking-step context where available.",
+            "Return path to the same measured booking or checkout flow so later outcomes remain reviewable.",
+        ),
+        measurement_plan=(
+            "Measure success through later app-owned paid invoices and payment-backed records.",
+            "Compare targeted prospects against a holdout or non-targeted group before claiming improvement.",
+            "Use campaign.status, campaign.url, retargeting.audience, and retargeting.action as diagnostic engagement context only.",
+        ),
+        conversation_mcp_note=(
+            "Story 131 tested Conversation MCP and deferred it for this recipe: the server connected, "
+            "but exposed catalog-proxy signals rather than support, checkout, booking, refund, or payment-failure telemetry."
+        ),
+        limitations=(
+            "Review-only recipe; this app does not create a saved Bloomreach segment, campaign, or recommendation.",
+            "No campaign is sent and no external system is mutated from this page.",
+            "Loomi and Conversation signals do not count revenue, prove causality, or replace app-owned booking, invoice, and payment records.",
         ),
     )
 

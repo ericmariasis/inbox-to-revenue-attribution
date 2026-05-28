@@ -2887,6 +2887,165 @@ def _render_growth_loop_chip_list(values: tuple[str, ...]) -> str:
     return f'<div class="topic-chip-list">{chips}</div>'
 
 
+def _render_growth_loop_guided_run(console) -> str:
+    run = console.guided_run
+    step_buttons = "".join(
+        f"""
+        <button
+          type="button"
+          class="agent-run-step-button"
+          data-agent-run-step="{index}"
+          aria-selected="{"true" if index == 0 else "false"}"
+        >
+          <span>{html.escape(step.label)}</span>
+          <strong>{html.escape(step.title)}</strong>
+        </button>
+        """
+        for index, step in enumerate(run.steps)
+    )
+    step_panels = "".join(
+        f"""
+        <article class="agent-run-panel" data-agent-run-panel="{index}">
+          <div>
+            <p class="eyebrow">Agent step {html.escape(step.label)}</p>
+            <h3>{html.escape(step.title)}</h3>
+            <p>{html.escape(step.summary)}</p>
+          </div>
+          <section class="agent-run-evidence">
+            <p class="eyebrow">{html.escape(step.evidence_label)}</p>
+            <p>{html.escape(step.evidence_detail)}</p>
+          </section>
+          <a class="inline-link" href="{html.escape(step.target_anchor)}">Inspect supporting artifact</a>
+        </article>
+        """
+        for index, step in enumerate(run.steps)
+    )
+    boundaries = _render_bullet_list(run.boundaries)
+
+    return f"""
+      <section class="agent-guided-run" data-agent-run>
+        <div class="agent-run-header">
+          <div>
+            <p class="eyebrow">Guided agent workflow</p>
+            <h3>{html.escape(run.title)}</h3>
+            <p>{html.escape(run.summary)}</p>
+          </div>
+          <span class="pill-note" data-agent-run-status>Step 1 of {len(run.steps)}</span>
+        </div>
+        <div class="agent-run-layout">
+          <div class="agent-run-step-nav" role="tablist" aria-label="Growth loop agent run steps">
+            {step_buttons}
+          </div>
+          <div class="agent-run-stage">
+            {step_panels}
+            <section class="agent-run-complete" data-agent-run-complete>
+              <div>
+                <p class="eyebrow">Ready for review</p>
+                <h3>{html.escape(run.completion_title)}</h3>
+                <p>{html.escape(run.completion_summary)}</p>
+              </div>
+              <div class="agent-run-boundaries">
+                <h3>Run boundaries</h3>
+                {boundaries}
+              </div>
+            </section>
+            <div class="agent-run-controls">
+              <button type="button" data-agent-run-next>{html.escape(run.primary_action_label)}</button>
+              <a href="#growth-loop-review-packet" class="button-link secondary">View review packet</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    """
+
+
+def _render_growth_loop_agent_interaction_script() -> str:
+    return """
+    <script>
+      (function () {
+        function initAgentRun(run) {
+          var buttons = Array.prototype.slice.call(run.querySelectorAll("[data-agent-run-step]"));
+          var panels = Array.prototype.slice.call(run.querySelectorAll("[data-agent-run-panel]"));
+          var nextButton = run.querySelector("[data-agent-run-next]");
+          var status = run.querySelector("[data-agent-run-status]");
+          var completion = run.querySelector("[data-agent-run-complete]");
+          var packet = document.getElementById("growth-loop-review-packet");
+          var activeIndex = 0;
+
+          if (!buttons.length || !panels.length) {
+            return;
+          }
+
+          function showStep(index) {
+            activeIndex = Math.max(0, Math.min(index, panels.length - 1));
+            buttons.forEach(function (button, buttonIndex) {
+              var active = buttonIndex === activeIndex;
+              button.classList.toggle("active", active);
+              button.setAttribute("aria-selected", active ? "true" : "false");
+            });
+            panels.forEach(function (panel, panelIndex) {
+              panel.hidden = panelIndex !== activeIndex;
+            });
+            if (status) {
+              status.textContent = "Step " + (activeIndex + 1) + " of " + panels.length;
+            }
+            if (completion) {
+              completion.hidden = activeIndex !== panels.length - 1;
+            }
+            if (nextButton) {
+              nextButton.textContent = activeIndex === panels.length - 1 ? "View review packet" : "Run next step";
+            }
+          }
+
+          buttons.forEach(function (button, index) {
+            button.addEventListener("click", function () {
+              showStep(index);
+            });
+          });
+
+          if (nextButton) {
+            nextButton.addEventListener("click", function () {
+              if (activeIndex >= panels.length - 1) {
+                if (packet) {
+                  packet.scrollIntoView({ behavior: "smooth", block: "start" });
+                }
+                return;
+              }
+              showStep(activeIndex + 1);
+            });
+          }
+
+          run.classList.add("agent-run-ready");
+          showStep(0);
+        }
+
+        function initCopyButton(button) {
+          button.addEventListener("click", function () {
+            var targetId = button.getAttribute("data-copy-target");
+            var target = targetId ? document.getElementById(targetId) : null;
+            if (!target) {
+              return;
+            }
+            var text = target.textContent || "";
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(text).then(function () {
+                button.textContent = "Copied for review";
+              }).catch(function () {
+                button.textContent = "Select text to copy";
+              });
+            } else {
+              button.textContent = "Select text to copy";
+            }
+          });
+        }
+
+        Array.prototype.slice.call(document.querySelectorAll("[data-agent-run]")).forEach(initAgentRun);
+        Array.prototype.slice.call(document.querySelectorAll("[data-copy-target]")).forEach(initCopyButton);
+      })();
+    </script>
+    """
+
+
 def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
     if brief.agent_console is None:
         return ""
@@ -2920,6 +3079,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
     packet = console.review_packet
     packet_proof = _render_bullet_list(packet.proof_chain)
     packet_boundaries = _render_bullet_list(packet.boundaries)
+    guided_run = _render_growth_loop_guided_run(console)
 
     return f"""
     <section class="card stack agent-console">
@@ -2934,10 +3094,12 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
       <div class="agent-console-actions" aria-label="Growth loop artifact shortcuts">
         <a href="#growth-loop-proof">Proof</a>
         <a href="#growth-loop-action">Action</a>
+        <a href="#growth-loop-decision">Decision</a>
         <a href="#growth-loop-segment">Segment</a>
         <a href="#growth-loop-measure">Measure</a>
         <a href="#growth-loop-boundaries">Boundaries</a>
       </div>
+      {guided_run}
       <ol class="agent-step-list">
         {steps}
       </ol>
@@ -3011,6 +3173,11 @@ def _render_growth_loop_agent_page(
     opportunity_limitations = _render_bullet_list(opportunity.limitations)
     opportunity_chips = _render_growth_loop_chip_list(opportunity.event_properties)
     agent_console_section = _render_growth_loop_agent_console(brief)
+    agent_interaction_script = (
+        _render_growth_loop_agent_interaction_script()
+        if brief.agent_console is not None
+        else ""
+    )
     reviewable_action_section = ""
     if brief.reviewable_action is not None:
         action = brief.reviewable_action
@@ -3058,7 +3225,17 @@ def _render_growth_loop_agent_page(
           <p class="eyebrow">Static copy-ready block</p>
           <h2>Copy-ready recovery brief</h2>
         </div>
-        <p class="static-copy-block">{html.escape(action.copy_ready_text)}</p>
+        <div class="copy-artifact">
+          <p id="growth-loop-recovery-brief-copy" class="static-copy-block">{html.escape(action.copy_ready_text)}</p>
+          <div class="copy-row">
+            <button
+              type="button"
+              class="secondary copy-button"
+              data-copy-target="growth-loop-recovery-brief-copy"
+            >Copy review brief</button>
+            <span class="copy-boundary">Copies review text only; it does not send, export, or mutate Bloomreach.</span>
+          </div>
+        </div>
       </section>
       <section class="topic-summary stack">
         <h2>Review boundary</h2>
@@ -3091,7 +3268,7 @@ def _render_growth_loop_agent_page(
             for candidate in trace.candidates
         )
         decision_trace_section = f"""
-    <details class="growth-loop-detail">
+    <details id="growth-loop-decision" class="growth-loop-detail">
       <summary><span>Decision artifact</span><strong>{html.escape(trace.title)}</strong></summary>
       <section class="card stack">
       <div class="status-row">
@@ -3429,6 +3606,7 @@ def _render_growth_loop_agent_page(
         {limitations}
       </article>
     </section>
+    {agent_interaction_script}
     """
     return _page_layout(title="Growth Loop Agent", body=body)
 
@@ -11798,6 +11976,124 @@ def _page_layout(*, title: str, body: str) -> str:
         text-decoration: none;
       }}
 
+      .agent-guided-run {{
+        display: grid;
+        gap: 16px;
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px solid rgba(47, 95, 91, 0.2);
+        background: rgba(255, 249, 239, 0.82);
+      }}
+
+      .agent-run-header {{
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 18px;
+      }}
+
+      .agent-run-header h3,
+      .agent-run-panel h3,
+      .agent-run-complete h3,
+      .agent-run-boundaries h3 {{
+        margin: 0 0 8px;
+        font-size: 1.08rem;
+      }}
+
+      .agent-run-header p,
+      .agent-run-panel p,
+      .agent-run-complete p,
+      .agent-run-boundaries p {{
+        margin: 0;
+      }}
+
+      .agent-run-layout {{
+        display: grid;
+        grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
+        gap: 14px;
+      }}
+
+      .agent-run-step-nav {{
+        display: grid;
+        gap: 8px;
+      }}
+
+      .agent-run-step-button {{
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+        min-height: 54px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.9);
+        color: var(--ink);
+        box-shadow: none;
+        text-align: left;
+      }}
+
+      .agent-run-step-button span {{
+        display: inline-flex;
+        justify-content: center;
+        align-items: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 999px;
+        background: rgba(47, 95, 91, 0.12);
+        color: var(--teal);
+        font-weight: 800;
+      }}
+
+      .agent-run-step-button strong {{
+        font-size: 0.92rem;
+      }}
+
+      .agent-run-step-button.active,
+      .agent-run-step-button[aria-selected="true"] {{
+        border-color: rgba(47, 95, 91, 0.34);
+        background: rgba(47, 95, 91, 0.12);
+      }}
+
+      .agent-run-stage {{
+        display: grid;
+        gap: 12px;
+      }}
+
+      .agent-run-ready .agent-run-panel[hidden],
+      .agent-run-ready .agent-run-complete[hidden] {{
+        display: none;
+      }}
+
+      .agent-run-panel,
+      .agent-run-complete {{
+        display: grid;
+        gap: 14px;
+        min-height: 220px;
+        padding: 18px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.92);
+      }}
+
+      .agent-run-evidence,
+      .agent-run-boundaries {{
+        display: grid;
+        gap: 8px;
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px dashed rgba(47, 95, 91, 0.26);
+        background: rgba(47, 95, 91, 0.08);
+      }}
+
+      .agent-run-controls {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }}
+
       .agent-step-list {{
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -11927,6 +12223,16 @@ def _page_layout(*, title: str, body: str) -> str:
         align-items: center;
       }}
 
+      .copy-artifact {{
+        display: grid;
+        gap: 12px;
+      }}
+
+      .copy-boundary {{
+        color: var(--muted);
+        font-weight: 700;
+      }}
+
       .copy-row input {{
         flex: 1 1 320px;
       }}
@@ -11980,6 +12286,15 @@ def _page_layout(*, title: str, body: str) -> str:
 
         .shell-header {{
           flex-direction: column;
+        }}
+
+        .agent-console-header,
+        .agent-run-header {{
+          flex-direction: column;
+        }}
+
+        .agent-run-layout {{
+          grid-template-columns: 1fr;
         }}
 
         .shell-header > form,

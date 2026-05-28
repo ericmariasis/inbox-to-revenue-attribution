@@ -117,6 +117,27 @@ class GrowthLoopAgentConsoleStep:
 
 
 @dataclass(frozen=True)
+class GrowthLoopGuidedRunStep:
+    label: str
+    title: str
+    summary: str
+    evidence_label: str
+    evidence_detail: str
+    target_anchor: str
+
+
+@dataclass(frozen=True)
+class GrowthLoopGuidedRun:
+    title: str
+    summary: str
+    primary_action_label: str
+    completion_title: str
+    completion_summary: str
+    steps: tuple[GrowthLoopGuidedRunStep, ...]
+    boundaries: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class GrowthLoopCapabilitySignal:
     label: str
     value: str
@@ -140,6 +161,7 @@ class GrowthLoopAgentConsole:
     summary: str
     primary_action_label: str
     steps: tuple[GrowthLoopAgentConsoleStep, ...]
+    guided_run: GrowthLoopGuidedRun
     capability_signals: tuple[GrowthLoopCapabilitySignal, ...]
     review_packet: GrowthLoopReviewPacket
 
@@ -472,6 +494,8 @@ def _build_agent_console(
 
     revenue_copy = _money_copy(evidence.paid_revenue_cents)
     paid_invoice_copy = _count_copy(evidence.paid_invoice_count, "paid invoice")
+    tracked_content_copy = _count_copy(evidence.tracked_content_count, "content item")
+    booking_copy = _count_copy(evidence.booking_count, "booking")
 
     return GrowthLoopAgentConsole(
         title="Agent console",
@@ -516,6 +540,111 @@ def _build_agent_console(
                 title="Holdout-first plan",
                 detail="Measure paid revenue and paid conversion rate after execution; no lift is claimed yet.",
                 status_label="Defined",
+            ),
+        ),
+        guided_run=GrowthLoopGuidedRun(
+            title="Run agent",
+            summary=(
+                "Step through the controlled workflow the demo uses: inspect paid proof, "
+                "read Loomi schema evidence, score actions, and assemble the review packet."
+            ),
+            primary_action_label="Run next step",
+            completion_title="Review packet assembled",
+            completion_summary=(
+                "The agent has prepared one review-only packet. It is ready for human review, "
+                "not for automatic send, export, or mutation."
+            ),
+            steps=(
+                GrowthLoopGuidedRunStep(
+                    label="1",
+                    title="Inspect paid proof",
+                    summary=(
+                        "Read the app-owned tracked content, booking, invoice, and payment records "
+                        "that define the paid-result boundary."
+                    ),
+                    evidence_label="App-owned proof",
+                    evidence_detail=(
+                        f"{tracked_content_copy}, {booking_copy}, {paid_invoice_copy}, and "
+                        f"{revenue_copy} canonical payment truth."
+                    ),
+                    target_anchor="#growth-loop-boundaries",
+                ),
+                GrowthLoopGuidedRunStep(
+                    label="2",
+                    title="Read Loomi schema evidence",
+                    summary=(
+                        "Use the Cursor-verified sleepy-goose schema as the diagnostic signal "
+                        "for a cart-abandon recovery opportunity."
+                    ),
+                    evidence_label="MCP-derived schema",
+                    evidence_detail=(
+                        "cart_update, checkout, view_item, purchase, campaign, and retargeting "
+                        "fields support the recovery blueprint."
+                    ),
+                    target_anchor="#growth-loop-proof",
+                ),
+                GrowthLoopGuidedRunStep(
+                    label="3",
+                    title="Score candidate actions",
+                    summary=(
+                        "Compare recovery, broad nurture, and direct mutation candidates using "
+                        "schema fit, app evidence fit, and review safety."
+                    ),
+                    evidence_label="Decision trace",
+                    evidence_detail=(
+                        "Recovery wins because it is actionable, evidence-backed, and safe for "
+                        "human review."
+                    ),
+                    target_anchor="#growth-loop-decision",
+                ),
+                GrowthLoopGuidedRunStep(
+                    label="4",
+                    title="Prepare recovery brief",
+                    summary=(
+                        "Turn the selected opportunity into a copy-ready brief a marketer can "
+                        "review before any customer-facing action."
+                    ),
+                    evidence_label="Prepared artifact",
+                    evidence_detail=(
+                        "The brief includes target segment, message outline, success evidence, "
+                        "and no-send/no-mutation boundaries."
+                    ),
+                    target_anchor="#growth-loop-action",
+                ),
+                GrowthLoopGuidedRunStep(
+                    label="5",
+                    title="Generate segment recipe",
+                    summary=(
+                        "Translate the brief into include, exclude, timing, and message-variable "
+                        "logic that can be manually recreated in Bloomreach."
+                    ),
+                    evidence_label="Bloomreach-ready recipe",
+                    evidence_detail=(
+                        "The app prepares a recipe only; it does not create a saved segment, "
+                        "recommendation, or campaign."
+                    ),
+                    target_anchor="#growth-loop-segment",
+                ),
+                GrowthLoopGuidedRunStep(
+                    label="6",
+                    title="Attach measurement plan",
+                    summary=(
+                        "Define how future success would be evaluated through app-owned paid "
+                        "outcomes and a withheld holdout."
+                    ),
+                    evidence_label="No-lift-yet plan",
+                    evidence_detail=(
+                        "Paid revenue is primary, paid conversion is supporting, and engagement "
+                        "signals remain diagnostic only."
+                    ),
+                    target_anchor="#growth-loop-measure",
+                ),
+            ),
+            boundaries=(
+                "No campaign is sent.",
+                "No Bloomreach object is mutated.",
+                "No lift or causality is claimed.",
+                "App-owned invoice and payment records remain paid truth.",
             ),
         ),
         capability_signals=(
@@ -563,8 +692,8 @@ def _build_agent_console(
             proof_chain=(
                 "Loomi schema proof supplies cart_update, checkout, view_item, purchase, campaign, and retargeting fields.",
                 (
-                    f"App-owned proof supplies {_count_copy(evidence.tracked_content_count, 'content item')}, "
-                    f"{_count_copy(evidence.booking_count, 'booking')}, {paid_invoice_copy}, and "
+                    f"App-owned proof supplies {tracked_content_copy}, "
+                    f"{booking_copy}, {paid_invoice_copy}, and "
                     f"{revenue_copy} canonical payment truth."
                 ),
                 "The selected action stays review-only so the app can explain a next step without claiming execution or causality.",

@@ -67,6 +67,13 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
   - `Success evidence`
   - `Diagnostic signals`
   - `Copy-ready recovery brief`
+- Directly below the recovery brief, the page includes `Rule-backed decision trace` and `Decision trace`.
+- The decision trace ranks:
+  - `Booking-step recovery brief` as `Selected` with `9/10`
+  - `Broad nurture follow-up` as `Held for later` with `6/10`
+  - `Direct Bloomreach segment or campaign mutation` as `Blocked in this slice` with `3/10`
+- The decision trace includes `Schema fit`, `App evidence fit`, `Review safety`, and `Evidence chain`.
+- The decision trace states that no live LLM call is required, no campaign is sent, no Bloomreach object is mutated, and Loomi diagnostics do not become paid truth.
 - The event/property proof includes:
   - `cart_update.total_quantity`
   - `purchase.purchase_status`
@@ -89,8 +96,9 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 3. Cursor MCP provides the live Loomi proof: the authenticated `sleepy-goose` project has a rich commerce event schema.
 4. The in-app schema blueprint is deterministic and review-only; it does not claim the page made a live Loomi call.
 5. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
-6. The agent does not claim causal lift or invent paid truth.
-7. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
+6. The decision trace shows why the recovery brief beats a broad nurture follow-up and why direct Bloomreach mutation is blocked in this slice.
+7. The agent does not claim causal lift or invent paid truth.
+8. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
 
 ## Optional Report Cross-Check
 

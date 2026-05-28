@@ -109,6 +109,42 @@ class GrowthLoopMeasurementPlan:
 
 
 @dataclass(frozen=True)
+class GrowthLoopAgentConsoleStep:
+    label: str
+    title: str
+    detail: str
+    status_label: str
+
+
+@dataclass(frozen=True)
+class GrowthLoopCapabilitySignal:
+    label: str
+    value: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class GrowthLoopReviewPacket:
+    title: str
+    summary: str
+    selected_action: str
+    segment_summary: str
+    measurement_summary: str
+    proof_chain: tuple[str, ...]
+    boundaries: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GrowthLoopAgentConsole:
+    title: str
+    summary: str
+    primary_action_label: str
+    steps: tuple[GrowthLoopAgentConsoleStep, ...]
+    capability_signals: tuple[GrowthLoopCapabilitySignal, ...]
+    review_packet: GrowthLoopReviewPacket
+
+
+@dataclass(frozen=True)
 class LoomiDiagnosticContext:
     source_label: str
     source_kind: str
@@ -140,6 +176,7 @@ class GrowthLoopActionBrief:
     decision_trace: GrowthLoopDecisionTrace | None
     segment_recipe: GrowthLoopSegmentRecipe | None
     measurement_plan: GrowthLoopMeasurementPlan | None
+    agent_console: GrowthLoopAgentConsole | None
     confidence_label: str
     confidence_summary: str
     limitations: tuple[str, ...]
@@ -204,6 +241,7 @@ def build_growth_loop_action_brief(
         decision_trace=_build_decision_trace(stage, evidence),
         segment_recipe=_build_segment_recipe(stage),
         measurement_plan=_build_measurement_plan(stage),
+        agent_console=_build_agent_console(stage, evidence),
         confidence_label=stage_copy["confidence_label"],
         confidence_summary=stage_copy["confidence_summary"],
         limitations=(
@@ -421,6 +459,122 @@ def _build_measurement_plan(stage: str) -> GrowthLoopMeasurementPlan | None:
             "This page plans measurement; it does not report measured lift or causal impact.",
             "No saved Bloomreach segment, campaign, recommendation, export, or send is created from this app.",
             "Campaign, retargeting, Loomi, and Conversation signals diagnose engagement only; canonical invoice and payment records remain paid truth.",
+        ),
+    )
+
+
+def _build_agent_console(
+    stage: str,
+    evidence: GrowthLoopWorkspaceEvidence,
+) -> GrowthLoopAgentConsole | None:
+    if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS:
+        return None
+
+    revenue_copy = _money_copy(evidence.paid_revenue_cents)
+    paid_invoice_copy = _count_copy(evidence.paid_invoice_count, "paid invoice")
+
+    return GrowthLoopAgentConsole(
+        title="Agent console",
+        summary=(
+            "Paid result exists; the agent packaged the proof, schema opportunity, "
+            "reviewable action, segment recipe, and measurement plan into one review packet."
+        ),
+        primary_action_label="View review packet",
+        steps=(
+            GrowthLoopAgentConsoleStep(
+                label="Proof",
+                title="Paid result boundary",
+                detail=(
+                    f"{paid_invoice_copy} and {revenue_copy} are counted only from app-owned "
+                    "invoice and payment records."
+                ),
+                status_label="Verified",
+            ),
+            GrowthLoopAgentConsoleStep(
+                label="Schema",
+                title="Bloomreach opportunity",
+                detail=(
+                    "Cursor MCP proof showed cart_update, checkout, view_item, purchase, "
+                    "campaign, and retargeting fields in sleepy-goose."
+                ),
+                status_label="Mapped",
+            ),
+            GrowthLoopAgentConsoleStep(
+                label="Action",
+                title="Reviewable recovery brief",
+                detail="Prepare one booking-step recovery brief for human review before any send.",
+                status_label="Selected",
+            ),
+            GrowthLoopAgentConsoleStep(
+                label="Segment",
+                title="Bloomreach-ready recipe",
+                detail="Use include/exclude rules and a 24-hour recovery window a marketer can recreate.",
+                status_label="Ready",
+            ),
+            GrowthLoopAgentConsoleStep(
+                label="Measure",
+                title="Holdout-first plan",
+                detail="Measure paid revenue and paid conversion rate after execution; no lift is claimed yet.",
+                status_label="Defined",
+            ),
+        ),
+        capability_signals=(
+            GrowthLoopCapabilitySignal(
+                label="App-owned paid truth",
+                value=f"{paid_invoice_copy}, {revenue_copy}",
+                detail="Canonical invoice and payment records decide revenue.",
+            ),
+            GrowthLoopCapabilitySignal(
+                label="Cursor MCP schema proof",
+                value="sleepy-goose",
+                detail="Verified before runtime; not a live page-load MCP call.",
+            ),
+            GrowthLoopCapabilitySignal(
+                label="PayPal-shaped outcome proof",
+                value="Order/capture seed",
+                detail="Demonstrates paid-result flow without a live PayPal payment.",
+            ),
+            GrowthLoopCapabilitySignal(
+                label="Review-only action",
+                value="No send",
+                detail="The app prepares review artifacts and does not mutate external systems.",
+            ),
+        ),
+        review_packet=GrowthLoopReviewPacket(
+            title="Review packet",
+            summary=(
+                "One compact packet for judges and reviewers: what was proven, which recovery "
+                "loop was selected, how Bloomreach can recreate it, and how success would be measured."
+            ),
+            selected_action=(
+                "Booking-step recovery brief for prospects who reached a booking or checkout-like "
+                "step but have no later paid result."
+            ),
+            segment_summary=(
+                "Bloomreach-ready recipe: include non-empty cart_update or booking-step analogues, "
+                "exclude later completed purchases or app-owned paid invoices, and default to a "
+                "24-hour recovery window."
+            ),
+            measurement_summary=(
+                "Primary metric is paid revenue; supporting metric is paid conversion rate. "
+                "Use a withheld holdout first and claim no lift until the campaign runs and "
+                "app-owned paid outcomes are compared."
+            ),
+            proof_chain=(
+                "Loomi schema proof supplies cart_update, checkout, view_item, purchase, campaign, and retargeting fields.",
+                (
+                    f"App-owned proof supplies {_count_copy(evidence.tracked_content_count, 'content item')}, "
+                    f"{_count_copy(evidence.booking_count, 'booking')}, {paid_invoice_copy}, and "
+                    f"{revenue_copy} canonical payment truth."
+                ),
+                "The selected action stays review-only so the app can explain a next step without claiming execution or causality.",
+            ),
+            boundaries=(
+                "No campaign is sent.",
+                "No Bloomreach object is mutated.",
+                "No lift is claimed yet.",
+                "App-owned invoice and payment records remain paid truth.",
+            ),
         ),
     )
 

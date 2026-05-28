@@ -115,6 +115,8 @@ def test_growth_loop_stage_paid_result_exists_keeps_paid_truth_app_owned():
     assert brief.segment_recipe.title == "Bloomreach-ready segment recipe"
     assert brief.measurement_plan is not None
     assert brief.measurement_plan.title == "Measurement plan"
+    assert brief.agent_console is not None
+    assert brief.agent_console.title == "Agent console"
 
 
 def test_growth_loop_loomi_fixture_is_diagnostic_and_no_autonomous_action():
@@ -180,6 +182,7 @@ def test_growth_loop_reviewable_action_is_paid_result_only():
         assert brief.decision_trace is None
         assert brief.segment_recipe is None
         assert brief.measurement_plan is None
+        assert brief.agent_console is None
 
 
 def test_growth_loop_reviewable_action_is_review_only_and_paid_evidence_grounded():
@@ -414,3 +417,61 @@ def test_growth_loop_measurement_plan_is_holdout_first_and_no_lift_yet():
     assert "revenue improvement until the campaign runs" in combined_text
     assert "does not report measured lift or causal impact" in combined_text
     assert "canonical invoice and payment records remain paid truth" in combined_text
+
+
+def test_growth_loop_agent_console_packages_review_packet_and_boundaries():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=1,
+            paid_invoice_count=1,
+            paid_revenue_cents=19500,
+        )
+    )
+
+    assert brief.agent_console is not None
+    console = brief.agent_console
+    packet = console.review_packet
+    combined_text = " ".join(
+        (
+            console.title,
+            console.summary,
+            console.primary_action_label,
+            " ".join(step.label for step in console.steps),
+            " ".join(step.title for step in console.steps),
+            " ".join(step.detail for step in console.steps),
+            " ".join(signal.label for signal in console.capability_signals),
+            " ".join(signal.value for signal in console.capability_signals),
+            " ".join(signal.detail for signal in console.capability_signals),
+            packet.title,
+            packet.summary,
+            packet.selected_action,
+            packet.segment_summary,
+            packet.measurement_summary,
+            " ".join(packet.proof_chain),
+            " ".join(packet.boundaries),
+        )
+    ).lower()
+
+    assert [step.label for step in console.steps] == ["Proof", "Schema", "Action", "Segment", "Measure"]
+    assert console.primary_action_label == "View review packet"
+    assert packet.title == "Review packet"
+    assert "app-owned paid truth" in combined_text
+    assert "cursor mcp schema proof" in combined_text
+    assert "paypal-shaped outcome proof" in combined_text
+    assert "review-only action" in combined_text
+    assert "1 paid invoice" in combined_text
+    assert "$195.00" in combined_text
+    assert "booking-step recovery brief" in combined_text
+    assert "24-hour recovery window" in combined_text
+    assert "withheld holdout first" in combined_text
+    assert "no campaign is sent" in combined_text
+    assert "no bloomreach object is mutated" in combined_text
+    assert "no lift is claimed yet" in combined_text
+    assert "app-owned invoice and payment records remain paid truth" in combined_text
+    assert "not a live page-load mcp call" in combined_text
+    assert "causal lift" not in combined_text

@@ -105,6 +105,9 @@ def test_growth_loop_stage_paid_result_exists_keeps_paid_truth_app_owned():
     assert "Loomi diagnostics are context for review, not a second paid-result ledger." in brief.limitations
     assert brief.schema_opportunity.opportunity_title == "Cart-abandon recover & convert"
     assert brief.schema_opportunity.source_status_label == "Verified via Cursor MCP"
+    assert brief.reviewable_action is not None
+    assert brief.reviewable_action.title == "Reviewable recovery brief"
+    assert "app-owned paid conversion lift" in " ".join(brief.reviewable_action.success_evidence)
 
 
 def test_growth_loop_loomi_fixture_is_diagnostic_and_no_autonomous_action():
@@ -135,6 +138,81 @@ def test_growth_loop_loomi_fixture_is_diagnostic_and_no_autonomous_action():
     assert "causal lift" not in combined_text
     assert "caused revenue" not in combined_text
     assert "send automatically" not in combined_text
+
+
+def test_growth_loop_reviewable_action_is_paid_result_only():
+    non_paid_evidence = (
+        _evidence(),
+        _evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+        ),
+        _evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+        ),
+        _evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=1,
+        ),
+    )
+
+    for evidence in non_paid_evidence:
+        brief = build_growth_loop_action_brief(evidence=evidence)
+
+        assert brief.reviewable_action is None
+
+
+def test_growth_loop_reviewable_action_is_review_only_and_paid_evidence_grounded():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=1,
+            paid_invoice_count=1,
+            paid_revenue_cents=19500,
+        )
+    )
+
+    assert brief.reviewable_action is not None
+    action = brief.reviewable_action
+    combined_text = " ".join(
+        (
+            action.summary,
+            " ".join(action.target_segment),
+            " ".join(action.message_outline),
+            " ".join(action.bloomreach_next_step),
+            " ".join(action.success_evidence),
+            " ".join(action.diagnostic_signals),
+            action.copy_ready_text,
+            " ".join(action.limitations),
+        )
+    ).lower()
+
+    assert action.title == "Reviewable recovery brief"
+    assert "draft a segment spec" in combined_text
+    assert "app-owned paid conversion lift" in combined_text
+    assert "stored booking, invoice, and payment-backed records" in combined_text
+    assert "campaign.status" in combined_text
+    assert "retargeting.audience" in combined_text
+    assert "does not mutate bloomreach" in combined_text
+    assert "does not count revenue" in combined_text
+    assert "prove causality" in combined_text
+    assert "send the recovery message" in combined_text
+    assert "caused revenue" not in combined_text
+    assert "saved segment, campaign, or recommendation" in combined_text
 
 
 def test_sleepy_goose_schema_opportunity_is_review_only_and_event_grounded():

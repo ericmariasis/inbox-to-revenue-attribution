@@ -46,6 +46,19 @@ class GrowthLoopSchemaOpportunity:
 
 
 @dataclass(frozen=True)
+class GrowthLoopReviewableActionBrief:
+    title: str
+    summary: str
+    target_segment: tuple[str, ...]
+    message_outline: tuple[str, ...]
+    bloomreach_next_step: tuple[str, ...]
+    success_evidence: tuple[str, ...]
+    diagnostic_signals: tuple[str, ...]
+    copy_ready_text: str
+    limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class LoomiDiagnosticContext:
     source_label: str
     source_kind: str
@@ -73,6 +86,7 @@ class GrowthLoopActionBrief:
     app_evidence: tuple[GrowthLoopEvidenceItem, ...]
     loomi_context: LoomiDiagnosticContext
     schema_opportunity: GrowthLoopSchemaOpportunity
+    reviewable_action: GrowthLoopReviewableActionBrief | None
     confidence_label: str
     confidence_summary: str
     limitations: tuple[str, ...]
@@ -133,6 +147,7 @@ def build_growth_loop_action_brief(
         app_evidence=_app_evidence_items(evidence),
         loomi_context=context,
         schema_opportunity=build_sleepy_goose_schema_opportunity(),
+        reviewable_action=_build_reviewable_action_brief(stage),
         confidence_label=stage_copy["confidence_label"],
         confidence_summary=stage_copy["confidence_summary"],
         limitations=(
@@ -143,6 +158,57 @@ def build_growth_loop_action_brief(
         ),
         human_review_note=(
             "Review this action before sending, publishing, or changing any external system."
+        ),
+    )
+
+
+def _build_reviewable_action_brief(
+    stage: str,
+) -> GrowthLoopReviewableActionBrief | None:
+    if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS:
+        return None
+
+    return GrowthLoopReviewableActionBrief(
+        title="Reviewable recovery brief",
+        summary=(
+            "Prepare one booking-step recovery brief from the schema-backed cart-abandon "
+            "opportunity and the paid-result path already proven in this workspace."
+        ),
+        target_segment=(
+            "Prospects who reached a booking or checkout-like step but have not produced a later paid result.",
+            "Prioritize high-intent activity that resembles non-empty carts, checkout starts, or product/category views.",
+            "Exclude anyone who already has a later app-owned paid invoice or payment-backed result.",
+        ),
+        message_outline=(
+            "Open with a helpful reminder that the booking step was not finished.",
+            "Reference the last known interest area in plain tutor-safe language.",
+            "Invite the prospect back to the same measured booking path so the next outcome can be reviewed.",
+        ),
+        bloomreach_next_step=(
+            "Draft a segment spec using cart_update, checkout, view_item, and purchase exclusion logic.",
+            "Keep the segment as a human-reviewed recipe until someone recreates it inside Bloomreach.",
+            "Use campaign and retargeting events only as diagnostic engagement signals after review.",
+        ),
+        success_evidence=(
+            "Primary proof is later app-owned paid conversion lift inside the reviewed target segment.",
+            "Count paid success only through stored booking, invoice, and payment-backed records in this app.",
+            "Compare recovered prospects against a holdout or non-targeted group before claiming improvement.",
+        ),
+        diagnostic_signals=(
+            "campaign.status, campaign.url, and campaign.action_type can show message engagement.",
+            "retargeting.audience, retargeting.platform, and retargeting.action can show audience exposure.",
+            "These signals explain engagement context; they do not count revenue or prove causality.",
+        ),
+        copy_ready_text=(
+            "Draft recovery brief: Review prospects who reached the booking step but did not finish payment. "
+            "Prepare a short reminder tied to their last known interest area, send it only after human review, "
+            "and measure success through later app-owned paid invoices and payment-backed records. "
+            "Use Bloomreach campaign and retargeting events as diagnostic engagement context only."
+        ),
+        limitations=(
+            "Prepared for human review only; this app does not send the recovery message.",
+            "This draft does not mutate Bloomreach or create a saved segment, campaign, or recommendation.",
+            "It does not count revenue, prove causality, or replace app-owned booking, invoice, and payment records.",
         ),
     )
 

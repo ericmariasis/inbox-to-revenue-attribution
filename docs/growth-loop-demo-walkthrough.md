@@ -59,6 +59,14 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 - The page includes `Live Loomi schema proof` with `Verified via Cursor MCP`.
 - The schema opportunity is `Cart-abandon recover & convert`.
 - The opportunity is bridged back to this app as a `Booking-step recovery analogue`.
+- Directly below the schema proof, the page includes `Reviewable recovery brief`.
+- The recovery brief includes:
+  - `Target segment`
+  - `Message outline`
+  - `Draft Bloomreach segment spec`
+  - `Success evidence`
+  - `Diagnostic signals`
+  - `Copy-ready recovery brief`
 - The event/property proof includes:
   - `cart_update.total_quantity`
   - `purchase.purchase_status`
@@ -72,6 +80,7 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 - Loomi context is labeled `Loomi fixture diagnostics`.
 - Limits state that revenue remains canonical invoice/payment truth from this app, Loomi diagnostics are not a second paid-result ledger, and no external mutation is executed.
 - The schema opportunity boundary states that it is not a live page-load MCP call, does not send campaigns, and does not count revenue or prove causality.
+- The recovery brief boundary states that it is prepared for human review only, does not mutate Bloomreach, does not create saved segments/campaigns/recommendations, and does not count revenue or prove causality.
 
 ## Demo Talk Track
 
@@ -79,8 +88,9 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 2. The app owns the commercial truth: tracked content, attributed booking, local invoice, and PayPal-shaped capture event.
 3. Cursor MCP provides the live Loomi proof: the authenticated `sleepy-goose` project has a rich commerce event schema.
 4. The in-app schema blueprint is deterministic and review-only; it does not claim the page made a live Loomi call.
-5. The agent does not claim causal lift or invent paid truth.
-6. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
+5. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
+6. The agent does not claim causal lift or invent paid truth.
+7. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
 
 ## Optional Report Cross-Check
 

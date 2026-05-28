@@ -2915,6 +2915,59 @@ def _render_growth_loop_agent_page(
     opportunity_proof = _render_bullet_list(opportunity.proof_evidence)
     opportunity_limitations = _render_bullet_list(opportunity.limitations)
     opportunity_chips = _render_growth_loop_chip_list(opportunity.event_properties)
+    reviewable_action_section = ""
+    if brief.reviewable_action is not None:
+        action = brief.reviewable_action
+        action_target_segment = _render_bullet_list(action.target_segment)
+        action_message_outline = _render_bullet_list(action.message_outline)
+        action_bloomreach_next_step = _render_bullet_list(action.bloomreach_next_step)
+        action_success_evidence = _render_bullet_list(action.success_evidence)
+        action_diagnostic_signals = _render_bullet_list(action.diagnostic_signals)
+        action_limitations = _render_bullet_list(action.limitations)
+        reviewable_action_section = f"""
+    <section class="card stack">
+      <div>
+        <p class="eyebrow">Reviewable action artifact</p>
+        <h2>{html.escape(action.title)}</h2>
+        <p>{html.escape(action.summary)}</p>
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <h2>Target segment</h2>
+          {action_target_segment}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Message outline</h2>
+          {action_message_outline}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Draft Bloomreach segment spec</h2>
+          {action_bloomreach_next_step}
+        </section>
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <h2>Success evidence</h2>
+          {action_success_evidence}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Diagnostic signals</h2>
+          {action_diagnostic_signals}
+        </section>
+      </div>
+      <section class="topic-summary stack">
+        <div>
+          <p class="eyebrow">Static copy-ready block</p>
+          <h2>Copy-ready recovery brief</h2>
+        </div>
+        <p class="static-copy-block">{html.escape(action.copy_ready_text)}</p>
+      </section>
+      <section class="topic-summary stack">
+        <h2>Review boundary</h2>
+        {action_limitations}
+      </section>
+    </section>
+        """
     if brief.loomi_context.source_kind == "live_mcp":
         loomi_demo_copy = (
             "This request is using live Loomi Marketing and Analytics MCP diagnostics. "
@@ -3033,6 +3086,7 @@ def _render_growth_loop_agent_page(
         {opportunity_limitations}
       </section>
     </section>
+    {reviewable_action_section}
     <section class="grid">
       <article class="card stack">
         <div>
@@ -11469,6 +11523,17 @@ def _page_layout(*, title: str, body: str) -> str:
 
       .copy-button {{
         white-space: nowrap;
+      }}
+
+      .static-copy-block {{
+        margin: 0;
+        padding: 16px;
+        border-radius: 16px;
+        border: 1px dashed rgba(47, 95, 91, 0.34);
+        background: rgba(47, 95, 91, 0.08);
+        color: var(--ink);
+        font-weight: 700;
+        line-height: 1.55;
       }}
 
       .data-table {{

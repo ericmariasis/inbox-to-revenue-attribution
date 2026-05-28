@@ -86,6 +86,16 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 - The segment recipe states that it is a review-only manual recreation recipe, does not create a saved Bloomreach segment/campaign/recommendation, does not send a campaign, and does not mutate any external system.
 - The segment recipe measures later success through app-owned paid invoice/payment-backed records and treats campaign/retargeting events as diagnostic context only.
 - The Conversation MCP note says the proof was deferred because it exposed catalog-proxy signals rather than support, checkout, booking, refund, or payment-failure telemetry.
+- Directly below the segment recipe, the page includes `Measurement plan`.
+- The measurement plan includes:
+  - paid revenue as the primary metric
+  - paid conversion rate / paid invoice count as supporting context
+  - a withheld holdout as the preferred comparison
+  - a 24-hour recovery send window
+  - a 7-day paid-outcome observation window
+  - campaign and retargeting engagement as diagnostic context only
+  - a visible `No lift yet` boundary
+- The measurement plan states that the app does not report measured lift, causal impact, or revenue improvement until a campaign runs and app-owned paid outcomes are compared.
 - The event/property proof includes:
   - `cart_update.total_quantity`
   - `purchase.purchase_status`
@@ -110,8 +120,9 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 5. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
 6. The decision trace shows why the recovery brief beats a broad nurture follow-up and why direct Bloomreach mutation is blocked in this slice.
 7. The segment recipe shows exactly what a marketer could manually recreate in Bloomreach: include logic, exclude logic, a 24-hour recovery window, message variables, and measurement guardrails.
-8. The agent does not claim causal lift or invent paid truth.
-9. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
+8. The measurement plan shows how a marketer would evaluate the reviewed recovery loop: paid revenue first, holdout comparison, 24-hour send window, 7-day paid-outcome observation, and diagnostic-only engagement signals.
+9. The agent does not claim causal lift or invent paid truth.
+10. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
 
 ## Optional Report Cross-Check
 

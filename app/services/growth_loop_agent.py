@@ -94,6 +94,21 @@ class GrowthLoopSegmentRecipe:
 
 
 @dataclass(frozen=True)
+class GrowthLoopMeasurementCard:
+    label: str
+    title: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class GrowthLoopMeasurementPlan:
+    title: str
+    summary: str
+    cards: tuple[GrowthLoopMeasurementCard, ...]
+    limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class LoomiDiagnosticContext:
     source_label: str
     source_kind: str
@@ -124,6 +139,7 @@ class GrowthLoopActionBrief:
     reviewable_action: GrowthLoopReviewableActionBrief | None
     decision_trace: GrowthLoopDecisionTrace | None
     segment_recipe: GrowthLoopSegmentRecipe | None
+    measurement_plan: GrowthLoopMeasurementPlan | None
     confidence_label: str
     confidence_summary: str
     limitations: tuple[str, ...]
@@ -187,6 +203,7 @@ def build_growth_loop_action_brief(
         reviewable_action=_build_reviewable_action_brief(stage),
         decision_trace=_build_decision_trace(stage, evidence),
         segment_recipe=_build_segment_recipe(stage),
+        measurement_plan=_build_measurement_plan(stage),
         confidence_label=stage_copy["confidence_label"],
         confidence_summary=stage_copy["confidence_summary"],
         limitations=(
@@ -334,6 +351,76 @@ def _build_decision_trace(
                 outcome="Blocked because Story 130 is an explanation slice, not an execution or mutation slice.",
                 boundary="No saved segment, recommendation, campaign, or external system change is created here.",
             ),
+        ),
+    )
+
+
+def _build_measurement_plan(stage: str) -> GrowthLoopMeasurementPlan | None:
+    if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS:
+        return None
+
+    return GrowthLoopMeasurementPlan(
+        title="Measurement plan",
+        summary=(
+            "Use this reviewer-ready plan after the segment recipe is approved and run. "
+            "The app does not claim lift yet; it defines how paid outcomes would be compared."
+        ),
+        cards=(
+            GrowthLoopMeasurementCard(
+                label="Primary metric",
+                title="Paid revenue",
+                detail=(
+                    "Measure later revenue through app-owned paid invoices and payment-backed "
+                    "records in this workspace."
+                ),
+            ),
+            GrowthLoopMeasurementCard(
+                label="Supporting metric",
+                title="Paid conversion rate",
+                detail=(
+                    "Track paid invoice count among eligible recovered prospects as supporting "
+                    "conversion context."
+                ),
+            ),
+            GrowthLoopMeasurementCard(
+                label="Comparison design",
+                title="Withheld holdout first",
+                detail=(
+                    "Compare targeted eligible prospects against eligible contacts withheld from "
+                    "the recovery send; use a non-targeted comparison only when a formal holdout "
+                    "was not created."
+                ),
+            ),
+            GrowthLoopMeasurementCard(
+                label="Timing",
+                title="24h send, 7d observe",
+                detail=(
+                    "Trigger the reviewed recovery message within 24 hours of qualifying cart, "
+                    "checkout, or booking-step activity, then observe app-owned paid outcomes "
+                    "for 7 days."
+                ),
+            ),
+            GrowthLoopMeasurementCard(
+                label="Diagnostic context",
+                title="Engagement is not revenue",
+                detail=(
+                    "Use campaign.status, campaign.url, retargeting.audience, and "
+                    "retargeting.action to explain engagement, not to count revenue."
+                ),
+            ),
+            GrowthLoopMeasurementCard(
+                label="Claim boundary",
+                title="No lift yet",
+                detail=(
+                    "Do not claim lift, causality, statistical confidence, or revenue "
+                    "improvement until the campaign runs and app-owned paid outcomes are compared."
+                ),
+            ),
+        ),
+        limitations=(
+            "This page plans measurement; it does not report measured lift or causal impact.",
+            "No saved Bloomreach segment, campaign, recommendation, export, or send is created from this app.",
+            "Campaign, retargeting, Loomi, and Conversation signals diagnose engagement only; canonical invoice and payment records remain paid truth.",
         ),
     )
 

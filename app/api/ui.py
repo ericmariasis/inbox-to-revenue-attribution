@@ -3073,6 +3073,41 @@ def _render_growth_loop_agent_page(
       </section>
     </section>
         """
+    measurement_plan_section = ""
+    if brief.measurement_plan is not None:
+        plan = brief.measurement_plan
+        plan_cards = "".join(
+            f"""
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">{html.escape(card.label)}</p>
+            <h2>{html.escape(card.title)}</h2>
+          </div>
+          <p>{html.escape(card.detail)}</p>
+        </section>
+            """
+            for card in plan.cards
+        )
+        plan_limitations = _render_bullet_list(plan.limitations)
+        measurement_plan_section = f"""
+    <section class="card stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Holdout-first measurement</p>
+          <h2>{html.escape(plan.title)}</h2>
+          <p>{html.escape(plan.summary)}</p>
+        </div>
+        <span class="pill-note">No lift yet</span>
+      </div>
+      <div class="grid">
+        {plan_cards}
+      </div>
+      <section class="topic-summary stack">
+        <h2>Claim boundary</h2>
+        {plan_limitations}
+      </section>
+    </section>
+        """
     if brief.loomi_context.source_kind == "live_mcp":
         loomi_demo_copy = (
             "This request is using live Loomi Marketing and Analytics MCP diagnostics. "
@@ -3194,6 +3229,7 @@ def _render_growth_loop_agent_page(
     {reviewable_action_section}
     {decision_trace_section}
     {segment_recipe_section}
+    {measurement_plan_section}
     <section class="grid">
       <article class="card stack">
         <div>

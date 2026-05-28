@@ -2968,6 +2968,58 @@ def _render_growth_loop_agent_page(
       </section>
     </section>
         """
+    decision_trace_section = ""
+    if brief.decision_trace is not None:
+        trace = brief.decision_trace
+        trace_scoring_criteria = _render_bullet_list(trace.scoring_criteria)
+        trace_evidence_chain = _render_bullet_list(trace.evidence_chain)
+        trace_candidates = "".join(
+            f"""
+        <section class="topic-summary stack">
+          <div>
+            <div class="status-row">
+              <p class="eyebrow">{html.escape(candidate.status_label)}</p>
+              <span class="pill-note">{candidate.score}/{candidate.max_score}</span>
+            </div>
+            <h2>{html.escape(candidate.title)}</h2>
+          </div>
+          <p>{html.escape(candidate.summary)}</p>
+          {_render_bullet_list(candidate.criteria)}
+          <p><strong>{html.escape(candidate.outcome)}</strong></p>
+          <p>{html.escape(candidate.boundary)}</p>
+        </section>
+            """
+            for candidate in trace.candidates
+        )
+        decision_trace_section = f"""
+    <section class="card stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Rule-backed decision trace</p>
+          <h2>{html.escape(trace.title)}</h2>
+          <p>{html.escape(trace.summary)}</p>
+        </div>
+        <span class="pill-note">Human review</span>
+      </div>
+      <section class="topic-summary stack">
+        <h2>No autonomous execution</h2>
+        <p>{html.escape(trace.guardrail_summary)}</p>
+      </section>
+      <div class="grid">
+        {trace_candidates}
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <h2>Scoring criteria</h2>
+          {trace_scoring_criteria}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Evidence chain</h2>
+          {trace_evidence_chain}
+        </section>
+      </div>
+    </section>
+        """
     if brief.loomi_context.source_kind == "live_mcp":
         loomi_demo_copy = (
             "This request is using live Loomi Marketing and Analytics MCP diagnostics. "
@@ -3087,6 +3139,7 @@ def _render_growth_loop_agent_page(
       </section>
     </section>
     {reviewable_action_section}
+    {decision_trace_section}
     <section class="grid">
       <article class="card stack">
         <div>

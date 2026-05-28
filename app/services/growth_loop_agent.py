@@ -59,6 +59,28 @@ class GrowthLoopReviewableActionBrief:
 
 
 @dataclass(frozen=True)
+class GrowthLoopDecisionCandidate:
+    title: str
+    status_label: str
+    score: int
+    max_score: int
+    summary: str
+    criteria: tuple[str, ...]
+    outcome: str
+    boundary: str
+
+
+@dataclass(frozen=True)
+class GrowthLoopDecisionTrace:
+    title: str
+    summary: str
+    guardrail_summary: str
+    scoring_criteria: tuple[str, ...]
+    evidence_chain: tuple[str, ...]
+    candidates: tuple[GrowthLoopDecisionCandidate, ...]
+
+
+@dataclass(frozen=True)
 class LoomiDiagnosticContext:
     source_label: str
     source_kind: str
@@ -87,6 +109,7 @@ class GrowthLoopActionBrief:
     loomi_context: LoomiDiagnosticContext
     schema_opportunity: GrowthLoopSchemaOpportunity
     reviewable_action: GrowthLoopReviewableActionBrief | None
+    decision_trace: GrowthLoopDecisionTrace | None
     confidence_label: str
     confidence_summary: str
     limitations: tuple[str, ...]
@@ -148,6 +171,7 @@ def build_growth_loop_action_brief(
         loomi_context=context,
         schema_opportunity=build_sleepy_goose_schema_opportunity(),
         reviewable_action=_build_reviewable_action_brief(stage),
+        decision_trace=_build_decision_trace(stage, evidence),
         confidence_label=stage_copy["confidence_label"],
         confidence_summary=stage_copy["confidence_summary"],
         limitations=(
@@ -158,6 +182,96 @@ def build_growth_loop_action_brief(
         ),
         human_review_note=(
             "Review this action before sending, publishing, or changing any external system."
+        ),
+    )
+
+
+def _build_decision_trace(
+    stage: str,
+    evidence: GrowthLoopWorkspaceEvidence,
+) -> GrowthLoopDecisionTrace | None:
+    if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS:
+        return None
+
+    return GrowthLoopDecisionTrace(
+        title="Decision trace",
+        summary=(
+            "The agent compares three possible next actions and selects the recovery brief "
+            "because it best matches the verified Loomi schema, this app's paid-result path, "
+            "and the human-review safety boundary."
+        ),
+        guardrail_summary=(
+            "Rule-backed trace only: no live LLM call is required, no campaign is sent, "
+            "no Bloomreach object is mutated, and Loomi diagnostics do not become paid truth."
+        ),
+        scoring_criteria=(
+            "Schema fit: does the action use verified cart, checkout, view, purchase, campaign, or retargeting fields?",
+            "App evidence fit: does the action stay tied to tracked content, bookings, invoices, and payment-backed records?",
+            "Review safety: can the action be reviewed without sending, publishing, mutating Bloomreach, or making causal claims?",
+        ),
+        evidence_chain=(
+            "Loomi schema proof supplies cart_update, checkout, view_item, purchase, campaign, and retargeting fields.",
+            (
+                "App-owned proof supplies "
+                f"{_count_copy(evidence.tracked_content_count, 'content item')}, "
+                f"{_count_copy(evidence.booking_count, 'booking')}, "
+                f"{_count_copy(evidence.paid_invoice_count, 'paid invoice')}, and "
+                f"{_money_copy(evidence.paid_revenue_cents)} canonical payment truth."
+            ),
+            "The selected action stays review-only so the demo can explain a next step without claiming execution or causality.",
+        ),
+        candidates=(
+            GrowthLoopDecisionCandidate(
+                title="Booking-step recovery brief",
+                status_label="Selected",
+                score=9,
+                max_score=10,
+                summary=(
+                    "Prepare the reviewed recovery brief for prospects who reached a booking or "
+                    "checkout-like step but have not produced a later paid result."
+                ),
+                criteria=(
+                    "Schema fit: strong match to cart_update, checkout, view_item, purchase, campaign, and retargeting fields.",
+                    "App evidence fit: strong match to the existing tracked content, booking, paid invoice, and payment truth.",
+                    "Review safety: strong because the app prepares copy and a segment recipe without sending or mutating anything.",
+                ),
+                outcome="Selected because it is actionable, evidence-backed, and safe for human review.",
+                boundary="Still review-only; success must later be measured through app-owned paid records.",
+            ),
+            GrowthLoopDecisionCandidate(
+                title="Broad nurture follow-up",
+                status_label="Held for later",
+                score=6,
+                max_score=10,
+                summary=(
+                    "Prepare a general educational follow-up for interested prospects who have not "
+                    "yet shown booking-step intent."
+                ),
+                criteria=(
+                    "Schema fit: partial because campaign engagement exists, but the cart/checkout signal is less direct.",
+                    "App evidence fit: weaker because it is farther from the paid booking path already proven here.",
+                    "Review safety: acceptable, but it risks diluting the demo into generic lifecycle marketing.",
+                ),
+                outcome="Held because it is useful later but less tightly connected to paid-result proof.",
+                boundary="Would still need human review and app-owned paid-result measurement before any lift claim.",
+            ),
+            GrowthLoopDecisionCandidate(
+                title="Direct Bloomreach segment or campaign mutation",
+                status_label="Blocked in this slice",
+                score=3,
+                max_score=10,
+                summary=(
+                    "Create or send a saved Bloomreach segment, recommendation, or campaign from "
+                    "the app without a separate review step."
+                ),
+                criteria=(
+                    "Schema fit: possible in concept, but the live sandbox has no saved objects to reuse yet.",
+                    "App evidence fit: weak because external mutation would not add app-owned paid truth by itself.",
+                    "Review safety: blocked because this story must not send campaigns or mutate Bloomreach.",
+                ),
+                outcome="Blocked because Story 130 is an explanation slice, not an execution or mutation slice.",
+                boundary="No saved segment, recommendation, campaign, or external system change is created here.",
+            ),
         ),
     )
 

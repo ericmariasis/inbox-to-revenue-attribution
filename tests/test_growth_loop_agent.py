@@ -108,6 +108,9 @@ def test_growth_loop_stage_paid_result_exists_keeps_paid_truth_app_owned():
     assert brief.reviewable_action is not None
     assert brief.reviewable_action.title == "Reviewable recovery brief"
     assert "app-owned paid conversion lift" in " ".join(brief.reviewable_action.success_evidence)
+    assert brief.decision_trace is not None
+    assert brief.decision_trace.title == "Decision trace"
+    assert "$195.00 canonical payment truth" in " ".join(brief.decision_trace.evidence_chain)
 
 
 def test_growth_loop_loomi_fixture_is_diagnostic_and_no_autonomous_action():
@@ -170,6 +173,7 @@ def test_growth_loop_reviewable_action_is_paid_result_only():
         brief = build_growth_loop_action_brief(evidence=evidence)
 
         assert brief.reviewable_action is None
+        assert brief.decision_trace is None
 
 
 def test_growth_loop_reviewable_action_is_review_only_and_paid_evidence_grounded():
@@ -213,6 +217,66 @@ def test_growth_loop_reviewable_action_is_review_only_and_paid_evidence_grounded
     assert "send the recovery message" in combined_text
     assert "caused revenue" not in combined_text
     assert "saved segment, campaign, or recommendation" in combined_text
+
+
+def test_growth_loop_decision_trace_selects_recovery_and_preserves_boundaries():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=1,
+            paid_invoice_count=1,
+            paid_revenue_cents=19500,
+        )
+    )
+
+    assert brief.decision_trace is not None
+    trace = brief.decision_trace
+    selected = [candidate for candidate in trace.candidates if candidate.status_label == "Selected"]
+    assert len(selected) == 1
+    assert selected[0].title == "Booking-step recovery brief"
+    assert selected[0].score == max(candidate.score for candidate in trace.candidates)
+    assert {candidate.title for candidate in trace.candidates} == {
+        "Booking-step recovery brief",
+        "Broad nurture follow-up",
+        "Direct Bloomreach segment or campaign mutation",
+    }
+
+    combined_text = " ".join(
+        (
+            trace.summary,
+            trace.guardrail_summary,
+            " ".join(trace.scoring_criteria),
+            " ".join(trace.evidence_chain),
+            " ".join(
+                " ".join(
+                    (
+                        candidate.title,
+                        candidate.status_label,
+                        candidate.summary,
+                        " ".join(candidate.criteria),
+                        candidate.outcome,
+                        candidate.boundary,
+                    )
+                )
+                for candidate in trace.candidates
+            ),
+        )
+    ).lower()
+
+    assert "schema fit" in combined_text
+    assert "app evidence fit" in combined_text
+    assert "review safety" in combined_text
+    assert "no live llm call is required" in combined_text
+    assert "no campaign is sent" in combined_text
+    assert "no bloomreach object is mutated" in combined_text
+    assert "do not become paid truth" in combined_text
+    assert "no saved segment, recommendation, campaign, or external system change" in combined_text
+    assert "caused revenue" not in combined_text
+    assert "causal lift" not in combined_text
 
 
 def test_sleepy_goose_schema_opportunity_is_review_only_and_event_grounded():

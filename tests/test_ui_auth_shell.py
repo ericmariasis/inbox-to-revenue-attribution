@@ -1457,6 +1457,8 @@ def test_growth_loop_page_hides_reviewable_recovery_brief_without_paid_result():
     assert "Live Loomi schema proof" in response.text
     assert "Reviewable recovery brief" not in response.text
     assert "Copy-ready recovery brief" not in response.text
+    assert "Decision trace" not in response.text
+    assert "Rule-backed decision trace" not in response.text
 
 
 def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
@@ -1559,6 +1561,22 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "retargeting.audience" in growth_response.text
     assert "does not mutate Bloomreach" in growth_response.text
     assert "saved segment, campaign, or recommendation" in growth_response.text
+    assert "Rule-backed decision trace" in growth_response.text
+    assert "Decision trace" in growth_response.text
+    assert "No autonomous execution" in growth_response.text
+    assert "no live LLM call is required" in growth_response.text
+    assert "no campaign is sent" in growth_response.text
+    assert "no Bloomreach object is mutated" in growth_response.text
+    assert "Booking-step recovery brief" in growth_response.text
+    assert "Broad nurture follow-up" in growth_response.text
+    assert "Direct Bloomreach segment or campaign mutation" in growth_response.text
+    assert "9/10" in growth_response.text
+    assert "6/10" in growth_response.text
+    assert "3/10" in growth_response.text
+    assert "Schema fit" in growth_response.text
+    assert "App evidence fit" in growth_response.text
+    assert "Review safety" in growth_response.text
+    assert "Evidence chain" in growth_response.text
     assert "Paid proof exists; choose the next reviewed action." in growth_response.text
     assert "App-owned evidence stays separate from Loomi diagnostics" in growth_response.text
     assert "1 content item" in growth_response.text

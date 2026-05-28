@@ -21,13 +21,16 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 5. Point to `Reviewable recovery brief`.
    - "The next artifact is the human-review brief: target segment, message outline, draft Bloomreach segment spec, success evidence, diagnostic signals, and copy-ready recovery text. It is useful enough to hand to a marketer, but still does not send or mutate anything."
 
-6. Point to the diagnosis and prepared action.
+6. Point to `Decision trace`.
+   - "The trace shows the agentic reasoning without pretending to execute anything. It scores the recovery brief above a broad nurture follow-up and blocks direct Bloomreach mutation because this slice is review-only."
+
+7. Point to the diagnosis and prepared action.
    - "The agent classifies the workspace as `Paid Result Exists`, identifies the next reviewed action, and prepares a follow-up brief instead of mutating an external system."
 
-7. Point to the evidence boundary.
+8. Point to the evidence boundary.
    - "Tracked content, bookings, canonical invoices, and payment-backed records stay separate from Loomi context. That keeps the claim honest."
 
-8. Open Reports, then `Why this revenue counted`.
+9. Open Reports, then `Why this revenue counted`.
    - "The paid outcome can be inspected through the reporting evidence chain: tracked content to booking to paid invoice to supporting PayPal-shaped capture event."
 
 ## Track 6 Framing
@@ -37,12 +40,14 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - App-owned attribution layer: tracked content, booking links, bookings, invoices, and payment events.
 - Payment-backed outcome layer: PayPal-shaped paid result evidence for the demo seed.
 - Agentic action layer: a bounded, copy-ready recovery brief for human review.
+- Decision-trace layer: deterministic candidate ranking that explains why recovery was selected and direct mutation was blocked.
 
 ## Claims To Make
 
 - "The demo shows cross-system orchestration from engagement context to paid-result evidence to reviewed action planning."
 - "The live Loomi proof showed a rich commerce event schema, and the app turns that into a reviewable cart-abandon recovery blueprint."
 - "The agent turns that blueprint into a concrete recovery brief with target segment, message outline, draft Bloomreach segment spec, and evidence plan."
+- "The decision trace ranks candidate actions with schema fit, app evidence fit, and review safety, so judges can see why recovery was selected."
 - "The app keeps revenue truth grounded in canonical booking, invoice, and payment records."
 - "Loomi context informs the recommendation but does not replace reporting truth."
 - "The action is prepared for review; it is not sent automatically."
@@ -55,6 +60,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - Do not say the schema-derived cart-abandon blueprint is a saved Loomi segmentation or campaign.
 - Do not say the copy-ready recovery brief was sent, exported, or created inside Bloomreach.
 - Do not say the agent sends campaigns or mutates external systems.
+- Do not say the decision scores are measured lift, statistical confidence, or live LLM output.
 - Do not say PayPal-shaped local evidence is a live PayPal transaction.
 
 ## Manual Proof Path

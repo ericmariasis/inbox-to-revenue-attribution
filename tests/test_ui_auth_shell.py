@@ -1434,6 +1434,31 @@ def test_growth_loop_page_is_disabled_by_default_for_signed_in_creator():
     assert growth_response.status_code == 404
 
 
+def test_growth_loop_page_hides_reviewable_recovery_brief_without_paid_result():
+    inserted = _insert_creator_user(
+        email=f"ui_growth_loop_unpaid_{uuid.uuid4().hex}@example.com",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_growth_loop_unpaid",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+
+    with _override_app_state("settings", _growth_loop_settings(enabled=True)):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/growth-loop", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Growth Loop Agent" in response.text
+    assert "Live Loomi schema proof" in response.text
+    assert "Reviewable recovery brief" not in response.text
+    assert "Copy-ready recovery brief" not in response.text
+
+
 def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     inserted = _insert_creator_user(
         email=f"ui_growth_loop_paid_{uuid.uuid4().hex}@example.com",
@@ -1520,6 +1545,20 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "retargeting.action" in growth_response.text
     assert "not a live page-load MCP call" in growth_response.text
     assert "does not count revenue, prove causality, or replace app-owned booking" in growth_response.text
+    assert "Reviewable recovery brief" in growth_response.text
+    assert "Target segment" in growth_response.text
+    assert "Message outline" in growth_response.text
+    assert "Draft Bloomreach segment spec" in growth_response.text
+    assert "Success evidence" in growth_response.text
+    assert "Diagnostic signals" in growth_response.text
+    assert "Static copy-ready block" in growth_response.text
+    assert "Copy-ready recovery brief" in growth_response.text
+    assert "app-owned paid conversion lift" in growth_response.text
+    assert "stored booking, invoice, and payment-backed records" in growth_response.text
+    assert "campaign.status" in growth_response.text
+    assert "retargeting.audience" in growth_response.text
+    assert "does not mutate Bloomreach" in growth_response.text
+    assert "saved segment, campaign, or recommendation" in growth_response.text
     assert "Paid proof exists; choose the next reviewed action." in growth_response.text
     assert "App-owned evidence stays separate from Loomi diagnostics" in growth_response.text
     assert "1 content item" in growth_response.text

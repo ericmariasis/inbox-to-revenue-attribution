@@ -3020,6 +3020,59 @@ def _render_growth_loop_agent_page(
       </div>
     </section>
         """
+    segment_recipe_section = ""
+    if brief.segment_recipe is not None:
+        recipe = brief.segment_recipe
+        recipe_include = _render_bullet_list(recipe.include_rules)
+        recipe_exclude = _render_bullet_list(recipe.exclude_rules)
+        recipe_window = _render_bullet_list(recipe.recovery_window)
+        recipe_message_variables = _render_bullet_list(recipe.message_variables)
+        recipe_measurement = _render_bullet_list(recipe.measurement_plan)
+        recipe_limitations = _render_bullet_list(recipe.limitations)
+        segment_recipe_section = f"""
+    <section class="card stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Manual Bloomreach recreation</p>
+          <h2>{html.escape(recipe.title)}</h2>
+          <p>{html.escape(recipe.summary)}</p>
+        </div>
+        <span class="pill-note">Review-only recipe</span>
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <h2>Include</h2>
+          {recipe_include}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Exclude</h2>
+          {recipe_exclude}
+        </section>
+        <section class="topic-summary stack">
+          <h2>24-hour recovery window</h2>
+          {recipe_window}
+        </section>
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <h2>Message variables</h2>
+          {recipe_message_variables}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Measure</h2>
+          {recipe_measurement}
+        </section>
+      </div>
+      <section class="topic-summary stack">
+        <h2>Conversation MCP note</h2>
+        <p>{html.escape(recipe.conversation_mcp_note)}</p>
+      </section>
+      <section class="topic-summary stack">
+        <h2>Review boundary</h2>
+        {recipe_limitations}
+      </section>
+    </section>
+        """
     if brief.loomi_context.source_kind == "live_mcp":
         loomi_demo_copy = (
             "This request is using live Loomi Marketing and Analytics MCP diagnostics. "
@@ -3140,6 +3193,7 @@ def _render_growth_loop_agent_page(
     </section>
     {reviewable_action_section}
     {decision_trace_section}
+    {segment_recipe_section}
     <section class="grid">
       <article class="card stack">
         <div>

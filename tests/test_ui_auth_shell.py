@@ -1459,6 +1459,7 @@ def test_growth_loop_page_hides_reviewable_recovery_brief_without_paid_result():
     assert "Copy-ready recovery brief" not in response.text
     assert "Decision trace" not in response.text
     assert "Rule-backed decision trace" not in response.text
+    assert "Bloomreach-ready segment recipe" not in response.text
 
 
 def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
@@ -1577,6 +1578,25 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "App evidence fit" in growth_response.text
     assert "Review safety" in growth_response.text
     assert "Evidence chain" in growth_response.text
+    assert "Bloomreach-ready segment recipe" in growth_response.text
+    assert "Manual Bloomreach recreation" in growth_response.text
+    assert "Review-only recipe" in growth_response.text
+    assert "Include" in growth_response.text
+    assert "Exclude" in growth_response.text
+    assert "24-hour recovery window" in growth_response.text
+    assert "Message variables" in growth_response.text
+    assert "Measure" in growth_response.text
+    assert "Conversation MCP note" in growth_response.text
+    assert "Review boundary" in growth_response.text
+    assert "cart_update" in growth_response.text
+    assert "total_quantity is greater than zero" in growth_response.text
+    assert "completed purchase event" in growth_response.text
+    assert "app-owned paid invoices and payment-backed records" in growth_response.text
+    assert "holdout or non-targeted group" in growth_response.text
+    assert "catalog-proxy signals" in growth_response.text
+    assert "support, checkout, booking, refund, or payment-failure telemetry" in growth_response.text
+    assert "does not create a saved Bloomreach segment" in growth_response.text
+    assert "No campaign is sent and no external system is mutated" in growth_response.text
     assert "Paid proof exists; choose the next reviewed action." in growth_response.text
     assert "App-owned evidence stays separate from Loomi diagnostics" in growth_response.text
     assert "1 content item" in growth_response.text

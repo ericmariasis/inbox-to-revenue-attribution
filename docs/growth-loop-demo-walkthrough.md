@@ -74,6 +74,18 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
   - `Direct Bloomreach segment or campaign mutation` as `Blocked in this slice` with `3/10`
 - The decision trace includes `Schema fit`, `App evidence fit`, `Review safety`, and `Evidence chain`.
 - The decision trace states that no live LLM call is required, no campaign is sent, no Bloomreach object is mutated, and Loomi diagnostics do not become paid truth.
+- Directly below the decision trace, the page includes `Bloomreach-ready segment recipe`.
+- The segment recipe includes:
+  - `Include`
+  - `Exclude`
+  - `24-hour recovery window`
+  - `Message variables`
+  - `Measure`
+  - `Conversation MCP note`
+  - `Review boundary`
+- The segment recipe states that it is a review-only manual recreation recipe, does not create a saved Bloomreach segment/campaign/recommendation, does not send a campaign, and does not mutate any external system.
+- The segment recipe measures later success through app-owned paid invoice/payment-backed records and treats campaign/retargeting events as diagnostic context only.
+- The Conversation MCP note says the proof was deferred because it exposed catalog-proxy signals rather than support, checkout, booking, refund, or payment-failure telemetry.
 - The event/property proof includes:
   - `cart_update.total_quantity`
   - `purchase.purchase_status`
@@ -97,8 +109,9 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 4. The in-app schema blueprint is deterministic and review-only; it does not claim the page made a live Loomi call.
 5. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
 6. The decision trace shows why the recovery brief beats a broad nurture follow-up and why direct Bloomreach mutation is blocked in this slice.
-7. The agent does not claim causal lift or invent paid truth.
-8. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
+7. The segment recipe shows exactly what a marketer could manually recreate in Bloomreach: include logic, exclude logic, a 24-hour recovery window, message variables, and measurement guardrails.
+8. The agent does not claim causal lift or invent paid truth.
+9. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
 
 ## Optional Report Cross-Check
 

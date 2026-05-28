@@ -111,6 +111,8 @@ def test_growth_loop_stage_paid_result_exists_keeps_paid_truth_app_owned():
     assert brief.decision_trace is not None
     assert brief.decision_trace.title == "Decision trace"
     assert "$195.00 canonical payment truth" in " ".join(brief.decision_trace.evidence_chain)
+    assert brief.segment_recipe is not None
+    assert brief.segment_recipe.title == "Bloomreach-ready segment recipe"
 
 
 def test_growth_loop_loomi_fixture_is_diagnostic_and_no_autonomous_action():
@@ -174,6 +176,7 @@ def test_growth_loop_reviewable_action_is_paid_result_only():
 
         assert brief.reviewable_action is None
         assert brief.decision_trace is None
+        assert brief.segment_recipe is None
 
 
 def test_growth_loop_reviewable_action_is_review_only_and_paid_evidence_grounded():
@@ -310,3 +313,53 @@ def test_sleepy_goose_schema_opportunity_is_review_only_and_event_grounded():
     assert "prove causality" in combined_text
     assert "caused revenue" not in combined_text
     assert "second paid-result ledger" not in combined_text
+
+
+def test_growth_loop_segment_recipe_is_bloomreach_ready_and_review_only():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=1,
+            paid_invoice_count=1,
+            paid_revenue_cents=19500,
+        )
+    )
+
+    assert brief.segment_recipe is not None
+    recipe = brief.segment_recipe
+    combined_text = " ".join(
+        (
+            recipe.title,
+            recipe.summary,
+            " ".join(recipe.include_rules),
+            " ".join(recipe.exclude_rules),
+            " ".join(recipe.recovery_window),
+            " ".join(recipe.message_variables),
+            " ".join(recipe.measurement_plan),
+            recipe.conversation_mcp_note,
+            " ".join(recipe.limitations),
+        )
+    ).lower()
+
+    assert recipe.title == "Bloomreach-ready segment recipe"
+    assert "cart_update" in combined_text
+    assert "total_quantity is greater than zero" in combined_text
+    assert "completed purchase" in combined_text
+    assert "24-hour recovery window" in combined_text
+    assert "app-owned paid invoices and payment-backed records" in combined_text
+    assert "holdout or non-targeted group" in combined_text
+    assert "campaign.status" in combined_text
+    assert "retargeting.audience" in combined_text
+    assert "conversation mcp" in combined_text
+    assert "catalog-proxy signals" in combined_text
+    assert "support, checkout, booking, refund, or payment-failure telemetry" in combined_text
+    assert "does not create a saved bloomreach segment" in combined_text
+    assert "no campaign is sent" in combined_text
+    assert "no external system is mutated" in combined_text
+    assert "do not count revenue" in combined_text
+    assert "prove causality" in combined_text
+    assert "caused revenue" not in combined_text

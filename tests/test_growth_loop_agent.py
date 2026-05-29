@@ -115,6 +115,21 @@ def test_growth_loop_stage_paid_result_exists_keeps_paid_truth_app_owned():
     assert brief.segment_recipe.title == "Bloomreach-ready segment recipe"
     assert brief.measurement_plan is not None
     assert brief.measurement_plan.title == "Measurement plan"
+    assert brief.sandbox_proof is not None
+    assert brief.sandbox_proof.title == "Sandbox proof"
+    assert brief.sandbox_proof.status_label == "Story 137 passed"
+    assert "Pacific Apparel Storefront" in brief.sandbox_proof.summary
+    assert "sleepy-goose Engagement" in brief.sandbox_proof.summary
+    assert [card.label for card in brief.sandbox_proof.cards] == [
+        "Storefront",
+        "Engagement",
+        "App proof",
+    ]
+    assert "Pacific Apparel" in brief.sandbox_proof.cards[0].title
+    assert "sleepy-goose" in brief.sandbox_proof.cards[1].title
+    assert "$195.00" in brief.sandbox_proof.cards[2].detail
+    assert "No live Engagement or Storefront call is made by this page." in brief.sandbox_proof.boundaries
+    assert "No lift, causality, or new paid-truth source is claimed." in brief.sandbox_proof.boundaries
     assert brief.agent_console is not None
     assert brief.agent_console.title == "Agent console"
     assert brief.agent_console.guided_run.title == "Run agent"
@@ -236,6 +251,7 @@ def test_growth_loop_reviewable_action_is_paid_result_only():
         assert brief.decision_trace is None
         assert brief.segment_recipe is None
         assert brief.measurement_plan is None
+        assert brief.sandbox_proof is None
         assert brief.agent_console is None
 
 

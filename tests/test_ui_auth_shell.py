@@ -1466,6 +1466,7 @@ def test_growth_loop_page_hides_reviewable_recovery_brief_without_paid_result():
     assert "Rule-backed decision trace" not in response.text
     assert "Bloomreach-ready segment recipe" not in response.text
     assert "Measurement plan" not in response.text
+    assert "Sandbox proof" not in response.text
 
 
 def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
@@ -1539,6 +1540,12 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "Signal -> Proof -> Action" in growth_response.text
     assert "Bloomreach/Loomi signal" in growth_response.text
     assert "cart, checkout, purchase, campaign, and retargeting fields" in growth_response.text
+    assert "Sandbox proof" in growth_response.text
+    assert "Story 137 passed" in growth_response.text
+    assert "Pacific Apparel shopping context" in growth_response.text
+    assert "sleepy-goose activation and measurement" in growth_response.text
+    assert "Storefront shopping context" in growth_response.text
+    assert "Engagement event and activation surfaces" in growth_response.text
     assert "app-owned invoices and payments remain paid truth" in growth_response.text
     assert "Review-ready action" in growth_response.text
     assert "Measurement boundary" in growth_response.text
@@ -1550,6 +1557,18 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
         '<details id="growth-loop-evidence-appendix" class="growth-loop-detail evidence-appendix">'
         in growth_response.text
     )
+    assert '<details id="growth-loop-sandbox" class="growth-loop-detail">' in growth_response.text
+    assert "Engagement + Storefront proof" in growth_response.text
+    assert "Handbags product grid" in growth_response.text
+    assert "campaigns, analyses, segmentations, reports, funnels" in growth_response.text
+    assert "sandbox observations do not count revenue" in growth_response.text
+    assert "No live Engagement or Storefront call is made by this page." in growth_response.text
+    assert "No customer data, screenshots, raw event payloads, or private URLs are embedded." in growth_response.text
+    assert (
+        "No campaign, segment, report, checkout, payment, export, saved object, or external mutation is performed."
+        in growth_response.text
+    )
+    assert "No lift, causality, or new paid-truth source is claimed." in growth_response.text
     assert "View review packet" in growth_response.text
     assert "Guided agent workflow" in growth_response.text
     assert "Run agent" in growth_response.text
@@ -1567,6 +1586,7 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "data-agent-run-next" in growth_response.text
     assert 'href="#growth-loop-review-packet"' in growth_response.text
     assert 'href="#growth-loop-proof"' in growth_response.text
+    assert 'href="#growth-loop-sandbox"' in growth_response.text
     assert 'href="#growth-loop-action"' in growth_response.text
     assert 'href="#growth-loop-decision"' in growth_response.text
     assert 'href="#growth-loop-segment"' in growth_response.text

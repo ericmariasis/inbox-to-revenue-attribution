@@ -57,9 +57,11 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 - The console opens with `Judge demo cockpit` and the `Signal -> Proof -> Action` story.
 - The `90-second judge path` shows:
   - `Bloomreach/Loomi signal`
+  - `Sandbox proof`
   - the app-owned paid proof
   - a `Review-ready action`
   - the `Measurement boundary`
+- The `Sandbox proof` card connects `Pacific Apparel` Storefront context, `sleepy-goose` Engagement surfaces, and app-owned paid truth without claiming a live page-load call.
 - The console includes `Run agent` as the primary guided workflow.
 - The guided workflow steps are:
   - `Inspect paid proof`
@@ -70,11 +72,13 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
   - `Attach measurement plan`
 - Clicking `Run next step` advances the workflow and then changes to `View review packet`.
 - The run completion says `Review packet assembled` and keeps the no-send/no-export/no-mutation boundary.
-- The console includes `View review packet` plus anchor shortcuts for `Proof`, `Action`, `Segment`, `Measure`, `Boundaries`, and `Evidence appendix`.
+- The console includes `View review packet` plus anchor shortcuts for `Proof`, `Sandbox`, `Action`, `Segment`, `Measure`, `Boundaries`, and `Evidence appendix`.
 - The `Review packet` is visible near the top of the page and summarizes the selected action, segment recipe, measurement plan, proof chain, and boundaries.
 - The review packet states that no campaign is sent, no Bloomreach object is mutated, no lift is claimed yet, and app-owned invoice/payment records remain paid truth.
 - The `Evidence appendix` is collapsed by default.
 - Opening the appendix shows `Full proof stack for reviewers`.
+- The appendix includes a `Sandbox proof` detail panel with `Pacific Apparel shopping context`, `sleepy-goose activation and measurement`, and `App-owned paid truth`.
+- The sandbox proof boundary states that the page makes no live Engagement or Storefront call, embeds no customer data/screenshots/raw payloads/private URLs, performs no external mutation, and claims no lift, causality, or new paid-truth source.
 - The detail panels inside the appendix preserve the deeper proof artifacts without making the first screen a long packet.
 - The diagnosis is `Paid proof exists; choose the next reviewed action.`
 - The next action is `Prepare one follow-up brief from the proven path`.
@@ -143,14 +147,15 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 4. The app owns the commercial truth: tracked content, attributed booking, local invoice, and PayPal-shaped capture event.
 5. Cursor MCP provides the live Loomi proof: the authenticated `sleepy-goose` project has a rich commerce event schema.
 6. The review packet turns that proof into a selected recovery action, a Bloomreach-ready segment recipe, and a no-lift-yet measurement plan.
-7. Open the `Evidence appendix` only when a judge wants the underlying proof, recipes, and boundaries.
-8. The in-app schema blueprint is deterministic and review-only; it does not claim the page made a live Loomi call.
-9. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
-10. The decision trace shows why the recovery brief beats a broad nurture follow-up and why direct Bloomreach mutation is blocked in this slice.
-11. The segment recipe shows exactly what a marketer could manually recreate in Bloomreach: include logic, exclude logic, a 24-hour recovery window, message variables, and measurement guardrails.
-12. The measurement plan shows how a marketer would evaluate the reviewed recovery loop: paid revenue first, holdout comparison, 24-hour send window, 7-day paid-outcome observation, and diagnostic-only engagement signals.
-13. The agent does not claim causal lift or invent paid truth.
-14. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
+7. The Sandbox proof shows where the live sandbox fits: Pacific Apparel supplied shopping/cart/offer context, Engagement supplied event and activation surfaces, and the app still owns paid-result truth.
+8. Open the `Evidence appendix` only when a judge wants the underlying proof, recipes, and boundaries.
+9. The in-app schema blueprint is deterministic and review-only; it does not claim the page made a live Loomi, Engagement, or Storefront call.
+10. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
+11. The decision trace shows why the recovery brief beats a broad nurture follow-up and why direct Bloomreach mutation is blocked in this slice.
+12. The segment recipe shows exactly what a marketer could manually recreate in Bloomreach: include logic, exclude logic, a 24-hour recovery window, message variables, and measurement guardrails.
+13. The measurement plan shows how a marketer would evaluate the reviewed recovery loop: paid revenue first, holdout comparison, 24-hour send window, 7-day paid-outcome observation, and diagnostic-only engagement signals.
+14. The agent does not claim causal lift or invent paid truth.
+15. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
 
 ## Optional Report Cross-Check
 

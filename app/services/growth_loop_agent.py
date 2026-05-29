@@ -156,6 +156,23 @@ class GrowthLoopReviewPacket:
 
 
 @dataclass(frozen=True)
+class GrowthLoopSandboxProofCard:
+    label: str
+    title: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class GrowthLoopSandboxProof:
+    title: str
+    summary: str
+    status_label: str
+    cards: tuple[GrowthLoopSandboxProofCard, ...]
+    proof_chain: tuple[str, ...]
+    boundaries: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class GrowthLoopAgentConsole:
     title: str
     summary: str
@@ -198,6 +215,7 @@ class GrowthLoopActionBrief:
     decision_trace: GrowthLoopDecisionTrace | None
     segment_recipe: GrowthLoopSegmentRecipe | None
     measurement_plan: GrowthLoopMeasurementPlan | None
+    sandbox_proof: GrowthLoopSandboxProof | None
     agent_console: GrowthLoopAgentConsole | None
     confidence_label: str
     confidence_summary: str
@@ -263,6 +281,7 @@ def build_growth_loop_action_brief(
         decision_trace=_build_decision_trace(stage, evidence),
         segment_recipe=_build_segment_recipe(stage),
         measurement_plan=_build_measurement_plan(stage),
+        sandbox_proof=_build_sandbox_proof(stage, evidence),
         agent_console=_build_agent_console(stage, evidence),
         confidence_label=stage_copy["confidence_label"],
         confidence_summary=stage_copy["confidence_summary"],
@@ -481,6 +500,71 @@ def _build_measurement_plan(stage: str) -> GrowthLoopMeasurementPlan | None:
             "This page plans measurement; it does not report measured lift or causal impact.",
             "No saved Bloomreach segment, campaign, recommendation, export, or send is created from this app.",
             "Campaign, retargeting, Loomi, and Conversation signals diagnose engagement only; canonical invoice and payment records remain paid truth.",
+        ),
+    )
+
+
+def _build_sandbox_proof(
+    stage: str,
+    evidence: GrowthLoopWorkspaceEvidence,
+) -> GrowthLoopSandboxProof | None:
+    if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS:
+        return None
+
+    tracked_content_copy = _count_copy(evidence.tracked_content_count, "content item")
+    booking_copy = _count_copy(evidence.booking_count, "booking")
+    paid_invoice_copy = _count_copy(evidence.paid_invoice_count, "paid invoice")
+    revenue_copy = _money_copy(evidence.paid_revenue_cents)
+
+    return GrowthLoopSandboxProof(
+        title="Sandbox proof",
+        summary=(
+            "Story 137 connected the real sandbox surfaces to this review-only loop: "
+            "Pacific Apparel Storefront shopping context, sleepy-goose Engagement event "
+            "and activation surfaces, and app-owned paid proof."
+        ),
+        status_label="Story 137 passed",
+        cards=(
+            GrowthLoopSandboxProofCard(
+                label="Storefront",
+                title="Pacific Apparel shopping context",
+                detail=(
+                    "Catalog categories, cart entry point, Handbags product grid, sale and "
+                    "price facets, pagination, and discount labels were visible in the "
+                    "Storefront sandbox."
+                ),
+            ),
+            GrowthLoopSandboxProofCard(
+                label="Engagement",
+                title="sleepy-goose activation and measurement",
+                detail=(
+                    "Hackathon Workspace exposes Data manager events, campaigns, analyses, "
+                    "segmentations, reports, funnels, and related measurement surfaces."
+                ),
+            ),
+            GrowthLoopSandboxProofCard(
+                label="App proof",
+                title="App-owned paid truth",
+                detail=(
+                    f"{tracked_content_copy}, {booking_copy}, {paid_invoice_copy}, "
+                    f"and {revenue_copy} remain the canonical paid-result boundary."
+                ),
+            ),
+        ),
+        proof_chain=(
+            "Storefront proof: Pacific Apparel supplied catalog, cart, offer, and price-filter context without checkout or Storefront mutation.",
+            "Engagement proof: sleepy-goose in Hackathon Workspace exposed event, segmentation, campaign, analysis, report, and funnel surfaces for review.",
+            (
+                f"App proof: {tracked_content_copy}, {booking_copy}, {paid_invoice_copy}, "
+                f"and {revenue_copy} canonical payment truth remain app-owned; sandbox "
+                "observations do not count revenue."
+            ),
+        ),
+        boundaries=(
+            "No live Engagement or Storefront call is made by this page.",
+            "No customer data, screenshots, raw event payloads, or private URLs are embedded.",
+            "No campaign, segment, report, checkout, payment, export, saved object, or external mutation is performed.",
+            "No lift, causality, or new paid-truth source is claimed.",
         ),
     )
 

@@ -2951,7 +2951,6 @@ def _render_growth_loop_guided_run(console) -> str:
             </section>
             <div class="agent-run-controls">
               <button type="button" data-agent-run-next>{html.escape(run.primary_action_label)}</button>
-              <a href="#growth-loop-review-packet" class="button-link secondary">View review packet</a>
             </div>
           </div>
         </div>
@@ -3066,11 +3065,23 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
         return ""
 
     console = brief.agent_console
+    sandbox = brief.sandbox_proof
     packet = console.review_packet
     packet_proof = _render_bullet_list(packet.proof_chain)
     packet_boundaries = _render_bullet_list(packet.boundaries)
     guided_run = _render_growth_loop_guided_run(console)
     paid_truth_signal = console.capability_signals[0]
+    sandbox_cockpit_card = ""
+    sandbox_shortcut = ""
+    if sandbox is not None:
+        sandbox_cockpit_card = f"""
+          <article class="judge-flow-card sandbox">
+            <p class="eyebrow">{html.escape(sandbox.status_label)}</p>
+            <h3>{html.escape(sandbox.title)}</h3>
+            <p>{html.escape(sandbox.summary)}</p>
+          </article>
+        """
+        sandbox_shortcut = '<a href="#growth-loop-sandbox">Sandbox</a>'
 
     return f"""
     <section class="card stack agent-console">
@@ -3094,6 +3105,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
             <h3>Bloomreach/Loomi signal</h3>
             <p>The sleepy-goose schema exposes cart, checkout, purchase, campaign, and retargeting fields for a cart-abandon recovery loop.</p>
           </article>
+          {sandbox_cockpit_card}
           <article class="judge-flow-card proof">
             <p class="eyebrow">Proof</p>
             <h3>{html.escape(paid_truth_signal.value)}</h3>
@@ -3113,6 +3125,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
       </section>
       <div class="agent-console-actions" aria-label="Growth loop artifact shortcuts">
         <a href="#growth-loop-proof">Proof</a>
+        {sandbox_shortcut}
         <a href="#growth-loop-action">Action</a>
         <a href="#growth-loop-decision">Decision</a>
         <a href="#growth-loop-segment">Segment</a>
@@ -3159,6 +3172,56 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
     """
 
 
+def _render_growth_loop_sandbox_proof_section(brief: GrowthLoopActionBrief) -> str:
+    sandbox = brief.sandbox_proof
+    if sandbox is None:
+        return ""
+
+    cards = "".join(
+        f"""
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">{html.escape(card.label)}</p>
+            <h2>{html.escape(card.title)}</h2>
+          </div>
+          <p>{html.escape(card.detail)}</p>
+        </section>
+        """
+        for card in sandbox.cards
+    )
+    proof_chain = _render_bullet_list(sandbox.proof_chain)
+    boundaries = _render_bullet_list(sandbox.boundaries)
+
+    return f"""
+    <details id="growth-loop-sandbox" class="growth-loop-detail">
+      <summary><span>Sandbox artifact</span><strong>{html.escape(sandbox.title)}</strong></summary>
+      <section class="card stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Engagement + Storefront proof</p>
+          <h2>{html.escape(sandbox.title)}</h2>
+          <p>{html.escape(sandbox.summary)}</p>
+        </div>
+        <span class="pill-note">{html.escape(sandbox.status_label)}</span>
+      </div>
+      <div class="grid">
+        {cards}
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <h2>Proof chain</h2>
+          {proof_chain}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Sandbox boundaries</h2>
+          {boundaries}
+        </section>
+      </div>
+      </section>
+    </details>
+    """
+
+
 def _render_growth_loop_agent_page(
     *,
     current_user: AuthUser,
@@ -3193,6 +3256,7 @@ def _render_growth_loop_agent_page(
         if brief.agent_console is not None
         else ""
     )
+    sandbox_proof_section = _render_growth_loop_sandbox_proof_section(brief)
     reviewable_action_section = ""
     if brief.reviewable_action is not None:
         action = brief.reviewable_action
@@ -3451,6 +3515,7 @@ def _render_growth_loop_agent_page(
           <p>Open these only when a judge or reviewer wants the underlying artifacts behind the 90-second cockpit.</p>
         </div>
       </div>
+    {sandbox_proof_section}
     <details class="growth-loop-detail">
       <summary><span>Demo map</span><strong>Cross-system proof map</strong></summary>
       <section class="card stack">
@@ -12024,7 +12089,7 @@ def _page_layout(*, title: str, body: str) -> str:
 
       .judge-flow-grid {{
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
         gap: 12px;
       }}
 
@@ -12047,6 +12112,11 @@ def _page_layout(*, title: str, body: str) -> str:
       .judge-flow-card.proof {{
         border-color: rgba(163, 74, 40, 0.26);
         background: rgba(243, 223, 212, 0.38);
+      }}
+
+      .judge-flow-card.sandbox {{
+        border-color: rgba(47, 95, 91, 0.28);
+        background: rgba(232, 239, 230, 0.72);
       }}
 
       .judge-flow-card.action {{

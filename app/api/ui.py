@@ -3041,6 +3041,21 @@ def _render_growth_loop_agent_interaction_script() -> str:
 
         Array.prototype.slice.call(document.querySelectorAll("[data-agent-run]")).forEach(initAgentRun);
         Array.prototype.slice.call(document.querySelectorAll("[data-copy-target]")).forEach(initCopyButton);
+
+        document.addEventListener("click", function (event) {
+          var link = event.target instanceof Element ? event.target.closest("a[href^='#growth-loop-']") : null;
+          if (!link) {
+            return;
+          }
+          var target = document.querySelector(link.getAttribute("href"));
+          var node = target;
+          while (node && node !== document.body) {
+            if (node.tagName === "DETAILS") {
+              node.open = true;
+            }
+            node = node.parentElement;
+          }
+        });
       })();
     </script>
     """
@@ -3051,46 +3066,51 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
         return ""
 
     console = brief.agent_console
-    steps = "".join(
-        f"""
-        <li class="agent-step">
-          <div class="agent-step-label">
-            <span>{html.escape(step.label)}</span>
-            <small>{html.escape(step.status_label)}</small>
-          </div>
-          <div>
-            <h3>{html.escape(step.title)}</h3>
-            <p>{html.escape(step.detail)}</p>
-          </div>
-        </li>
-        """
-        for step in console.steps
-    )
-    capabilities = "".join(
-        f"""
-        <article class="agent-capability">
-          <p class="eyebrow">{html.escape(signal.label)}</p>
-          <h3>{html.escape(signal.value)}</h3>
-          <p>{html.escape(signal.detail)}</p>
-        </article>
-        """
-        for signal in console.capability_signals
-    )
     packet = console.review_packet
     packet_proof = _render_bullet_list(packet.proof_chain)
     packet_boundaries = _render_bullet_list(packet.boundaries)
     guided_run = _render_growth_loop_guided_run(console)
+    paid_truth_signal = console.capability_signals[0]
 
     return f"""
     <section class="card stack agent-console">
       <div class="agent-console-header">
         <div>
-          <p class="eyebrow">Hackathon demo cockpit</p>
+          <p class="eyebrow">Judge demo cockpit</p>
           <h2>{html.escape(console.title)}</h2>
-          <p>{html.escape(console.summary)}</p>
+          <p>Signal -> Proof -> Action: the agent turns Bloomreach/Loomi diagnostic context into one review-ready recovery packet while app-owned invoices and payments remain paid truth.</p>
         </div>
         <a href="#growth-loop-review-packet" class="button-link">{html.escape(console.primary_action_label)}</a>
       </div>
+      <section class="judge-flow">
+        <div>
+          <p class="eyebrow">90-second judge path</p>
+          <h2>Signal -> Proof -> Action</h2>
+          <p>One first-pass story: find the recoverable audience pattern, verify the workspace has real paid proof, prepare a safe action, and define how success would be measured later.</p>
+        </div>
+        <div class="judge-flow-grid">
+          <article class="judge-flow-card signal">
+            <p class="eyebrow">Signal</p>
+            <h3>Bloomreach/Loomi signal</h3>
+            <p>The sleepy-goose schema exposes cart, checkout, purchase, campaign, and retargeting fields for a cart-abandon recovery loop.</p>
+          </article>
+          <article class="judge-flow-card proof">
+            <p class="eyebrow">Proof</p>
+            <h3>{html.escape(paid_truth_signal.value)}</h3>
+            <p>{html.escape(paid_truth_signal.detail)}</p>
+          </article>
+          <article class="judge-flow-card action">
+            <p class="eyebrow">Action</p>
+            <h3>Review-ready action</h3>
+            <p>{html.escape(packet.selected_action)}</p>
+          </article>
+          <article class="judge-flow-card measure">
+            <p class="eyebrow">Measure</p>
+            <h3>Measurement boundary</h3>
+            <p>Hold out first, measure app-owned paid revenue later, and claim no lift until outcomes are compared.</p>
+          </article>
+        </div>
+      </section>
       <div class="agent-console-actions" aria-label="Growth loop artifact shortcuts">
         <a href="#growth-loop-proof">Proof</a>
         <a href="#growth-loop-action">Action</a>
@@ -3098,14 +3118,9 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
         <a href="#growth-loop-segment">Segment</a>
         <a href="#growth-loop-measure">Measure</a>
         <a href="#growth-loop-boundaries">Boundaries</a>
+        <a href="#growth-loop-evidence-appendix">Evidence appendix</a>
       </div>
       {guided_run}
-      <ol class="agent-step-list">
-        {steps}
-      </ol>
-      <div class="agent-capability-strip">
-        {capabilities}
-      </div>
     </section>
     <section id="growth-loop-review-packet" class="card stack review-packet">
       <div class="status-row">
@@ -3426,7 +3441,17 @@ def _render_growth_loop_agent_page(
         growth_loop_agent_feature_enabled=True,
     )}
     {agent_console_section}
-    <details class="growth-loop-detail" open>
+    <details id="growth-loop-evidence-appendix" class="growth-loop-detail evidence-appendix">
+      <summary><span>Evidence appendix</span><strong>Full proof, recipes, and boundaries</strong></summary>
+      <section class="evidence-appendix-body stack">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Detailed evidence</p>
+          <h2>Full proof stack for reviewers</h2>
+          <p>Open these only when a judge or reviewer wants the underlying artifacts behind the 90-second cockpit.</p>
+        </div>
+      </div>
+    <details class="growth-loop-detail">
       <summary><span>Demo map</span><strong>Cross-system proof map</strong></summary>
       <section class="card stack">
       <div>
@@ -3466,7 +3491,7 @@ def _render_growth_loop_agent_page(
       </div>
       </section>
     </details>
-    <details id="growth-loop-proof" class="growth-loop-detail" open>
+    <details id="growth-loop-proof" class="growth-loop-detail">
       <summary><span>Proof artifact</span><strong>Live Loomi schema proof</strong></summary>
       <section class="card stack">
       <div class="status-row">
@@ -3606,6 +3631,8 @@ def _render_growth_loop_agent_page(
         {limitations}
       </article>
     </section>
+      </section>
+    </details>
     {agent_interaction_script}
     """
     return _page_layout(title="Growth Loop Agent", body=body)
@@ -11976,6 +12003,61 @@ def _page_layout(*, title: str, body: str) -> str:
         text-decoration: none;
       }}
 
+      .judge-flow {{
+        display: grid;
+        gap: 16px;
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px solid rgba(47, 95, 91, 0.22);
+        background:
+          linear-gradient(135deg, rgba(47, 95, 91, 0.12), rgba(255, 253, 248, 0.92));
+      }}
+
+      .judge-flow h2,
+      .judge-flow h3 {{
+        margin: 0;
+      }}
+
+      .judge-flow p {{
+        margin: 0;
+      }}
+
+      .judge-flow-grid {{
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }}
+
+      .judge-flow-card {{
+        display: grid;
+        align-content: start;
+        gap: 10px;
+        min-height: 166px;
+        padding: 16px;
+        border-radius: 16px;
+        border: 1px solid rgba(47, 95, 91, 0.2);
+        background: rgba(255, 253, 248, 0.9);
+      }}
+
+      .judge-flow-card.signal {{
+        border-color: rgba(47, 95, 91, 0.3);
+        background: rgba(47, 95, 91, 0.1);
+      }}
+
+      .judge-flow-card.proof {{
+        border-color: rgba(163, 74, 40, 0.26);
+        background: rgba(243, 223, 212, 0.38);
+      }}
+
+      .judge-flow-card.action {{
+        border-color: rgba(31, 86, 80, 0.26);
+      }}
+
+      .judge-flow-card.measure {{
+        border-color: rgba(112, 93, 72, 0.28);
+        background: rgba(238, 235, 226, 0.54);
+      }}
+
       .agent-guided-run {{
         display: grid;
         gap: 16px;
@@ -12211,6 +12293,15 @@ def _page_layout(*, title: str, body: str) -> str:
         margin-right: auto;
       }}
 
+      .evidence-appendix > summary {{
+        background: rgba(47, 95, 91, 0.1);
+        border-color: rgba(47, 95, 91, 0.24);
+      }}
+
+      .evidence-appendix-body {{
+        gap: 14px;
+      }}
+
       .copy-field {{
         display: grid;
         gap: 10px;
@@ -12294,6 +12385,10 @@ def _page_layout(*, title: str, body: str) -> str:
         }}
 
         .agent-run-layout {{
+          grid-template-columns: 1fr;
+        }}
+
+        .judge-flow-grid {{
           grid-template-columns: 1fr;
         }}
 

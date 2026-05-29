@@ -1455,6 +1455,8 @@ def test_growth_loop_page_hides_reviewable_recovery_brief_without_paid_result():
     assert response.status_code == 200
     assert "Growth Loop Agent" in response.text
     assert "Live Loomi schema proof" in response.text
+    assert "Judge demo cockpit" not in response.text
+    assert "Signal -> Proof -> Action" not in response.text
     assert "Agent console" not in response.text
     assert "View review packet" not in response.text
     assert "Review packet" not in response.text
@@ -1531,8 +1533,23 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert growth_response.status_code == 200
     assert '<a href="/app/growth-loop" class="nav-link active" aria-current="page">Growth Loop</a>' in growth_response.text
     assert "Growth Loop Agent" in growth_response.text
-    assert "Hackathon demo cockpit" in growth_response.text
+    assert "Judge demo cockpit" in growth_response.text
     assert "Agent console" in growth_response.text
+    assert "90-second judge path" in growth_response.text
+    assert "Signal -> Proof -> Action" in growth_response.text
+    assert "Bloomreach/Loomi signal" in growth_response.text
+    assert "cart, checkout, purchase, campaign, and retargeting fields" in growth_response.text
+    assert "app-owned invoices and payments remain paid truth" in growth_response.text
+    assert "Review-ready action" in growth_response.text
+    assert "Measurement boundary" in growth_response.text
+    assert "Hold out first, measure app-owned paid revenue later" in growth_response.text
+    assert "Evidence appendix" in growth_response.text
+    assert "Full proof, recipes, and boundaries" in growth_response.text
+    assert "Full proof stack for reviewers" in growth_response.text
+    assert (
+        '<details id="growth-loop-evidence-appendix" class="growth-loop-detail evidence-appendix">'
+        in growth_response.text
+    )
     assert "View review packet" in growth_response.text
     assert "Guided agent workflow" in growth_response.text
     assert "Run agent" in growth_response.text
@@ -1560,10 +1577,7 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "Action" in growth_response.text
     assert "Segment" in growth_response.text
     assert "Measure" in growth_response.text
-    assert "App-owned paid truth" in growth_response.text
-    assert "Cursor MCP schema proof" in growth_response.text
-    assert "PayPal-shaped outcome proof" in growth_response.text
-    assert "Review-only action" in growth_response.text
+    assert "Canonical invoice and payment records decide revenue." in growth_response.text
     assert "Review packet" in growth_response.text
     assert "Review-ready artifact" in growth_response.text
     assert "Proof chain" in growth_response.text

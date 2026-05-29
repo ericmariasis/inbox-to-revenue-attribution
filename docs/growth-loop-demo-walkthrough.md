@@ -54,7 +54,13 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 - The page title is `Growth Loop Agent`.
 - The active nav item is `Growth Loop`.
 - The first judge-facing artifact is `Agent console`.
-- The console includes `Run agent` as a guided workflow.
+- The console opens with `Judge demo cockpit` and the `Signal -> Proof -> Action` story.
+- The `90-second judge path` shows:
+  - `Bloomreach/Loomi signal`
+  - the app-owned paid proof
+  - a `Review-ready action`
+  - the `Measurement boundary`
+- The console includes `Run agent` as the primary guided workflow.
 - The guided workflow steps are:
   - `Inspect paid proof`
   - `Read Loomi schema evidence`
@@ -64,15 +70,15 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
   - `Attach measurement plan`
 - Clicking `Run next step` advances the workflow and then changes to `View review packet`.
 - The run completion says `Review packet assembled` and keeps the no-send/no-export/no-mutation boundary.
-- The console includes `View review packet` plus anchor shortcuts for `Proof`, `Action`, `Segment`, `Measure`, and `Boundaries`.
-- The console timeline shows `Proof`, `Schema`, `Action`, `Segment`, and `Measure`.
-- The capability strip shows `App-owned paid truth`, `Cursor MCP schema proof`, `PayPal-shaped outcome proof`, and `Review-only action`.
+- The console includes `View review packet` plus anchor shortcuts for `Proof`, `Action`, `Segment`, `Measure`, `Boundaries`, and `Evidence appendix`.
 - The `Review packet` is visible near the top of the page and summarizes the selected action, segment recipe, measurement plan, proof chain, and boundaries.
 - The review packet states that no campaign is sent, no Bloomreach object is mutated, no lift is claimed yet, and app-owned invoice/payment records remain paid truth.
+- The `Evidence appendix` is collapsed by default.
+- Opening the appendix shows `Full proof stack for reviewers`.
+- The detail panels inside the appendix preserve the deeper proof artifacts without making the first screen a long packet.
 - The diagnosis is `Paid proof exists; choose the next reviewed action.`
 - The next action is `Prepare one follow-up brief from the proven path`.
 - The stage is `Paid Result Exists`.
-- The detail panels preserve the deeper proof artifacts without making the first screen a long packet.
 - The page includes a `Live Loomi schema proof` detail panel with `Verified via Cursor MCP`.
 - The schema opportunity is `Cart-abandon recover & convert`.
 - The opportunity is bridged back to this app as a `Booking-step recovery analogue`.
@@ -132,18 +138,19 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 ## Demo Talk Track
 
 1. This is a real signed-in creator workspace in the existing app, not a standalone prototype.
-2. The Agent console is the judge-friendly cockpit: proof, schema, action, segment, and measurement are visible in one scan.
+2. The Agent console is the judge-friendly cockpit: `Signal -> Proof -> Action` is visible before the deeper evidence stack.
 3. Click through `Run agent`: the workflow visibly inspects paid proof, reads Loomi schema evidence, scores actions, prepares the brief, generates the segment recipe, and attaches measurement.
 4. The app owns the commercial truth: tracked content, attributed booking, local invoice, and PayPal-shaped capture event.
 5. Cursor MCP provides the live Loomi proof: the authenticated `sleepy-goose` project has a rich commerce event schema.
 6. The review packet turns that proof into a selected recovery action, a Bloomreach-ready segment recipe, and a no-lift-yet measurement plan.
-7. The in-app schema blueprint is deterministic and review-only; it does not claim the page made a live Loomi call.
-8. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
-9. The decision trace shows why the recovery brief beats a broad nurture follow-up and why direct Bloomreach mutation is blocked in this slice.
-10. The segment recipe shows exactly what a marketer could manually recreate in Bloomreach: include logic, exclude logic, a 24-hour recovery window, message variables, and measurement guardrails.
-11. The measurement plan shows how a marketer would evaluate the reviewed recovery loop: paid revenue first, holdout comparison, 24-hour send window, 7-day paid-outcome observation, and diagnostic-only engagement signals.
-12. The agent does not claim causal lift or invent paid truth.
-13. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
+7. Open the `Evidence appendix` only when a judge wants the underlying proof, recipes, and boundaries.
+8. The in-app schema blueprint is deterministic and review-only; it does not claim the page made a live Loomi call.
+9. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
+10. The decision trace shows why the recovery brief beats a broad nurture follow-up and why direct Bloomreach mutation is blocked in this slice.
+11. The segment recipe shows exactly what a marketer could manually recreate in Bloomreach: include logic, exclude logic, a 24-hour recovery window, message variables, and measurement guardrails.
+12. The measurement plan shows how a marketer would evaluate the reviewed recovery loop: paid revenue first, holdout comparison, 24-hour send window, 7-day paid-outcome observation, and diagnostic-only engagement signals.
+13. The agent does not claim causal lift or invent paid truth.
+14. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
 
 ## Optional Report Cross-Check
 

@@ -269,6 +269,13 @@ class Settings(BaseSettings):
     growth_loop_loomi_mcp_workspace_id: str = ""
     growth_loop_loomi_mcp_organization_id: str = ""
     growth_loop_loomi_mcp_timeout_seconds: float = 8.0
+    growth_loop_bloomreach_segment_proof_enabled: bool = False
+    growth_loop_bloomreach_segment_proof_name: str = ""
+    growth_loop_bloomreach_segment_proof_id: str = ""
+    growth_loop_bloomreach_segment_proof_project_name: str = "sleepy-goose"
+    growth_loop_bloomreach_segment_proof_workspace_name: str = "Hackathon Workspace"
+    growth_loop_bloomreach_segment_proof_created_via: str = "Cursor MCP"
+    growth_loop_bloomreach_segment_proof_status_label: str = "Created via Cursor MCP"
 
     def is_local_env(self) -> bool:
         return is_local_app_env(self.app_env)

@@ -133,6 +133,7 @@ from app.services.evidence_ingress_health import (
 )
 from app.services.growth_loop_agent import (
     GrowthLoopActionBrief,
+    GrowthLoopRecordedBloomreachSegmentProof,
     GrowthLoopWorkspaceEvidence,
     build_growth_loop_action_brief,
 )
@@ -568,6 +569,27 @@ def creator_app_shell(
     )
 
 
+def _growth_loop_recorded_bloomreach_segment_proof_from_settings(
+    settings,
+) -> GrowthLoopRecordedBloomreachSegmentProof | None:
+    if not settings.growth_loop_bloomreach_segment_proof_enabled:
+        return None
+
+    segment_name = settings.growth_loop_bloomreach_segment_proof_name.strip()
+    segment_id = settings.growth_loop_bloomreach_segment_proof_id.strip()
+    if not segment_name or not segment_id:
+        return None
+
+    return GrowthLoopRecordedBloomreachSegmentProof(
+        segment_name=segment_name,
+        segment_id=segment_id,
+        project_name=settings.growth_loop_bloomreach_segment_proof_project_name,
+        workspace_name=settings.growth_loop_bloomreach_segment_proof_workspace_name,
+        created_via=settings.growth_loop_bloomreach_segment_proof_created_via,
+        status_label=settings.growth_loop_bloomreach_segment_proof_status_label,
+    )
+
+
 @router.get("/app/growth-loop")
 def creator_growth_loop_agent_page(
     request: Request,
@@ -636,6 +658,9 @@ def creator_growth_loop_agent_page(
             billing_provider=readiness.billing_provider,
         ),
         loomi_context=loomi_context,
+        recorded_bloomreach_segment_proof=(
+            _growth_loop_recorded_bloomreach_segment_proof_from_settings(settings)
+        ),
     )
 
     return _html_response(
@@ -3066,6 +3091,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
 
     console = brief.agent_console
     sandbox = brief.sandbox_proof
+    bloomreach_object = brief.bloomreach_object_proof
     packet = console.review_packet
     packet_proof = _render_bullet_list(packet.proof_chain)
     packet_boundaries = _render_bullet_list(packet.boundaries)
@@ -3083,13 +3109,25 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
         """
         sandbox_shortcut = '<a href="#growth-loop-sandbox">Sandbox</a>'
 
+    bloomreach_object_cockpit_card = ""
+    bloomreach_object_shortcut = ""
+    if bloomreach_object is not None:
+        bloomreach_object_cockpit_card = f"""
+          <article class="judge-flow-card object-proof">
+            <p class="eyebrow">{html.escape(bloomreach_object.status_label)}</p>
+            <h3>{html.escape(bloomreach_object.object_name)}</h3>
+            <p>{html.escape(bloomreach_object.summary)}</p>
+          </article>
+        """
+        bloomreach_object_shortcut = '<a href="#growth-loop-bloomreach-object">Bloomreach object</a>'
+
     return f"""
     <section class="card stack agent-console">
       <div class="agent-console-header">
         <div>
           <p class="eyebrow">Judge demo cockpit</p>
           <h2>{html.escape(console.title)}</h2>
-          <p>Signal -> Proof -> Action: the agent turns Bloomreach/Loomi diagnostic context into one review-ready recovery packet while app-owned invoices and payments remain paid truth.</p>
+          <p>Signal -> Proof -> Action: the agent turns Bloomreach/Loomi diagnostic context and recorded sandbox proof into one review-ready recovery packet while app-owned invoices and payments remain paid truth.</p>
         </div>
         <a href="#growth-loop-review-packet" class="button-link">{html.escape(console.primary_action_label)}</a>
       </div>
@@ -3106,6 +3144,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
             <p>The sleepy-goose schema exposes cart, checkout, purchase, campaign, and retargeting fields for a cart-abandon recovery loop.</p>
           </article>
           {sandbox_cockpit_card}
+          {bloomreach_object_cockpit_card}
           <article class="judge-flow-card proof">
             <p class="eyebrow">Proof</p>
             <h3>{html.escape(paid_truth_signal.value)}</h3>
@@ -3126,6 +3165,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
       <div class="agent-console-actions" aria-label="Growth loop artifact shortcuts">
         <a href="#growth-loop-proof">Proof</a>
         {sandbox_shortcut}
+        {bloomreach_object_shortcut}
         <a href="#growth-loop-action">Action</a>
         <a href="#growth-loop-decision">Decision</a>
         <a href="#growth-loop-segment">Segment</a>
@@ -3169,6 +3209,59 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
         </section>
       </div>
     </section>
+    """
+
+
+def _render_growth_loop_bloomreach_object_proof_section(
+    brief: GrowthLoopActionBrief,
+) -> str:
+    bloomreach_object = brief.bloomreach_object_proof
+    if bloomreach_object is None:
+        return ""
+
+    cards = "".join(
+        f"""
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">{html.escape(card.label)}</p>
+            <h2>{html.escape(card.title)}</h2>
+          </div>
+          <p>{html.escape(card.detail)}</p>
+        </section>
+        """
+        for card in bloomreach_object.cards
+    )
+    proof_chain = _render_bullet_list(bloomreach_object.proof_chain)
+    boundaries = _render_bullet_list(bloomreach_object.boundaries)
+
+    return f"""
+    <details id="growth-loop-bloomreach-object" class="growth-loop-detail">
+      <summary><span>Bloomreach artifact</span><strong>{html.escape(bloomreach_object.title)}</strong></summary>
+      <section class="card stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Real sandbox object proof</p>
+          <h2>{html.escape(bloomreach_object.title)}</h2>
+          <p>{html.escape(bloomreach_object.summary)}</p>
+          <p><strong>{html.escape(bloomreach_object.object_type)}</strong>: {html.escape(bloomreach_object.object_name)} <code>{html.escape(bloomreach_object.object_id)}</code></p>
+        </div>
+        <span class="pill-note">{html.escape(bloomreach_object.status_label)}</span>
+      </div>
+      <div class="grid">
+        {cards}
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <h2>Proof chain</h2>
+          {proof_chain}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Runtime boundaries</h2>
+          {boundaries}
+        </section>
+      </div>
+      </section>
+    </details>
     """
 
 
@@ -3257,6 +3350,7 @@ def _render_growth_loop_agent_page(
         else ""
     )
     sandbox_proof_section = _render_growth_loop_sandbox_proof_section(brief)
+    bloomreach_object_proof_section = _render_growth_loop_bloomreach_object_proof_section(brief)
     reviewable_action_section = ""
     if brief.reviewable_action is not None:
         action = brief.reviewable_action
@@ -3516,6 +3610,7 @@ def _render_growth_loop_agent_page(
         </div>
       </div>
     {sandbox_proof_section}
+    {bloomreach_object_proof_section}
     <details class="growth-loop-detail">
       <summary><span>Demo map</span><strong>Cross-system proof map</strong></summary>
       <section class="card stack">

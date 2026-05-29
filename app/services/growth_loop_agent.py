@@ -173,6 +173,39 @@ class GrowthLoopSandboxProof:
 
 
 @dataclass(frozen=True)
+class GrowthLoopRecordedBloomreachSegmentProof:
+    segment_name: str
+    segment_id: str
+    project_name: str = "sleepy-goose"
+    workspace_name: str = "Hackathon Workspace"
+    created_via: str = "Cursor MCP"
+    status_label: str = "Created via Cursor MCP"
+
+
+@dataclass(frozen=True)
+class GrowthLoopBloomreachObjectProofCard:
+    label: str
+    title: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class GrowthLoopBloomreachObjectProof:
+    title: str
+    summary: str
+    status_label: str
+    object_type: str
+    object_name: str
+    object_id: str
+    project_name: str
+    workspace_name: str
+    created_via: str
+    cards: tuple[GrowthLoopBloomreachObjectProofCard, ...]
+    proof_chain: tuple[str, ...]
+    boundaries: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class GrowthLoopAgentConsole:
     title: str
     summary: str
@@ -216,6 +249,7 @@ class GrowthLoopActionBrief:
     segment_recipe: GrowthLoopSegmentRecipe | None
     measurement_plan: GrowthLoopMeasurementPlan | None
     sandbox_proof: GrowthLoopSandboxProof | None
+    bloomreach_object_proof: GrowthLoopBloomreachObjectProof | None
     agent_console: GrowthLoopAgentConsole | None
     confidence_label: str
     confidence_summary: str
@@ -261,10 +295,15 @@ def build_growth_loop_action_brief(
     *,
     evidence: GrowthLoopWorkspaceEvidence,
     loomi_context: LoomiDiagnosticContext | None = None,
+    recorded_bloomreach_segment_proof: GrowthLoopRecordedBloomreachSegmentProof | None = None,
 ) -> GrowthLoopActionBrief:
     context = loomi_context or build_fixture_loomi_diagnostic_context()
     stage = _classify_growth_loop_stage(evidence)
     stage_copy = _stage_copy(stage)
+    bloomreach_object_proof = _build_bloomreach_object_proof(
+        stage,
+        recorded_bloomreach_segment_proof,
+    )
 
     return GrowthLoopActionBrief(
         stage=stage,
@@ -277,19 +316,20 @@ def build_growth_loop_action_brief(
         app_evidence=_app_evidence_items(evidence),
         loomi_context=context,
         schema_opportunity=build_sleepy_goose_schema_opportunity(),
-        reviewable_action=_build_reviewable_action_brief(stage),
-        decision_trace=_build_decision_trace(stage, evidence),
-        segment_recipe=_build_segment_recipe(stage),
+        reviewable_action=_build_reviewable_action_brief(stage, bloomreach_object_proof),
+        decision_trace=_build_decision_trace(stage, evidence, bloomreach_object_proof),
+        segment_recipe=_build_segment_recipe(stage, bloomreach_object_proof),
         measurement_plan=_build_measurement_plan(stage),
         sandbox_proof=_build_sandbox_proof(stage, evidence),
-        agent_console=_build_agent_console(stage, evidence),
+        bloomreach_object_proof=bloomreach_object_proof,
+        agent_console=_build_agent_console(stage, evidence, bloomreach_object_proof),
         confidence_label=stage_copy["confidence_label"],
         confidence_summary=stage_copy["confidence_summary"],
         limitations=(
             "Attribution remains last-touch through the stored booking/content relationship.",
             "Revenue remains canonical invoice/payment truth from this app.",
             "Loomi diagnostics are context for review, not a second paid-result ledger.",
-            "This slice prepares an action for human review and does not execute external mutations.",
+            "This page prepares an action for human review and does not execute external mutations on load.",
         ),
         human_review_note=(
             "Review this action before sending, publishing, or changing any external system."
@@ -297,17 +337,105 @@ def build_growth_loop_action_brief(
     )
 
 
-def _build_segment_recipe(stage: str) -> GrowthLoopSegmentRecipe | None:
+def _build_bloomreach_object_proof(
+    stage: str,
+    recorded_proof: GrowthLoopRecordedBloomreachSegmentProof | None,
+) -> GrowthLoopBloomreachObjectProof | None:
+    if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS or recorded_proof is None:
+        return None
+
+    segment_name = recorded_proof.segment_name.strip()
+    segment_id = recorded_proof.segment_id.strip()
+    if not segment_name or not segment_id:
+        return None
+
+    project_name = recorded_proof.project_name.strip() or "sleepy-goose"
+    workspace_name = recorded_proof.workspace_name.strip() or "Hackathon Workspace"
+    created_via = recorded_proof.created_via.strip() or "Cursor MCP"
+    status_label = recorded_proof.status_label.strip() or "Created via Cursor MCP"
+
+    return GrowthLoopBloomreachObjectProof(
+        title="Bloomreach saved segment proof",
+        summary=(
+            "Story 139 records one real saved segment created in Bloomreach through "
+            "operator-run Cursor MCP. This app displays sanitized object metadata as proof; "
+            "it does not create or mutate Bloomreach on page load."
+        ),
+        status_label=status_label,
+        object_type="Saved segment",
+        object_name=segment_name,
+        object_id=segment_id,
+        project_name=project_name,
+        workspace_name=workspace_name,
+        created_via=created_via,
+        cards=(
+            GrowthLoopBloomreachObjectProofCard(
+                label="Saved segment",
+                title=segment_name,
+                detail=f"Recorded {segment_id} as the Bloomreach segment proof object.",
+            ),
+            GrowthLoopBloomreachObjectProofCard(
+                label="Sandbox location",
+                title=f"{project_name} / {workspace_name}",
+                detail=f"Created through {created_via} after the agent selected the recovery loop.",
+            ),
+            GrowthLoopBloomreachObjectProofCard(
+                label="Runtime boundary",
+                title="Displayed, not created here",
+                detail=(
+                    "The app shows recorded metadata only; no create, update, delete, send, "
+                    "export, or checkout action runs from this page."
+                ),
+            ),
+        ),
+        proof_chain=(
+            f"{created_via} created saved segment {segment_name} ({segment_id}) in {project_name}.",
+            "The app displays the recorded object metadata as review proof, not as a page-load mutation.",
+            "Campaign activation remains gated; no send, export, checkout, or payment action is triggered.",
+            "App-owned invoice and payment records remain the paid-result truth.",
+        ),
+        boundaries=(
+            "No campaign, flow, send, export, checkout, payment, or Storefront mutation is triggered by this proof.",
+            "This page does not create, update, or delete Bloomreach objects on load.",
+            "The created segment does not count revenue or prove lift/causality.",
+            "App-owned invoice and payment records remain paid truth.",
+        ),
+    )
+
+
+def _build_segment_recipe(
+    stage: str,
+    bloomreach_object_proof: GrowthLoopBloomreachObjectProof | None,
+) -> GrowthLoopSegmentRecipe | None:
     if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS:
         return None
 
-    return GrowthLoopSegmentRecipe(
-        title="Bloomreach-ready segment recipe",
-        summary=(
+    if bloomreach_object_proof is None:
+        summary = (
             "Use this as the reviewed recipe a marketer can recreate in Bloomreach. "
             "It translates the verified cart-abandon schema into this app's booking-step "
             "recovery analogue without creating or mutating any Bloomreach object."
-        ),
+        )
+        limitations = (
+            "Review-only recipe; this app does not create a saved Bloomreach segment, campaign, or recommendation.",
+            "No campaign is sent and no external system is mutated from this page.",
+            "Loomi and Conversation signals do not count revenue, prove causality, or replace app-owned booking, invoice, and payment records.",
+        )
+    else:
+        summary = (
+            "Use this as the reviewed recipe behind the recorded Bloomreach saved segment proof. "
+            "It translates the verified cart-abandon schema into this app's booking-step "
+            "recovery analogue while keeping activation behind human review."
+        )
+        limitations = (
+            "The recorded saved segment was created through operator-run Cursor MCP; this page does not create or update it on load.",
+            "No campaign is sent and no external system is mutated from this page.",
+            "Loomi, Conversation, and saved-segment proof do not count revenue, prove causality, or replace app-owned booking, invoice, and payment records.",
+        )
+
+    return GrowthLoopSegmentRecipe(
+        title="Bloomreach-ready segment recipe",
+        summary=summary,
         include_rules=(
             "Include people with cart_update activity where total_quantity is greater than zero.",
             "Prioritize checkout starts, product IDs, total cart value, or view_item category activity when available.",
@@ -336,20 +464,77 @@ def _build_segment_recipe(stage: str) -> GrowthLoopSegmentRecipe | None:
             "Story 131 tested Conversation MCP and deferred it for this recipe: the server connected, "
             "but exposed catalog-proxy signals rather than support, checkout, booking, refund, or payment-failure telemetry."
         ),
-        limitations=(
-            "Review-only recipe; this app does not create a saved Bloomreach segment, campaign, or recommendation.",
-            "No campaign is sent and no external system is mutated from this page.",
-            "Loomi and Conversation signals do not count revenue, prove causality, or replace app-owned booking, invoice, and payment records.",
-        ),
+        limitations=limitations,
     )
 
 
 def _build_decision_trace(
     stage: str,
     evidence: GrowthLoopWorkspaceEvidence,
+    bloomreach_object_proof: GrowthLoopBloomreachObjectProof | None,
 ) -> GrowthLoopDecisionTrace | None:
     if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS:
         return None
+
+    if bloomreach_object_proof is None:
+        guardrail_summary = (
+            "Rule-backed trace only: no live LLM call is required, no campaign is sent, "
+            "no Bloomreach object is mutated, and Loomi diagnostics do not become paid truth."
+        )
+        review_safety_criterion = (
+            "Review safety: can the action be reviewed without sending, publishing, "
+            "mutating Bloomreach, or making causal claims?"
+        )
+        direct_mutation_candidate = GrowthLoopDecisionCandidate(
+            title="Direct Bloomreach segment or campaign mutation",
+            status_label="Blocked in this slice",
+            score=3,
+            max_score=10,
+            summary=(
+                "Create or send a saved Bloomreach segment, recommendation, or campaign from "
+                "the app without a separate review step."
+            ),
+            criteria=(
+                "Schema fit: possible in concept, but the live sandbox has no saved objects to reuse yet.",
+                "App evidence fit: weak because external mutation would not add app-owned paid truth by itself.",
+                "Review safety: blocked because this story must not send campaigns or mutate Bloomreach.",
+            ),
+            outcome="Blocked because Story 130 is an explanation slice, not an execution or mutation slice.",
+            boundary="No saved segment, recommendation, campaign, or external system change is created here.",
+        )
+    else:
+        guardrail_summary = (
+            "Rule-backed trace only: no live LLM call is required, no campaign is sent, "
+            "no Bloomreach object is created or changed by this page load, and Loomi diagnostics "
+            "do not become paid truth."
+        )
+        review_safety_criterion = (
+            "Review safety: can the action be reviewed without sending, publishing, "
+            "page-load mutation, or making causal claims?"
+        )
+        direct_mutation_candidate = GrowthLoopDecisionCandidate(
+            title="Direct in-app Bloomreach mutation",
+            status_label="Kept out of runtime",
+            score=5,
+            max_score=10,
+            summary=(
+                "Create or update Bloomreach directly from the app runtime after the "
+                "recovery opportunity is selected."
+            ),
+            criteria=(
+                "Schema fit: possible because the sleepy-goose schema supports the recovery pattern.",
+                (
+                    "App evidence fit: partial because the saved segment proves the mutation path, "
+                    "but app-owned invoices and payments still decide revenue."
+                ),
+                "Review safety: held out of runtime because this page should not mutate Bloomreach on load.",
+            ),
+            outcome=(
+                "Held out of runtime; Story 139 proves operator-run Cursor MCP saved-segment "
+                "creation instead of adding an in-app mutation button."
+            ),
+            boundary="No campaign or additional saved object is created by this page.",
+        )
 
     return GrowthLoopDecisionTrace(
         title="Decision trace",
@@ -358,14 +543,11 @@ def _build_decision_trace(
             "because it best matches the verified Loomi schema, this app's paid-result path, "
             "and the human-review safety boundary."
         ),
-        guardrail_summary=(
-            "Rule-backed trace only: no live LLM call is required, no campaign is sent, "
-            "no Bloomreach object is mutated, and Loomi diagnostics do not become paid truth."
-        ),
+        guardrail_summary=guardrail_summary,
         scoring_criteria=(
             "Schema fit: does the action use verified cart, checkout, view, purchase, campaign, or retargeting fields?",
             "App evidence fit: does the action stay tied to tracked content, bookings, invoices, and payment-backed records?",
-            "Review safety: can the action be reviewed without sending, publishing, mutating Bloomreach, or making causal claims?",
+            review_safety_criterion,
         ),
         evidence_chain=(
             "Loomi schema proof supplies cart_update, checkout, view_item, purchase, campaign, and retargeting fields.",
@@ -413,23 +595,7 @@ def _build_decision_trace(
                 outcome="Held because it is useful later but less tightly connected to paid-result proof.",
                 boundary="Would still need human review and app-owned paid-result measurement before any lift claim.",
             ),
-            GrowthLoopDecisionCandidate(
-                title="Direct Bloomreach segment or campaign mutation",
-                status_label="Blocked in this slice",
-                score=3,
-                max_score=10,
-                summary=(
-                    "Create or send a saved Bloomreach segment, recommendation, or campaign from "
-                    "the app without a separate review step."
-                ),
-                criteria=(
-                    "Schema fit: possible in concept, but the live sandbox has no saved objects to reuse yet.",
-                    "App evidence fit: weak because external mutation would not add app-owned paid truth by itself.",
-                    "Review safety: blocked because this story must not send campaigns or mutate Bloomreach.",
-                ),
-                outcome="Blocked because Story 130 is an explanation slice, not an execution or mutation slice.",
-                boundary="No saved segment, recommendation, campaign, or external system change is created here.",
-            ),
+            direct_mutation_candidate,
         ),
     )
 
@@ -563,7 +729,7 @@ def _build_sandbox_proof(
         boundaries=(
             "No live Engagement or Storefront call is made by this page.",
             "No customer data, screenshots, raw event payloads, or private URLs are embedded.",
-            "No campaign, segment, report, checkout, payment, export, saved object, or external mutation is performed.",
+            "No campaign, report, checkout, payment, export, or Storefront mutation is performed by this page.",
             "No lift, causality, or new paid-truth source is claimed.",
         ),
     )
@@ -572,6 +738,7 @@ def _build_sandbox_proof(
 def _build_agent_console(
     stage: str,
     evidence: GrowthLoopWorkspaceEvidence,
+    bloomreach_object_proof: GrowthLoopBloomreachObjectProof | None,
 ) -> GrowthLoopAgentConsole | None:
     if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS:
         return None
@@ -580,12 +747,90 @@ def _build_agent_console(
     paid_invoice_copy = _count_copy(evidence.paid_invoice_count, "paid invoice")
     tracked_content_copy = _count_copy(evidence.tracked_content_count, "content item")
     booking_copy = _count_copy(evidence.booking_count, "booking")
+    object_steps: tuple[GrowthLoopAgentConsoleStep, ...] = ()
+    object_signals: tuple[GrowthLoopCapabilitySignal, ...] = ()
+    object_proof_chain: tuple[str, ...] = ()
+    if bloomreach_object_proof is not None:
+        object_steps = (
+            GrowthLoopAgentConsoleStep(
+                label="Object",
+                title="Saved segment proof",
+                detail=(
+                    f"{bloomreach_object_proof.object_name} was created via "
+                    f"{bloomreach_object_proof.created_via}; this page displays metadata only."
+                ),
+                status_label="Recorded",
+            ),
+        )
+        object_signals = (
+            GrowthLoopCapabilitySignal(
+                label="Bloomreach saved segment",
+                value=bloomreach_object_proof.object_name,
+                detail=(
+                    f"{bloomreach_object_proof.object_type} {bloomreach_object_proof.object_id} "
+                    f"was recorded from {bloomreach_object_proof.created_via}."
+                ),
+            ),
+        )
+        object_proof_chain = (
+            (
+                f"Bloomreach object proof supplies saved segment "
+                f"{bloomreach_object_proof.object_name} ({bloomreach_object_proof.object_id})."
+            ),
+        )
+
+    segment_evidence_label = "Bloomreach-ready recipe"
+    segment_evidence_detail = (
+        "The app prepares a recipe only; it does not create a saved segment, "
+        "recommendation, or campaign."
+    )
+    completion_summary = (
+        "The agent has prepared one review-only packet. It is ready for human review, "
+        "not for automatic send, export, or mutation."
+    )
+    guided_boundaries = (
+        "No campaign is sent.",
+        "No Bloomreach object is mutated.",
+        "No lift or causality is claimed.",
+        "App-owned invoice and payment records remain paid truth.",
+    )
+    packet_boundaries = (
+        "No campaign is sent.",
+        "No Bloomreach object is mutated.",
+        "No lift is claimed yet.",
+        "App-owned invoice and payment records remain paid truth.",
+    )
+    if bloomreach_object_proof is not None:
+        segment_evidence_label = "Bloomreach saved segment proof"
+        segment_evidence_detail = (
+            f"Recorded segment {bloomreach_object_proof.object_name} proves the mutation path; "
+            "this page does not create or update it on load."
+        )
+        completion_summary = (
+            "The agent has prepared one review packet with recorded saved-segment proof. "
+            "It is ready for human review, not for automatic send, export, or page-load mutation."
+        )
+        guided_boundaries = (
+            "No campaign is sent.",
+            "No Bloomreach object is created or changed by this page load.",
+            "Recorded saved segment proof remains review-only.",
+            "No lift or causality is claimed.",
+            "App-owned invoice and payment records remain paid truth.",
+        )
+        packet_boundaries = (
+            "No campaign is sent.",
+            "No Bloomreach object is created or changed by this page load.",
+            "Recorded saved segment proof remains review-only.",
+            "No lift is claimed yet.",
+            "App-owned invoice and payment records remain paid truth.",
+        )
 
     return GrowthLoopAgentConsole(
         title="Agent console",
         summary=(
             "Paid result exists; the agent packaged the proof, schema opportunity, "
-            "reviewable action, segment recipe, and measurement plan into one review packet."
+            "reviewable action, segment recipe, measurement plan, and available saved-segment "
+            "proof into one review packet."
         ),
         primary_action_label="View review packet",
         steps=(
@@ -607,6 +852,7 @@ def _build_agent_console(
                 ),
                 status_label="Mapped",
             ),
+            *object_steps,
             GrowthLoopAgentConsoleStep(
                 label="Action",
                 title="Reviewable recovery brief",
@@ -634,10 +880,7 @@ def _build_agent_console(
             ),
             primary_action_label="Run next step",
             completion_title="Review packet assembled",
-            completion_summary=(
-                "The agent has prepared one review-only packet. It is ready for human review, "
-                "not for automatic send, export, or mutation."
-            ),
+            completion_summary=completion_summary,
             steps=(
                 GrowthLoopGuidedRunStep(
                     label="1",
@@ -702,11 +945,8 @@ def _build_agent_console(
                         "Translate the brief into include, exclude, timing, and message-variable "
                         "logic that can be manually recreated in Bloomreach."
                     ),
-                    evidence_label="Bloomreach-ready recipe",
-                    evidence_detail=(
-                        "The app prepares a recipe only; it does not create a saved segment, "
-                        "recommendation, or campaign."
-                    ),
+                    evidence_label=segment_evidence_label,
+                    evidence_detail=segment_evidence_detail,
                     target_anchor="#growth-loop-segment",
                 ),
                 GrowthLoopGuidedRunStep(
@@ -724,12 +964,7 @@ def _build_agent_console(
                     target_anchor="#growth-loop-measure",
                 ),
             ),
-            boundaries=(
-                "No campaign is sent.",
-                "No Bloomreach object is mutated.",
-                "No lift or causality is claimed.",
-                "App-owned invoice and payment records remain paid truth.",
-            ),
+            boundaries=guided_boundaries,
         ),
         capability_signals=(
             GrowthLoopCapabilitySignal(
@@ -737,6 +972,7 @@ def _build_agent_console(
                 value=f"{paid_invoice_copy}, {revenue_copy}",
                 detail="Canonical invoice and payment records decide revenue.",
             ),
+            *object_signals,
             GrowthLoopCapabilitySignal(
                 label="Cursor MCP schema proof",
                 value="sleepy-goose",
@@ -775,6 +1011,7 @@ def _build_agent_console(
             ),
             proof_chain=(
                 "Loomi schema proof supplies cart_update, checkout, view_item, purchase, campaign, and retargeting fields.",
+                *object_proof_chain,
                 (
                     f"App-owned proof supplies {tracked_content_copy}, "
                     f"{booking_copy}, {paid_invoice_copy}, and "
@@ -782,21 +1019,40 @@ def _build_agent_console(
                 ),
                 "The selected action stays review-only so the app can explain a next step without claiming execution or causality.",
             ),
-            boundaries=(
-                "No campaign is sent.",
-                "No Bloomreach object is mutated.",
-                "No lift is claimed yet.",
-                "App-owned invoice and payment records remain paid truth.",
-            ),
+            boundaries=packet_boundaries,
         ),
     )
 
 
 def _build_reviewable_action_brief(
     stage: str,
+    bloomreach_object_proof: GrowthLoopBloomreachObjectProof | None,
 ) -> GrowthLoopReviewableActionBrief | None:
     if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS:
         return None
+
+    if bloomreach_object_proof is None:
+        bloomreach_next_step = (
+            "Draft a segment spec using cart_update, checkout, view_item, and purchase exclusion logic.",
+            "Keep the segment as a human-reviewed recipe until someone recreates it inside Bloomreach.",
+            "Use campaign and retargeting events only as diagnostic engagement signals after review.",
+        )
+        limitations = (
+            "Prepared for human review only; this app does not send the recovery message.",
+            "This draft does not mutate Bloomreach or create a saved segment, campaign, or recommendation.",
+            "It does not count revenue, prove causality, or replace app-owned booking, invoice, and payment records.",
+        )
+    else:
+        bloomreach_next_step = (
+            "Review the recorded saved segment against cart_update, checkout, view_item, and purchase exclusion logic.",
+            "Use the saved segment proof as evidence that the Bloomreach mutation path works, but keep activation behind human review.",
+            "Use campaign and retargeting events only as diagnostic engagement signals after review.",
+        )
+        limitations = (
+            "Prepared for human review only; this app does not send the recovery message.",
+            "The saved segment proof was created through operator-run Cursor MCP; this page does not mutate Bloomreach on load.",
+            "It does not count revenue, prove causality, or replace app-owned booking, invoice, and payment records.",
+        )
 
     return GrowthLoopReviewableActionBrief(
         title="Reviewable recovery brief",
@@ -814,11 +1070,7 @@ def _build_reviewable_action_brief(
             "Reference the last known interest area in plain tutor-safe language.",
             "Invite the prospect back to the same measured booking path so the next outcome can be reviewed.",
         ),
-        bloomreach_next_step=(
-            "Draft a segment spec using cart_update, checkout, view_item, and purchase exclusion logic.",
-            "Keep the segment as a human-reviewed recipe until someone recreates it inside Bloomreach.",
-            "Use campaign and retargeting events only as diagnostic engagement signals after review.",
-        ),
+        bloomreach_next_step=bloomreach_next_step,
         success_evidence=(
             "Primary proof is later app-owned paid conversion lift inside the reviewed target segment.",
             "Count paid success only through stored booking, invoice, and payment-backed records in this app.",
@@ -835,11 +1087,7 @@ def _build_reviewable_action_brief(
             "and measure success through later app-owned paid invoices and payment-backed records. "
             "Use Bloomreach campaign and retargeting events as diagnostic engagement context only."
         ),
-        limitations=(
-            "Prepared for human review only; this app does not send the recovery message.",
-            "This draft does not mutate Bloomreach or create a saved segment, campaign, or recommendation.",
-            "It does not count revenue, prove causality, or replace app-owned booking, invoice, and payment records.",
-        ),
+        limitations=limitations,
     )
 
 

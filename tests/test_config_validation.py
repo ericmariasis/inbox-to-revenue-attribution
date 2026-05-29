@@ -148,6 +148,13 @@ def test_growth_loop_agent_feature_flag_defaults_disabled_and_can_enable():
     assert settings.growth_loop_loomi_mcp_endpoint == ""
     assert settings.growth_loop_loomi_mcp_access_token == ""
     assert settings.growth_loop_loomi_mcp_timeout_seconds == 8.0
+    assert settings.growth_loop_bloomreach_segment_proof_enabled is False
+    assert settings.growth_loop_bloomreach_segment_proof_name == ""
+    assert settings.growth_loop_bloomreach_segment_proof_id == ""
+    assert settings.growth_loop_bloomreach_segment_proof_project_name == "sleepy-goose"
+    assert settings.growth_loop_bloomreach_segment_proof_workspace_name == "Hackathon Workspace"
+    assert settings.growth_loop_bloomreach_segment_proof_created_via == "Cursor MCP"
+    assert settings.growth_loop_bloomreach_segment_proof_status_label == "Created via Cursor MCP"
 
     enabled_settings = Settings(
         _env_file=None,
@@ -159,6 +166,9 @@ def test_growth_loop_agent_feature_flag_defaults_disabled_and_can_enable():
         growth_loop_loomi_mcp_project_id="project_123",
         growth_loop_loomi_mcp_workspace_id="workspace_123",
         growth_loop_loomi_mcp_organization_id="org_123",
+        growth_loop_bloomreach_segment_proof_enabled=True,
+        growth_loop_bloomreach_segment_proof_name="CCP Cart Recovery Demo",
+        growth_loop_bloomreach_segment_proof_id="seg_123",
     )
 
     assert enabled_settings.growth_loop_agent_feature_enabled is True
@@ -168,6 +178,9 @@ def test_growth_loop_agent_feature_flag_defaults_disabled_and_can_enable():
     assert enabled_settings.growth_loop_loomi_mcp_project_id == "project_123"
     assert enabled_settings.growth_loop_loomi_mcp_workspace_id == "workspace_123"
     assert enabled_settings.growth_loop_loomi_mcp_organization_id == "org_123"
+    assert enabled_settings.growth_loop_bloomreach_segment_proof_enabled is True
+    assert enabled_settings.growth_loop_bloomreach_segment_proof_name == "CCP Cart Recovery Demo"
+    assert enabled_settings.growth_loop_bloomreach_segment_proof_id == "seg_123"
 
 
 def test_growth_loop_loomi_mcp_rejects_invalid_endpoint_and_timeout():

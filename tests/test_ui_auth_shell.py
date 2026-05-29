@@ -136,7 +136,12 @@ def _live_paypal_operator_only_settings(*emails: str):
     return _paypal_operator_only_settings(*emails, environment="live")
 
 
-def _growth_loop_settings(*, enabled: bool, live_loomi_enabled: bool = False):
+def _growth_loop_settings(
+    *,
+    enabled: bool,
+    live_loomi_enabled: bool = False,
+    bloomreach_segment_proof_enabled: bool = False,
+):
     settings = get_settings()
     return settings.model_copy(
         update={
@@ -151,6 +156,13 @@ def _growth_loop_settings(*, enabled: bool, live_loomi_enabled: bool = False):
             ),
             "growth_loop_loomi_mcp_project_id": (
                 "project_ui" if live_loomi_enabled else ""
+            ),
+            "growth_loop_bloomreach_segment_proof_enabled": bloomreach_segment_proof_enabled,
+            "growth_loop_bloomreach_segment_proof_name": (
+                "CCP Cart Recovery Demo" if bloomreach_segment_proof_enabled else ""
+            ),
+            "growth_loop_bloomreach_segment_proof_id": (
+                "seg_ui_growth_loop_demo" if bloomreach_segment_proof_enabled else ""
             ),
         }
     )
@@ -1564,10 +1576,7 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "sandbox observations do not count revenue" in growth_response.text
     assert "No live Engagement or Storefront call is made by this page." in growth_response.text
     assert "No customer data, screenshots, raw event payloads, or private URLs are embedded." in growth_response.text
-    assert (
-        "No campaign, segment, report, checkout, payment, export, saved object, or external mutation is performed."
-        in growth_response.text
-    )
+    assert "No campaign, report, checkout, payment, export, or Storefront mutation is performed by this page." in growth_response.text
     assert "No lift, causality, or new paid-truth source is claimed." in growth_response.text
     assert "View review packet" in growth_response.text
     assert "Guided agent workflow" in growth_response.text
@@ -1741,6 +1750,89 @@ def test_growth_loop_page_renders_live_loomi_status_when_provider_succeeds():
     assert "Pacific Tutors live overview" in response.text
     assert "Loomi MCP results are diagnostic context only." in response.text
     assert "ui-test-token" not in response.text
+    assert "caused revenue" not in response.text.lower()
+    assert "causal lift" not in response.text.lower()
+
+
+def test_growth_loop_page_renders_recorded_bloomreach_saved_segment_proof():
+    inserted = _insert_creator_user(
+        email=f"ui_growth_loop_segment_{uuid.uuid4().hex}@example.com",
+        name="Growth Loop Segment Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_growth_loop_segment",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Growth Loop Segment Call",
+        calendly_url="https://calendly.com/example/growth-loop-segment",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    tid = f"uigrowthsegment{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/growth-loop-segment",
+        tid=tid,
+    )
+    booking_id = _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=tid,
+        calendly_booking_uuid=f"BOOK_GROWTH_SEGMENT_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime.now(timezone.utc),
+    )
+    invoice_id = _insert_invoice(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=tid,
+        stripe_account_id="acct_ui_growth_loop_segment",
+        stripe_invoice_id=f"in_growth_segment_{uuid.uuid4().hex[:8]}",
+        amount_cents=19500,
+        paid_at=datetime.now(timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=tid,
+        invoice_id=invoice_id,
+        stripe_account_id="acct_ui_growth_loop_segment",
+        stripe_event_id=f"evt_growth_segment_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=f"in_growth_segment_{uuid.uuid4().hex[:8]}",
+        paid_at=datetime.now(timezone.utc),
+    )
+
+    settings = _growth_loop_settings(
+        enabled=True,
+        bloomreach_segment_proof_enabled=True,
+    )
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/growth-loop", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Bloomreach saved segment proof" in response.text
+    assert "Real sandbox object proof" in response.text
+    assert "CCP Cart Recovery Demo" in response.text
+    assert "seg_ui_growth_loop_demo" in response.text
+    assert "Created via Cursor MCP" in response.text
+    assert 'href="#growth-loop-bloomreach-object"' in response.text
+    assert '<details id="growth-loop-bloomreach-object" class="growth-loop-detail">' in response.text
+    assert "Recorded saved segment proof remains review-only." in response.text
+    assert "No Bloomreach object is created or changed by this page load." in response.text
+    assert "This page does not create, update, or delete Bloomreach objects on load." in response.text
+    assert "The created segment does not count revenue or prove lift/causality." in response.text
+    assert "Direct in-app Bloomreach mutation" in response.text
+    assert "No campaign or additional saved object is created by this page." in response.text
+    assert "operator-run Cursor MCP" in response.text
+    assert "app-owned invoice and payment records remain paid truth" in response.text.lower()
     assert "caused revenue" not in response.text.lower()
     assert "causal lift" not in response.text.lower()
 

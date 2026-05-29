@@ -4,6 +4,7 @@ from app.services.growth_loop_agent import (
     GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS,
     GROWTH_LOOP_STAGE_SETUP_INCOMPLETE,
     GROWTH_LOOP_STAGE_TRACKED_NO_BOOKINGS,
+    GrowthLoopRecordedBloomreachSegmentProof,
     GrowthLoopWorkspaceEvidence,
     build_sleepy_goose_schema_opportunity,
     build_fixture_loomi_diagnostic_context,
@@ -144,6 +145,81 @@ def test_growth_loop_stage_paid_result_exists_keeps_paid_truth_app_owned():
     assert "No campaign is sent." in brief.agent_console.guided_run.boundaries
     assert "App-owned invoice and payment records remain paid truth." in brief.agent_console.guided_run.boundaries
     assert "#growth-loop-review-packet" in brief.agent_console.primary_action_label or brief.agent_console.primary_action_label == "View review packet"
+
+
+def test_growth_loop_records_bloomreach_saved_segment_proof_without_page_load_mutation():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=2,
+            paid_invoice_count=1,
+            paid_revenue_cents=19500,
+        ),
+        recorded_bloomreach_segment_proof=GrowthLoopRecordedBloomreachSegmentProof(
+            segment_name="CCP Cart Recovery Demo",
+            segment_id="seg_story139_demo",
+        ),
+    )
+
+    assert brief.bloomreach_object_proof is not None
+    proof = brief.bloomreach_object_proof
+    assert proof.title == "Bloomreach saved segment proof"
+    assert proof.object_type == "Saved segment"
+    assert proof.object_name == "CCP Cart Recovery Demo"
+    assert proof.object_id == "seg_story139_demo"
+    assert proof.project_name == "sleepy-goose"
+    assert proof.workspace_name == "Hackathon Workspace"
+    assert proof.status_label == "Created via Cursor MCP"
+    assert "operator-run Cursor MCP" in proof.summary
+    assert "does not create or mutate Bloomreach on page load" in proof.summary
+    assert "This page does not create, update, or delete Bloomreach objects on load." in proof.boundaries
+    assert "The created segment does not count revenue or prove lift/causality." in proof.boundaries
+
+    assert brief.agent_console is not None
+    console = brief.agent_console
+    combined_text = " ".join(
+        (
+            console.summary,
+            " ".join(step.title for step in console.steps),
+            " ".join(step.detail for step in console.steps),
+            " ".join(signal.label for signal in console.capability_signals),
+            " ".join(signal.value for signal in console.capability_signals),
+            " ".join(signal.detail for signal in console.capability_signals),
+            " ".join(console.guided_run.boundaries),
+            " ".join(console.review_packet.proof_chain),
+            " ".join(console.review_packet.boundaries),
+            brief.decision_trace.guardrail_summary if brief.decision_trace else "",
+            " ".join(candidate.title for candidate in brief.decision_trace.candidates) if brief.decision_trace else "",
+            " ".join(candidate.boundary for candidate in brief.decision_trace.candidates) if brief.decision_trace else "",
+            " ".join(brief.reviewable_action.limitations) if brief.reviewable_action else "",
+            " ".join(brief.segment_recipe.limitations) if brief.segment_recipe else "",
+        )
+    ).lower()
+
+    assert [step.label for step in console.steps] == [
+        "Proof",
+        "Schema",
+        "Object",
+        "Action",
+        "Segment",
+        "Measure",
+    ]
+    assert "bloomreach saved segment" in combined_text
+    assert "ccp cart recovery demo" in combined_text
+    assert "seg_story139_demo" in combined_text
+    assert "operator-run cursor mcp" in combined_text
+    assert "this page does not create or update it on load" in combined_text
+    assert "no bloomreach object is created or changed by this page load" in combined_text
+    assert "direct in-app bloomreach mutation" in combined_text
+    assert "no campaign or additional saved object is created by this page" in combined_text
+    assert "recorded saved segment proof remains review-only" in combined_text
+    assert "does not count revenue" in combined_text
+    assert "prove causality" in combined_text
+    assert "app-owned invoice and payment records remain paid truth" in combined_text
 
 
 def test_growth_loop_guided_run_is_paid_result_only_and_review_bounded():

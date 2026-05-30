@@ -75,6 +75,23 @@ def test_render_blueprint_covers_required_non_local_config():
         env_vars["GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_STATUS_LABEL"]["value"]
         == "Created in Engagement UI"
     )
+    assert env_vars["GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_ENABLED"]["value"] == "false"
+    assert (
+        env_vars["GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_PROJECT_NAME"]["value"]
+        == "sleepy-goose"
+    )
+    assert (
+        env_vars["GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_WORKSPACE_NAME"]["value"]
+        == "Hackathon Workspace"
+    )
+    assert (
+        env_vars["GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_CREATED_VIA"]["value"]
+        == "Bloomreach Engagement UI"
+    )
+    assert (
+        env_vars["GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_STATUS_LABEL"]["value"]
+        == "Recorded activation proof"
+    )
     assert env_vars["DATABASE_URL"]["fromDatabase"] == {
         "name": "inbox-to-revenue-attribution-db",
         "property": "connectionString",
@@ -103,6 +120,9 @@ def test_render_blueprint_covers_required_non_local_config():
         "GROWTH_LOOP_LOOMI_MCP_ORGANIZATION_ID",
         "GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_NAME",
         "GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_ID",
+        "GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_CUSTOMER_LABEL",
+        "GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_PROPERTY_NAME",
+        "GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_PROPERTY_VALUE",
         "CALENDLY_WEBHOOK_SIGNING_KEY",
         "TRACKED_LINK_BASE_URL",
         "MAGIC_LINK_BASE_URL",

@@ -133,6 +133,7 @@ from app.services.evidence_ingress_health import (
 )
 from app.services.growth_loop_agent import (
     GrowthLoopActionBrief,
+    GrowthLoopRecordedBloomreachActivationProof,
     GrowthLoopRecordedBloomreachSegmentProof,
     GrowthLoopWorkspaceEvidence,
     build_growth_loop_action_brief,
@@ -590,6 +591,35 @@ def _growth_loop_recorded_bloomreach_segment_proof_from_settings(
     )
 
 
+def _growth_loop_recorded_bloomreach_activation_proof_from_settings(
+    settings,
+) -> GrowthLoopRecordedBloomreachActivationProof | None:
+    if not settings.growth_loop_bloomreach_activation_proof_enabled:
+        return None
+
+    customer_label = (
+        settings.growth_loop_bloomreach_activation_proof_customer_label.strip()
+    )
+    property_name = (
+        settings.growth_loop_bloomreach_activation_proof_property_name.strip()
+    )
+    property_value = (
+        settings.growth_loop_bloomreach_activation_proof_property_value.strip()
+    )
+    if not customer_label or not property_name or not property_value:
+        return None
+
+    return GrowthLoopRecordedBloomreachActivationProof(
+        customer_label=customer_label,
+        property_name=property_name,
+        property_value=property_value,
+        project_name=settings.growth_loop_bloomreach_activation_proof_project_name,
+        workspace_name=settings.growth_loop_bloomreach_activation_proof_workspace_name,
+        created_via=settings.growth_loop_bloomreach_activation_proof_created_via,
+        status_label=settings.growth_loop_bloomreach_activation_proof_status_label,
+    )
+
+
 @router.get("/app/growth-loop")
 def creator_growth_loop_agent_page(
     request: Request,
@@ -660,6 +690,9 @@ def creator_growth_loop_agent_page(
         loomi_context=loomi_context,
         recorded_bloomreach_segment_proof=(
             _growth_loop_recorded_bloomreach_segment_proof_from_settings(settings)
+        ),
+        recorded_bloomreach_activation_proof=(
+            _growth_loop_recorded_bloomreach_activation_proof_from_settings(settings)
         ),
     )
 
@@ -3092,6 +3125,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
     console = brief.agent_console
     sandbox = brief.sandbox_proof
     bloomreach_object = brief.bloomreach_object_proof
+    bloomreach_activation = brief.bloomreach_activation_proof
     packet = console.review_packet
     packet_proof = _render_bullet_list(packet.proof_chain)
     packet_boundaries = _render_bullet_list(packet.boundaries)
@@ -3111,11 +3145,12 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
 
     bloomreach_object_cockpit_card = ""
     bloomreach_object_shortcut = ""
-    object_context_copy = "recorded sandbox proof"
+    bloomreach_activation_cockpit_card = ""
+    bloomreach_activation_shortcut = ""
+    context_parts = ["recorded sandbox proof"]
     if bloomreach_object is not None:
-        object_context_copy = (
-            "recorded sandbox proof plus the saved Bloomreach segment created in "
-            f"{bloomreach_object.created_via}"
+        context_parts.append(
+            f"saved Bloomreach segment proof from {bloomreach_object.created_via}"
         )
         bloomreach_object_cockpit_card = f"""
           <article class="judge-flow-card object-proof">
@@ -3138,6 +3173,24 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
           </article>
         """
         bloomreach_object_shortcut = '<a href="#growth-loop-bloomreach-object">Bloomreach object</a>'
+
+    if bloomreach_activation is not None:
+        context_parts.append(
+            f"customer-property activation proof from {bloomreach_activation.created_via}"
+        )
+        bloomreach_activation_cockpit_card = f"""
+          <article class="judge-flow-card activation-proof">
+            <div>
+              <p class="eyebrow">Live activation proof</p>
+              <h3>{html.escape(bloomreach_activation.property_name)}</h3>
+              <p>{html.escape(bloomreach_activation.property_value)} recorded for {html.escape(bloomreach_activation.customer_label)} in {html.escape(bloomreach_activation.project_name)} / {html.escape(bloomreach_activation.workspace_name)}.</p>
+            </div>
+            <a class="inline-proof-link" href="#growth-loop-bloomreach-activation">Inspect activation proof</a>
+          </article>
+        """
+        bloomreach_activation_shortcut = '<a href="#growth-loop-bloomreach-activation">Activation proof</a>'
+
+    object_context_copy = " plus ".join(context_parts)
 
     return f"""
     <section class="card stack agent-console">
@@ -3163,6 +3216,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
           </article>
           {sandbox_cockpit_card}
           {bloomreach_object_cockpit_card}
+          {bloomreach_activation_cockpit_card}
           <article class="judge-flow-card proof">
             <p class="eyebrow">Proof</p>
             <h3>{html.escape(paid_truth_signal.value)}</h3>
@@ -3184,6 +3238,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
         <a href="#growth-loop-proof">Proof</a>
         {sandbox_shortcut}
         {bloomreach_object_shortcut}
+        {bloomreach_activation_shortcut}
         <a href="#growth-loop-action">Action</a>
         <a href="#growth-loop-decision">Decision</a>
         <a href="#growth-loop-segment">Segment</a>
@@ -3264,6 +3319,59 @@ def _render_growth_loop_bloomreach_object_proof_section(
           <p><strong>{html.escape(bloomreach_object.object_type)}</strong>: {html.escape(bloomreach_object.object_name)} <code>{html.escape(bloomreach_object.object_id)}</code></p>
         </div>
         <span class="pill-note">{html.escape(bloomreach_object.status_label)}</span>
+      </div>
+      <div class="grid">
+        {cards}
+      </div>
+      <div class="grid">
+        <section class="topic-summary stack">
+          <h2>Proof chain</h2>
+          {proof_chain}
+        </section>
+        <section class="topic-summary stack">
+          <h2>Runtime boundaries</h2>
+          {boundaries}
+        </section>
+      </div>
+      </section>
+    </details>
+    """
+
+
+def _render_growth_loop_bloomreach_activation_proof_section(
+    brief: GrowthLoopActionBrief,
+) -> str:
+    bloomreach_activation = brief.bloomreach_activation_proof
+    if bloomreach_activation is None:
+        return ""
+
+    cards = "".join(
+        f"""
+        <section class="topic-summary stack">
+          <div>
+            <p class="eyebrow">{html.escape(card.label)}</p>
+            <h2>{html.escape(card.title)}</h2>
+          </div>
+          <p>{html.escape(card.detail)}</p>
+        </section>
+        """
+        for card in bloomreach_activation.cards
+    )
+    proof_chain = _render_bullet_list(bloomreach_activation.proof_chain)
+    boundaries = _render_bullet_list(bloomreach_activation.boundaries)
+
+    return f"""
+    <details id="growth-loop-bloomreach-activation" class="growth-loop-detail">
+      <summary><span>Activation artifact</span><strong>{html.escape(bloomreach_activation.title)}</strong></summary>
+      <section class="card stack">
+      <div class="status-row">
+        <div>
+          <p class="eyebrow">Real sandbox activation proof</p>
+          <h2>{html.escape(bloomreach_activation.title)}</h2>
+          <p>{html.escape(bloomreach_activation.summary)}</p>
+          <p><strong>Customer property</strong>: {html.escape(bloomreach_activation.property_name)}=<code>{html.escape(bloomreach_activation.property_value)}</code> for {html.escape(bloomreach_activation.customer_label)}</p>
+        </div>
+        <span class="pill-note">{html.escape(bloomreach_activation.status_label)}</span>
       </div>
       <div class="grid">
         {cards}
@@ -3369,6 +3477,9 @@ def _render_growth_loop_agent_page(
     )
     sandbox_proof_section = _render_growth_loop_sandbox_proof_section(brief)
     bloomreach_object_proof_section = _render_growth_loop_bloomreach_object_proof_section(brief)
+    bloomreach_activation_proof_section = (
+        _render_growth_loop_bloomreach_activation_proof_section(brief)
+    )
     reviewable_action_section = ""
     if brief.reviewable_action is not None:
         action = brief.reviewable_action
@@ -3629,6 +3740,7 @@ def _render_growth_loop_agent_page(
       </div>
     {sandbox_proof_section}
     {bloomreach_object_proof_section}
+    {bloomreach_activation_proof_section}
     <details class="growth-loop-detail">
       <summary><span>Demo map</span><strong>Cross-system proof map</strong></summary>
       <section class="card stack">
@@ -12221,6 +12333,7 @@ def _page_layout(*, title: str, body: str) -> str:
       .judge-flow-card h3,
       .judge-flow-card p {{
         overflow-wrap: anywhere;
+        word-break: break-word;
       }}
 
       .judge-flow-card.signal {{
@@ -12278,6 +12391,30 @@ def _page_layout(*, title: str, body: str) -> str:
       .object-proof-meta code {{
         white-space: normal;
         overflow-wrap: anywhere;
+      }}
+
+      .growth-loop-detail .mini-card,
+      .growth-loop-detail .topic-summary {{
+        min-width: 0;
+      }}
+
+      .growth-loop-detail h2,
+      .growth-loop-detail h3,
+      .growth-loop-detail p,
+      .growth-loop-detail li,
+      .growth-loop-detail .mini-card h3,
+      .growth-loop-detail .mini-card p,
+      .growth-loop-detail .card p,
+      .growth-loop-detail .card li {{
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }}
+
+      .growth-loop-detail code {{
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }}
 
       .inline-proof-link {{

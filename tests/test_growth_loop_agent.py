@@ -4,6 +4,7 @@ from app.services.growth_loop_agent import (
     GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS,
     GROWTH_LOOP_STAGE_SETUP_INCOMPLETE,
     GROWTH_LOOP_STAGE_TRACKED_NO_BOOKINGS,
+    GrowthLoopRecordedBloomreachActivationProof,
     GrowthLoopRecordedBloomreachSegmentProof,
     GrowthLoopWorkspaceEvidence,
     build_sleepy_goose_schema_opportunity,
@@ -221,6 +222,75 @@ def test_growth_loop_records_bloomreach_saved_segment_proof_without_page_load_mu
     assert "recorded saved segment proof remains review-only" in combined_text
     assert "does not count revenue" in combined_text
     assert "prove causality" in combined_text
+    assert "app-owned invoice and payment records remain paid truth" in combined_text
+
+
+def test_growth_loop_records_bloomreach_customer_property_activation_proof_without_page_load_mutation():
+    brief = build_growth_loop_action_brief(
+        evidence=_evidence(
+            billing_connected=True,
+            billable_now=True,
+            booking_links_count=1,
+            billing_ready_count=1,
+            tracked_content_count=1,
+            booking_count=2,
+            paid_invoice_count=1,
+            paid_revenue_cents=19500,
+        ),
+        recorded_bloomreach_activation_proof=GrowthLoopRecordedBloomreachActivationProof(
+            customer_label="Demo customer profile",
+            property_name="ccp_growth_loop_recovery_candidate",
+            property_value="story142_review_ready",
+        ),
+    )
+
+    assert brief.bloomreach_activation_proof is not None
+    proof = brief.bloomreach_activation_proof
+    assert proof.title == "Bloomreach customer property proof"
+    assert proof.customer_label == "Demo customer profile"
+    assert proof.property_name == "ccp_growth_loop_recovery_candidate"
+    assert proof.property_value == "story142_review_ready"
+    assert proof.project_name == "sleepy-goose"
+    assert proof.workspace_name == "Hackathon Workspace"
+    assert proof.status_label == "Recorded activation proof"
+    assert "demo-scoped Bloomreach customer property update" in proof.summary
+    assert "does not create or mutate Bloomreach on page load" in proof.summary
+    assert (
+        "This page does not create, update, or delete Bloomreach customer properties on load."
+        in proof.boundaries
+    )
+    assert (
+        "The recorded customer-property proof does not count revenue or prove lift/causality."
+        in proof.boundaries
+    )
+
+    assert brief.agent_console is not None
+    console = brief.agent_console
+    combined_text = " ".join(
+        (
+            console.summary,
+            " ".join(step.title for step in console.steps),
+            " ".join(step.detail for step in console.steps),
+            " ".join(signal.label for signal in console.capability_signals),
+            " ".join(signal.value for signal in console.capability_signals),
+            " ".join(signal.detail for signal in console.capability_signals),
+            " ".join(console.guided_run.boundaries),
+            console.guided_run.completion_summary,
+            " ".join(console.review_packet.proof_chain),
+            " ".join(console.review_packet.boundaries),
+        )
+    ).lower()
+    proof_boundary_text = " ".join((*proof.proof_chain, *proof.boundaries)).lower()
+
+    assert "live activation proof" in combined_text
+    assert "ccp_growth_loop_recovery_candidate" in combined_text
+    assert "story142_review_ready" in combined_text
+    assert "demo customer profile" in combined_text
+    assert "bloomreach engagement ui" in combined_text
+    assert "customer-property activation proof remains review-only" in combined_text
+    assert "bloomreach activation proof supplies customer property" in combined_text
+    assert "does not count revenue" in proof_boundary_text
+    assert "prove lift/causality" in proof_boundary_text
     assert "app-owned invoice and payment records remain paid truth" in combined_text
 
 

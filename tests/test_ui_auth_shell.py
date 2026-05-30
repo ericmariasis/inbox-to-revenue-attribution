@@ -141,6 +141,7 @@ def _growth_loop_settings(
     enabled: bool,
     live_loomi_enabled: bool = False,
     bloomreach_segment_proof_enabled: bool = False,
+    bloomreach_activation_proof_enabled: bool = False,
 ):
     settings = get_settings()
     return settings.model_copy(
@@ -163,6 +164,20 @@ def _growth_loop_settings(
             ),
             "growth_loop_bloomreach_segment_proof_id": (
                 "seg_ui_growth_loop_demo" if bloomreach_segment_proof_enabled else ""
+            ),
+            "growth_loop_bloomreach_activation_proof_enabled": (
+                bloomreach_activation_proof_enabled
+            ),
+            "growth_loop_bloomreach_activation_proof_customer_label": (
+                "Demo customer profile" if bloomreach_activation_proof_enabled else ""
+            ),
+            "growth_loop_bloomreach_activation_proof_property_name": (
+                "ccp_growth_loop_recovery_candidate"
+                if bloomreach_activation_proof_enabled
+                else ""
+            ),
+            "growth_loop_bloomreach_activation_proof_property_value": (
+                "story142_review_ready" if bloomreach_activation_proof_enabled else ""
             ),
         }
     )
@@ -1836,6 +1851,100 @@ def test_growth_loop_page_renders_recorded_bloomreach_saved_segment_proof():
     assert "Direct in-app Bloomreach mutation" in response.text
     assert "No campaign or additional saved object is created by this page." in response.text
     assert "Bloomreach Engagement UI" in response.text
+    assert "app-owned invoice and payment records remain paid truth" in response.text.lower()
+    assert "caused revenue" not in response.text.lower()
+    assert "causal lift" not in response.text.lower()
+
+
+def test_growth_loop_page_renders_recorded_bloomreach_activation_proof():
+    inserted = _insert_creator_user(
+        email=f"ui_growth_loop_activation_{uuid.uuid4().hex}@example.com",
+        name="Growth Loop Activation Creator",
+        stripe_connect_status="connected",
+        stripe_account_id="acct_ui_growth_loop_activation",
+    )
+    access_token = _access_token(
+        user_id=inserted["user_id"],
+        creator_id=inserted["creator_id"],
+        email=inserted["email"],
+        expires_delta=timedelta(hours=24),
+    )
+    booking_link_id = _insert_booking_link(
+        creator_id=inserted["creator_id"],
+        name="Growth Loop Activation Call",
+        calendly_url="https://calendly.com/example/growth-loop-activation",
+        billing_amount_cents=19500,
+        billing_currency="USD",
+    )
+    tid = f"uigrowthactivation{uuid.uuid4().hex[:8]}"
+    _insert_content(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        source_url="https://example.com/posts/growth-loop-activation",
+        tid=tid,
+    )
+    booking_id = _insert_booking(
+        creator_id=inserted["creator_id"],
+        booking_link_id=booking_link_id,
+        tid=tid,
+        calendly_booking_uuid=f"BOOK_GROWTH_ACTIVATION_{uuid.uuid4().hex[:8]}",
+        booked_at=datetime.now(timezone.utc),
+    )
+    invoice_id = _insert_invoice(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=tid,
+        stripe_account_id="acct_ui_growth_loop_activation",
+        stripe_invoice_id=f"in_growth_activation_{uuid.uuid4().hex[:8]}",
+        amount_cents=19500,
+        paid_at=datetime.now(timezone.utc),
+    )
+    _insert_matched_payment_event(
+        creator_id=inserted["creator_id"],
+        booking_id=booking_id,
+        tid=tid,
+        invoice_id=invoice_id,
+        stripe_account_id="acct_ui_growth_loop_activation",
+        stripe_event_id=f"evt_growth_activation_{uuid.uuid4().hex[:8]}",
+        stripe_invoice_id=f"in_growth_activation_{uuid.uuid4().hex[:8]}",
+        paid_at=datetime.now(timezone.utc),
+    )
+
+    settings = _growth_loop_settings(
+        enabled=True,
+        bloomreach_activation_proof_enabled=True,
+    )
+    with _override_app_state("settings", settings):
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, access_token)
+            response = client.get("/app/growth-loop", headers=HTML_ACCEPT_HEADERS)
+
+    assert response.status_code == 200
+    assert "Live activation proof" in response.text
+    assert "Bloomreach customer property proof" in response.text
+    assert "Real sandbox activation proof" in response.text
+    assert "ccp_growth_loop_recovery_candidate" in response.text
+    assert "story142_review_ready" in response.text
+    assert "Demo customer profile" in response.text
+    assert "Inspect activation proof" in response.text
+    assert ".growth-loop-detail .topic-summary" in response.text
+    assert ".growth-loop-detail h2" in response.text
+    assert ".growth-loop-detail code" in response.text
+    assert "word-break: break-word;" in response.text
+    assert 'href="#growth-loop-bloomreach-activation"' in response.text
+    assert (
+        '<details id="growth-loop-bloomreach-activation" class="growth-loop-detail">'
+        in response.text
+    )
+    assert (
+        "This page does not create, update, or delete Bloomreach customer properties on load."
+        in response.text
+    )
+    assert "Recorded customer-property activation proof remains review-only." in response.text
+    assert (
+        "No campaign, flow, send, export, checkout, payment, or Storefront mutation is triggered by this proof."
+        in response.text
+    )
     assert "app-owned invoice and payment records remain paid truth" in response.text.lower()
     assert "caused revenue" not in response.text.lower()
     assert "causal lift" not in response.text.lower()

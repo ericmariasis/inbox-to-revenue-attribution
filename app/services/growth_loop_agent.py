@@ -206,6 +206,40 @@ class GrowthLoopBloomreachObjectProof:
 
 
 @dataclass(frozen=True)
+class GrowthLoopRecordedBloomreachActivationProof:
+    customer_label: str
+    property_name: str
+    property_value: str
+    project_name: str = "sleepy-goose"
+    workspace_name: str = "Hackathon Workspace"
+    created_via: str = "Bloomreach Engagement UI"
+    status_label: str = "Recorded activation proof"
+
+
+@dataclass(frozen=True)
+class GrowthLoopBloomreachActivationProofCard:
+    label: str
+    title: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class GrowthLoopBloomreachActivationProof:
+    title: str
+    summary: str
+    status_label: str
+    customer_label: str
+    property_name: str
+    property_value: str
+    project_name: str
+    workspace_name: str
+    created_via: str
+    cards: tuple[GrowthLoopBloomreachActivationProofCard, ...]
+    proof_chain: tuple[str, ...]
+    boundaries: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class GrowthLoopAgentConsole:
     title: str
     summary: str
@@ -250,6 +284,7 @@ class GrowthLoopActionBrief:
     measurement_plan: GrowthLoopMeasurementPlan | None
     sandbox_proof: GrowthLoopSandboxProof | None
     bloomreach_object_proof: GrowthLoopBloomreachObjectProof | None
+    bloomreach_activation_proof: GrowthLoopBloomreachActivationProof | None
     agent_console: GrowthLoopAgentConsole | None
     confidence_label: str
     confidence_summary: str
@@ -296,6 +331,9 @@ def build_growth_loop_action_brief(
     evidence: GrowthLoopWorkspaceEvidence,
     loomi_context: LoomiDiagnosticContext | None = None,
     recorded_bloomreach_segment_proof: GrowthLoopRecordedBloomreachSegmentProof | None = None,
+    recorded_bloomreach_activation_proof: (
+        GrowthLoopRecordedBloomreachActivationProof | None
+    ) = None,
 ) -> GrowthLoopActionBrief:
     context = loomi_context or build_fixture_loomi_diagnostic_context()
     stage = _classify_growth_loop_stage(evidence)
@@ -303,6 +341,10 @@ def build_growth_loop_action_brief(
     bloomreach_object_proof = _build_bloomreach_object_proof(
         stage,
         recorded_bloomreach_segment_proof,
+    )
+    bloomreach_activation_proof = _build_bloomreach_activation_proof(
+        stage,
+        recorded_bloomreach_activation_proof,
     )
 
     return GrowthLoopActionBrief(
@@ -322,7 +364,13 @@ def build_growth_loop_action_brief(
         measurement_plan=_build_measurement_plan(stage),
         sandbox_proof=_build_sandbox_proof(stage, evidence),
         bloomreach_object_proof=bloomreach_object_proof,
-        agent_console=_build_agent_console(stage, evidence, bloomreach_object_proof),
+        bloomreach_activation_proof=bloomreach_activation_proof,
+        agent_console=_build_agent_console(
+            stage,
+            evidence,
+            bloomreach_object_proof,
+            bloomreach_activation_proof,
+        ),
         confidence_label=stage_copy["confidence_label"],
         confidence_summary=stage_copy["confidence_summary"],
         limitations=(
@@ -398,6 +446,78 @@ def _build_bloomreach_object_proof(
             "No campaign, flow, send, export, checkout, payment, or Storefront mutation is triggered by this proof.",
             "This page does not create, update, or delete Bloomreach objects on load.",
             "The created segment does not count revenue or prove lift/causality.",
+            "App-owned invoice and payment records remain paid truth.",
+        ),
+    )
+
+
+def _build_bloomreach_activation_proof(
+    stage: str,
+    recorded_proof: GrowthLoopRecordedBloomreachActivationProof | None,
+) -> GrowthLoopBloomreachActivationProof | None:
+    if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS or recorded_proof is None:
+        return None
+
+    customer_label = recorded_proof.customer_label.strip()
+    property_name = recorded_proof.property_name.strip()
+    property_value = recorded_proof.property_value.strip()
+    if not customer_label or not property_name or not property_value:
+        return None
+
+    project_name = recorded_proof.project_name.strip() or "sleepy-goose"
+    workspace_name = recorded_proof.workspace_name.strip() or "Hackathon Workspace"
+    created_via = recorded_proof.created_via.strip() or "Bloomreach Engagement UI"
+    status_label = recorded_proof.status_label.strip() or "Recorded activation proof"
+
+    return GrowthLoopBloomreachActivationProof(
+        title="Bloomreach customer property proof",
+        summary=(
+            f"This records one demo-scoped Bloomreach customer property update performed "
+            f"through {created_via}. This app displays sanitized activation metadata only; "
+            "it does not create or mutate Bloomreach on page load."
+        ),
+        status_label=status_label,
+        customer_label=customer_label,
+        property_name=property_name,
+        property_value=property_value,
+        project_name=project_name,
+        workspace_name=workspace_name,
+        created_via=created_via,
+        cards=(
+            GrowthLoopBloomreachActivationProofCard(
+                label="Customer property",
+                title=property_name,
+                detail=(
+                    f"Recorded value {property_value} for {customer_label} in Bloomreach."
+                ),
+            ),
+            GrowthLoopBloomreachActivationProofCard(
+                label="Sandbox location",
+                title=f"{project_name} / {workspace_name}",
+                detail=f"Updated through {created_via} after the recovery segment proof.",
+            ),
+            GrowthLoopBloomreachActivationProofCard(
+                label="Runtime boundary",
+                title="Displayed, not triggered here",
+                detail=(
+                    "The app shows recorded metadata only; no customer-property update, "
+                    "campaign send, export, checkout, or payment action runs from this page."
+                ),
+            ),
+        ),
+        proof_chain=(
+            (
+                f"{created_via} recorded customer property {property_name}="
+                f"{property_value} for {customer_label} in {project_name}."
+            ),
+            "The app displays sanitized activation metadata only, not raw customer records or payloads.",
+            "Campaign activation remains gated; no send, export, checkout, or payment action is triggered.",
+            "App-owned invoice and payment records remain the paid-result truth.",
+        ),
+        boundaries=(
+            "This page does not create, update, or delete Bloomreach customer properties on load.",
+            "No campaign, flow, send, export, checkout, payment, or Storefront mutation is triggered by this proof.",
+            "The recorded customer-property proof does not count revenue or prove lift/causality.",
             "App-owned invoice and payment records remain paid truth.",
         ),
     )
@@ -739,6 +859,7 @@ def _build_agent_console(
     stage: str,
     evidence: GrowthLoopWorkspaceEvidence,
     bloomreach_object_proof: GrowthLoopBloomreachObjectProof | None,
+    bloomreach_activation_proof: GrowthLoopBloomreachActivationProof | None,
 ) -> GrowthLoopAgentConsole | None:
     if stage != GROWTH_LOOP_STAGE_PAID_RESULT_EXISTS:
         return None
@@ -750,6 +871,8 @@ def _build_agent_console(
     object_steps: tuple[GrowthLoopAgentConsoleStep, ...] = ()
     object_signals: tuple[GrowthLoopCapabilitySignal, ...] = ()
     object_proof_chain: tuple[str, ...] = ()
+    activation_signals: tuple[GrowthLoopCapabilitySignal, ...] = ()
+    activation_proof_chain: tuple[str, ...] = ()
     if bloomreach_object_proof is not None:
         object_steps = (
             GrowthLoopAgentConsoleStep(
@@ -776,6 +899,27 @@ def _build_agent_console(
             (
                 f"Bloomreach object proof supplies saved segment "
                 f"{bloomreach_object_proof.object_name} ({bloomreach_object_proof.object_id})."
+            ),
+        )
+
+    if bloomreach_activation_proof is not None:
+        activation_signals = (
+            GrowthLoopCapabilitySignal(
+                label="Live activation proof",
+                value=bloomreach_activation_proof.property_name,
+                detail=(
+                    f"{bloomreach_activation_proof.property_value} was recorded for "
+                    f"{bloomreach_activation_proof.customer_label} through "
+                    f"{bloomreach_activation_proof.created_via}; displayed as metadata only."
+                ),
+            ),
+        )
+        activation_proof_chain = (
+            (
+                "Bloomreach activation proof supplies customer property "
+                f"{bloomreach_activation_proof.property_name}="
+                f"{bloomreach_activation_proof.property_value} for "
+                f"{bloomreach_activation_proof.customer_label}."
             ),
         )
 
@@ -825,11 +969,30 @@ def _build_agent_console(
             "App-owned invoice and payment records remain paid truth.",
         )
 
+    if bloomreach_activation_proof is not None:
+        proof_copy = "recorded customer-property activation proof"
+        if bloomreach_object_proof is not None:
+            proof_copy = "recorded saved-segment and customer-property activation proof"
+        completion_summary = (
+            f"The agent has prepared one review packet with {proof_copy}. "
+            "It is ready for human review, not for automatic send, export, or page-load mutation."
+        )
+        guided_boundaries = (
+            *guided_boundaries[:3],
+            "Recorded customer-property activation proof remains review-only.",
+            *guided_boundaries[3:],
+        )
+        packet_boundaries = (
+            *packet_boundaries[:3],
+            "Recorded customer-property activation proof remains review-only.",
+            *packet_boundaries[3:],
+        )
+
     return GrowthLoopAgentConsole(
         title="Agent console",
         summary=(
             "Paid result exists; the agent packaged the proof, schema opportunity, "
-            "reviewable action, segment recipe, measurement plan, and real saved-segment "
+            "reviewable action, segment recipe, measurement plan, and recorded Bloomreach "
             "proof when configured into one review packet."
         ),
         primary_action_label="View review packet",
@@ -973,6 +1136,7 @@ def _build_agent_console(
                 detail="Canonical invoice and payment records decide revenue.",
             ),
             *object_signals,
+            *activation_signals,
             GrowthLoopCapabilitySignal(
                 label="Cursor MCP schema proof",
                 value="sleepy-goose",
@@ -1012,6 +1176,7 @@ def _build_agent_console(
             proof_chain=(
                 "Loomi schema proof supplies cart_update, checkout, view_item, purchase, campaign, and retargeting fields.",
                 *object_proof_chain,
+                *activation_proof_chain,
                 (
                     f"App-owned proof supplies {tracked_content_copy}, "
                     f"{booking_copy}, {paid_invoice_copy}, and "

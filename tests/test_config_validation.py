@@ -161,6 +161,23 @@ def test_growth_loop_agent_feature_flag_defaults_disabled_and_can_enable():
         settings.growth_loop_bloomreach_segment_proof_status_label
         == "Created in Engagement UI"
     )
+    assert settings.growth_loop_bloomreach_activation_proof_enabled is False
+    assert settings.growth_loop_bloomreach_activation_proof_customer_label == ""
+    assert settings.growth_loop_bloomreach_activation_proof_property_name == ""
+    assert settings.growth_loop_bloomreach_activation_proof_property_value == ""
+    assert settings.growth_loop_bloomreach_activation_proof_project_name == "sleepy-goose"
+    assert (
+        settings.growth_loop_bloomreach_activation_proof_workspace_name
+        == "Hackathon Workspace"
+    )
+    assert (
+        settings.growth_loop_bloomreach_activation_proof_created_via
+        == "Bloomreach Engagement UI"
+    )
+    assert (
+        settings.growth_loop_bloomreach_activation_proof_status_label
+        == "Recorded activation proof"
+    )
 
     enabled_settings = Settings(
         _env_file=None,
@@ -175,6 +192,14 @@ def test_growth_loop_agent_feature_flag_defaults_disabled_and_can_enable():
         growth_loop_bloomreach_segment_proof_enabled=True,
         growth_loop_bloomreach_segment_proof_name="CCP Cart Recovery Demo",
         growth_loop_bloomreach_segment_proof_id="seg_123",
+        growth_loop_bloomreach_activation_proof_enabled=True,
+        growth_loop_bloomreach_activation_proof_customer_label="Demo customer profile",
+        growth_loop_bloomreach_activation_proof_property_name=(
+            "ccp_growth_loop_recovery_candidate"
+        ),
+        growth_loop_bloomreach_activation_proof_property_value=(
+            "story142_review_ready"
+        ),
     )
 
     assert enabled_settings.growth_loop_agent_feature_enabled is True
@@ -187,6 +212,19 @@ def test_growth_loop_agent_feature_flag_defaults_disabled_and_can_enable():
     assert enabled_settings.growth_loop_bloomreach_segment_proof_enabled is True
     assert enabled_settings.growth_loop_bloomreach_segment_proof_name == "CCP Cart Recovery Demo"
     assert enabled_settings.growth_loop_bloomreach_segment_proof_id == "seg_123"
+    assert enabled_settings.growth_loop_bloomreach_activation_proof_enabled is True
+    assert (
+        enabled_settings.growth_loop_bloomreach_activation_proof_customer_label
+        == "Demo customer profile"
+    )
+    assert (
+        enabled_settings.growth_loop_bloomreach_activation_proof_property_name
+        == "ccp_growth_loop_recovery_candidate"
+    )
+    assert (
+        enabled_settings.growth_loop_bloomreach_activation_proof_property_value
+        == "story142_review_ready"
+    )
 
 
 def test_growth_loop_loomi_mcp_rejects_invalid_endpoint_and_timeout():

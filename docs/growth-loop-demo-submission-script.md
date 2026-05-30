@@ -21,46 +21,52 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 5. Point to `Real Bloomreach object proof` when saved-segment metadata is configured.
    - "We also proved the mutation path once through Bloomreach Engagement: a saved segment exists in Bloomreach, with its name and object ID visible in the first judge path. This page only displays the recorded object metadata. It does not create or update Bloomreach on page load."
 
-6. Click through `Run agent`.
+6. Point to `Live activation proof` when customer-property metadata is configured.
+   - "We also recorded one safe customer-property activation marker in Bloomreach Engagement. The app displays the sanitized property and value as proof, but it does not update customer profiles, send campaigns, or trigger flows on page load."
+
+7. Click through `Run agent`.
    - "This is the controlled agent run. It inspects paid proof, reads the Loomi schema evidence, scores candidate actions, prepares the recovery brief, generates the Bloomreach-ready segment recipe, and attaches the measurement plan."
 
-7. Point to `Review packet`.
+8. Point to `Review packet`.
    - "This is the compact artifact a judge or marketer can review: selected recovery action, Bloomreach-ready segment recipe, measurement plan, proof chain, and the no-send/no-page-load-mutation/no-lift boundaries."
 
-8. Open `Evidence appendix`.
+9. Open `Evidence appendix`.
    - "The first screen stays short, but the full proof, recipes, and boundaries are still here when a reviewer wants to inspect them."
 
-9. Point to `Sandbox proof` inside the appendix.
+10. Point to `Sandbox proof` inside the appendix.
    - "This proof is intentionally bounded: the page does not call Engagement or Storefront live, embed customer data or screenshots, mutate Bloomreach, change Storefront, run checkout, or claim lift."
 
-10. Point to `Bloomreach saved segment proof` inside the appendix when configured.
+11. Point to `Bloomreach saved segment proof` inside the appendix when configured.
    - "The saved segment proof is also bounded: it proves a real sandbox object can be created through Bloomreach Engagement, but it does not send a campaign, trigger a flow, or become revenue truth."
 
-11. Point to the cross-system demo map.
+12. Point to `Bloomreach customer property proof` inside the appendix when configured.
+   - "The customer-property proof shows a real activation marker was recorded through Bloomreach Engagement. It remains metadata proof only: no customer profile update, campaign, send, export, checkout, payment, or Storefront mutation happens from this page."
+
+13. Point to the cross-system demo map.
    - "For this local demo, the page stays deterministic, but we also have live Loomi proof from Cursor MCP. Cursor authenticated to Loomi, discovered the sleepy-goose project, and inspected the live event schema."
 
-12. Point to `Live Loomi schema proof`.
+14. Point to `Live Loomi schema proof`.
    - "The sandbox does not have saved segmentations or recommendations yet, so the strongest live signal is its event schema. The agent turns that schema into a cart-abandon recovery blueprint, then maps the same pattern back to this app's booking-step recovery model."
 
-13. Point to `Reviewable recovery brief`.
+15. Point to `Reviewable recovery brief`.
    - "The next artifact is the human-review brief: target segment, message outline, draft Bloomreach segment spec, success evidence, diagnostic signals, and copy-ready recovery text. It is useful enough to hand to a marketer, but still does not send or mutate anything."
 
-14. Point to `Decision trace`.
+16. Point to `Decision trace`.
    - "The trace shows the agentic reasoning without pretending the app runtime executes everything. It scores the recovery brief above a broad nurture follow-up and keeps direct in-app Bloomreach mutation out of runtime even when Cursor MCP has proven a saved segment can be created."
 
-15. Point to `Bloomreach-ready segment recipe`.
+17. Point to `Bloomreach-ready segment recipe`.
    - "The next artifact is the exact recipe a marketer could manually recreate in Bloomreach: who to include, who to exclude, the 24-hour recovery window, message variables, and how to measure later paid results. It still does not create a saved segment, send a campaign, or mutate Bloomreach."
 
-16. Point to `Measurement plan`.
+18. Point to `Measurement plan`.
    - "The agent also defines how the loop would be measured after review: paid revenue from app-owned invoice and payment records, a withheld holdout first, a 24-hour recovery send window, and a 7-day paid-outcome observation window. It explicitly says no lift is claimed yet."
 
-17. Point to the diagnosis and prepared action.
+19. Point to the diagnosis and prepared action.
    - "The agent classifies the workspace as `Paid Result Exists`, identifies the next reviewed action, and prepares a follow-up brief instead of mutating an external system."
 
-18. Point to the evidence boundary.
+20. Point to the evidence boundary.
    - "Tracked content, bookings, canonical invoices, and payment-backed records stay separate from Loomi context. That keeps the claim honest."
 
-19. Open Reports, then `Why this revenue counted`.
+21. Open Reports, then `Why this revenue counted`.
    - "The paid outcome can be inspected through the reporting evidence chain: tracked content to booking to paid invoice to supporting PayPal-shaped capture event."
 
 ## Track 6 Framing
@@ -68,6 +74,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - Loomi Connect MCP-shaped diagnostics: read-side engagement and analytics context.
 - Cursor-authenticated Loomi MCP proof: live `sleepy-goose` project discovery and event-schema inspection.
 - Bloomreach Engagement object proof: one real saved segment created in the sandbox and displayed as sanitized metadata.
+- Bloomreach activation proof: one real customer-property marker recorded in the sandbox and displayed as sanitized metadata.
 - App-owned attribution layer: tracked content, booking links, bookings, invoices, and payment events.
 - Payment-backed outcome layer: PayPal-shaped paid result evidence for the demo seed.
 - Agentic action layer: a bounded, copy-ready recovery brief for human review.
@@ -76,6 +83,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - Review-packet layer: one review-ready artifact that packages the selected action, segment recipe, proof chain, and boundaries.
 - Sandbox-proof layer: a bounded artifact connecting Pacific Apparel Storefront context, sleepy-goose Engagement surfaces, and app-owned paid-result truth.
 - Saved-segment proof layer: recorded metadata from one Bloomreach-created saved segment, displayed without page-load mutation.
+- Customer-property proof layer: recorded metadata from one Bloomreach-created customer-property marker, displayed without page-load profile updates.
 - Evidence-appendix layer: deeper proof, recipes, and limits available on demand without overwhelming the first screen.
 - Decision-trace layer: deterministic candidate ranking that explains why recovery was selected and direct mutation was blocked.
 - Segment-recipe layer: a review-only Bloomreach recreation recipe with include/exclude/window/measure logic.
@@ -89,10 +97,12 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - "The console makes the hackathon capability obvious in one screen: Signal -> Proof -> Action, followed by a bounded measurement plan."
 - "The sandbox proof ties the real Bloomreach sandbox to the product story without turning sandbox observations into revenue truth."
 - "When configured, the first judge path also exposes a real Bloomreach saved segment with name, object ID, project, workspace, and creation surface."
+- "When configured, the first judge path exposes a real Bloomreach customer-property activation marker with sanitized property metadata."
 - "The guided run makes the agent behavior visible: it steps from paid proof to Loomi schema evidence to action scoring to a review packet."
 - "The review packet gives judges one compact artifact that preserves the no-send, no-page-load-mutation, no-lift-yet boundaries."
 - "The evidence appendix lets reviewers inspect the full proof stack without forcing every judge through a long dossier."
 - "When configured, the saved-segment proof shows the mutation path worked once through Bloomreach Engagement, while the app remains a no-send, no-page-load-mutation review surface."
+- "When configured, the customer-property proof shows one activation marker was recorded through Bloomreach Engagement, while the app remains a no-send, no-page-load-profile-update review surface."
 - "The decision trace ranks candidate actions with schema fit, app evidence fit, and review safety, so judges can see why recovery was selected."
 - "The segment recipe translates the selected recovery action into include, exclude, 24-hour window, message-variable, and measurement guidance that a marketer could recreate manually in Bloomreach."
 - "The measurement plan keeps the loop honest: paid revenue is the primary metric, holdout comparison is preferred, and campaign or retargeting engagement is diagnostic only."
@@ -106,12 +116,14 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - Do not say `/app/growth-loop` makes a live Loomi page-load call.
 - Do not say `/app/growth-loop` makes live Engagement or Storefront page-load calls.
 - Do not say `/app/growth-loop` creates, updates, or deletes Bloomreach objects on page load.
+- Do not say `/app/growth-loop` creates, updates, or deletes Bloomreach customer properties on page load.
 - Do not say the fixture diagnostics are production customer data.
 - Do not say screenshots, raw event payloads, customer data, or private sandbox URLs are embedded in the app.
 - Do not say the schema-derived cart-abandon blueprint is a saved Loomi segmentation or campaign.
 - Do not say the copy-ready recovery brief was sent, exported, or created inside Bloomreach.
 - Do not say the copy button sends, exports, syncs, or creates anything.
 - Do not say the segment recipe was saved, exported, or created inside Bloomreach unless you are specifically pointing to the separately recorded Story 139 saved-segment proof and its object ID.
+- Do not say the customer-property proof counted revenue, proved lift, proved causality, or updated a customer profile from the app runtime.
 - Do not say the measurement plan reports measured lift, causal impact, statistical confidence, or revenue improvement.
 - Do not say the agent sends campaigns or mutates external systems.
 - Do not say the decision scores are measured lift, statistical confidence, or live LLM output.
@@ -136,5 +148,6 @@ Optional live proof sequence before the app walkthrough:
 2. Ask Cursor to list Bloomreach orgs/workspaces/projects.
 3. Ask Cursor to inspect `sleepy-goose` and summarize the event schema.
 4. Saved-segment proof: create one safe saved segment in Bloomreach Engagement UI, record only the saved segment name/ID, and configure only those sanitized metadata fields.
-5. If the Engagement UI cannot create a saved segmentation, say that plainly and fall back to a harmless dashboard/report proof attempt rather than fabricating an object ID.
-6. Return to `/app/growth-loop` and show how the verified schema proof becomes a reviewable opportunity blueprint and, when configured, a first-screen recorded saved-segment proof.
+5. Customer-property proof: record one safe demo customer-property marker in Bloomreach Engagement UI, record only sanitized property metadata, and configure only those sanitized metadata fields.
+6. If the Engagement UI cannot create either proof object, say that plainly rather than fabricating object IDs or customer-property metadata.
+7. Return to `/app/growth-loop` and show how the verified schema proof becomes a reviewable opportunity blueprint and, when configured, first-screen recorded Bloomreach object and activation proofs.

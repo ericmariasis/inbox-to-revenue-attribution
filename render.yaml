@@ -53,6 +53,22 @@ services:
         value: Bloomreach Engagement UI
       - key: GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_STATUS_LABEL
         value: Created in Engagement UI
+      - key: GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_ENABLED
+        value: "false"
+      - key: GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_CUSTOMER_LABEL
+        sync: false
+      - key: GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_PROPERTY_NAME
+        sync: false
+      - key: GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_PROPERTY_VALUE
+        sync: false
+      - key: GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_PROJECT_NAME
+        value: sleepy-goose
+      - key: GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_WORKSPACE_NAME
+        value: Hackathon Workspace
+      - key: GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_CREATED_VIA
+        value: Bloomreach Engagement UI
+      - key: GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_STATUS_LABEL
+        value: Recorded activation proof
       - key: PAYPAL_SANDBOX_CLIENT_ID
         sync: false
       - key: PAYPAL_SANDBOX_CLIENT_SECRET

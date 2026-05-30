@@ -153,8 +153,14 @@ def test_growth_loop_agent_feature_flag_defaults_disabled_and_can_enable():
     assert settings.growth_loop_bloomreach_segment_proof_id == ""
     assert settings.growth_loop_bloomreach_segment_proof_project_name == "sleepy-goose"
     assert settings.growth_loop_bloomreach_segment_proof_workspace_name == "Hackathon Workspace"
-    assert settings.growth_loop_bloomreach_segment_proof_created_via == "Cursor MCP"
-    assert settings.growth_loop_bloomreach_segment_proof_status_label == "Created via Cursor MCP"
+    assert (
+        settings.growth_loop_bloomreach_segment_proof_created_via
+        == "Bloomreach Engagement UI"
+    )
+    assert (
+        settings.growth_loop_bloomreach_segment_proof_status_label
+        == "Created in Engagement UI"
+    )
 
     enabled_settings = Settings(
         _env_file=None,

@@ -274,8 +274,8 @@ class Settings(BaseSettings):
     growth_loop_bloomreach_segment_proof_id: str = ""
     growth_loop_bloomreach_segment_proof_project_name: str = "sleepy-goose"
     growth_loop_bloomreach_segment_proof_workspace_name: str = "Hackathon Workspace"
-    growth_loop_bloomreach_segment_proof_created_via: str = "Cursor MCP"
-    growth_loop_bloomreach_segment_proof_status_label: str = "Created via Cursor MCP"
+    growth_loop_bloomreach_segment_proof_created_via: str = "Bloomreach Engagement UI"
+    growth_loop_bloomreach_segment_proof_status_label: str = "Created in Engagement UI"
 
     def is_local_env(self) -> bool:
         return is_local_app_env(self.app_env)

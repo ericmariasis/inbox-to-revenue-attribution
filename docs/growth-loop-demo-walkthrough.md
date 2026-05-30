@@ -12,25 +12,25 @@ Seed one local paid PayPal-shaped demo workspace and use it to show the Growth L
 - Story 124 Growth Loop Agent code is present.
 - The browser walkthrough remains deterministic; no live MCP token is required.
 - Optional live proof can be captured in Cursor MCP before the walkthrough. The app section should describe that proof as verified schema evidence, not as a live page-load MCP call.
-- Optional saved-segment proof can be captured through operator-run Cursor MCP. Configure only sanitized segment name/ID metadata; the app page must not create or mutate Bloomreach on load.
+- Optional saved-segment proof can be captured through a sanctioned Bloomreach UI/API path. Configure only sanitized segment name/ID metadata; the app page must not create or mutate Bloomreach on load.
 
-## Optional Story 139 Saved Segment Proof
+## Optional Saved Segment Proof
 
-If Cursor MCP creates a real saved segment, set these additional variables before seeding and running the app:
+If Bloomreach Engagement UI or another sanctioned Bloomreach path creates a real saved segment, set these additional variables before seeding and running the app:
 
 ```powershell
 $env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_ENABLED='true'
-$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_NAME='<saved segment name from Cursor MCP>'
-$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_ID='<saved segment id from Cursor MCP>'
+$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_NAME='<saved segment name from Bloomreach>'
+$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_ID='<saved segment id or stable object identifier from Bloomreach>'
 $env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_PROJECT_NAME='sleepy-goose'
 $env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_WORKSPACE_NAME='Hackathon Workspace'
-$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_CREATED_VIA='Cursor MCP'
-$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_STATUS_LABEL='Created via Cursor MCP'
+$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_CREATED_VIA='Bloomreach Engagement UI'
+$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_STATUS_LABEL='Created in Engagement UI'
 ```
 
 Do not enable these values without a real saved segment ID. If no object was created, leave them unset and use the default review-only path.
 
-Current Story 139 proof note: on `2026-05-29`, Cursor MCP discovery found no write/create tool for saved segments, segmentations, customer filters, or autosegments. The intended segment was not created and no object ID was fabricated. Use the default review-only path unless a real object ID is later obtained through another sanctioned Bloomreach UI/API path.
+Current proof note: on `2026-05-29`, Cursor MCP discovery found no write/create tool for saved segments, segmentations, customer filters, or autosegments. Story 140 then created one harmless saved segmentation through Bloomreach Engagement UI: `CCP Cart Recovery Demo - 2026-05-29` / `6a19e7fdf98a9214fd6a5960`. The saved object encodes `cart_update` where `total_quantity > 0`; later completed-purchase exclusion and the 24-hour window remain review-packet recipe guidance. Proof-enabled app browser validation passed with the recorded metadata; the app displays sanitized proof only and performs no page-load Bloomreach mutation.
 
 ## Seed The Demo Workspace
 
@@ -77,7 +77,7 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 - The `90-second judge path` shows:
   - `Bloomreach/Loomi signal`
   - `Sandbox proof`
-  - optional `Bloomreach saved segment proof` when Story 139 metadata is configured
+  - optional `Bloomreach saved segment proof` when saved-segment proof metadata is configured
   - the app-owned paid proof
   - a `Review-ready action`
   - the `Measurement boundary`
@@ -101,7 +101,7 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 - Opening the appendix shows `Full proof stack for reviewers`.
 - The appendix includes a `Sandbox proof` detail panel with `Pacific Apparel shopping context`, `sleepy-goose activation and measurement`, and `App-owned paid truth`.
 - The sandbox proof boundary states that the page makes no live Engagement or Storefront call, embeds no customer data/screenshots/raw payloads/private URLs, performs no external mutation, and claims no lift, causality, or new paid-truth source.
-- When configured, the `Bloomreach saved segment proof` detail shows the saved segment name/ID, states it was created via Cursor MCP, and states this page only displays recorded metadata.
+- When configured, the `Bloomreach saved segment proof` detail shows the saved segment name/ID, states where it was created, and states this page only displays recorded metadata.
 - The detail panels inside the appendix preserve the deeper proof artifacts without making the first screen a long packet.
 - The diagnosis is `Paid proof exists; choose the next reviewed action.`
 - The next action is `Prepare one follow-up brief from the proven path`.
@@ -123,7 +123,7 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
   - `Booking-step recovery brief` as `Selected` with `9/10`
   - `Broad nurture follow-up` as `Held for later` with `6/10`
   - default path: `Direct Bloomreach segment or campaign mutation` as `Blocked in this slice` with `3/10`
-  - saved-segment proof path: `Direct in-app Bloomreach mutation` remains kept out of runtime while the Cursor MCP-created segment proves the mutation path
+  - saved-segment proof path: `Direct in-app Bloomreach mutation` remains kept out of runtime while the recorded segment proves the mutation path
 - The decision trace includes `Schema fit`, `App evidence fit`, `Review safety`, and `Evidence chain`.
 - The decision trace states that no live LLM call is required, no campaign is sent, no Bloomreach object is mutated, and Loomi diagnostics do not become paid truth.
 - The page includes `Bloomreach-ready segment recipe`.
@@ -177,7 +177,7 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 10. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
 11. The decision trace shows why the recovery brief beats a broad nurture follow-up and why direct Bloomreach mutation is blocked in this slice.
 12. The segment recipe shows exactly what a marketer could manually recreate in Bloomreach: include logic, exclude logic, a 24-hour recovery window, message variables, and measurement guardrails.
-13. If Story 139 proof metadata is configured, open `Bloomreach saved segment proof`: the saved segment proves the mutation path, while this page still performs no page-load mutation.
+13. If saved-segment proof metadata is configured, open `Bloomreach saved segment proof`: the saved segment proves the mutation path, while this page still performs no page-load mutation.
 14. The measurement plan shows how a marketer would evaluate the reviewed recovery loop: paid revenue first, holdout comparison, 24-hour send window, 7-day paid-outcome observation, and diagnostic-only engagement signals.
 15. The agent does not claim causal lift or invent paid truth.
 16. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.

@@ -173,8 +173,8 @@ def test_growth_loop_records_bloomreach_saved_segment_proof_without_page_load_mu
     assert proof.object_id == "seg_story139_demo"
     assert proof.project_name == "sleepy-goose"
     assert proof.workspace_name == "Hackathon Workspace"
-    assert proof.status_label == "Created via Cursor MCP"
-    assert "operator-run Cursor MCP" in proof.summary
+    assert proof.status_label == "Created in Engagement UI"
+    assert "Bloomreach Engagement UI" in proof.summary
     assert "does not create or mutate Bloomreach on page load" in proof.summary
     assert "This page does not create, update, or delete Bloomreach objects on load." in proof.boundaries
     assert "The created segment does not count revenue or prove lift/causality." in proof.boundaries
@@ -211,7 +211,7 @@ def test_growth_loop_records_bloomreach_saved_segment_proof_without_page_load_mu
     assert "bloomreach saved segment" in combined_text
     assert "ccp cart recovery demo" in combined_text
     assert "seg_story139_demo" in combined_text
-    assert "operator-run cursor mcp" in combined_text
+    assert "bloomreach engagement ui" in combined_text
     assert "this page does not create or update it on load" in combined_text
     assert "no bloomreach object is created or changed by this page load" in combined_text
     assert "direct in-app bloomreach mutation" in combined_text

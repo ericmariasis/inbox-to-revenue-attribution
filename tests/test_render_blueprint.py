@@ -67,10 +67,13 @@ def test_render_blueprint_covers_required_non_local_config():
         env_vars["GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_WORKSPACE_NAME"]["value"]
         == "Hackathon Workspace"
     )
-    assert env_vars["GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_CREATED_VIA"]["value"] == "Cursor MCP"
+    assert (
+        env_vars["GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_CREATED_VIA"]["value"]
+        == "Bloomreach Engagement UI"
+    )
     assert (
         env_vars["GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_STATUS_LABEL"]["value"]
-        == "Created via Cursor MCP"
+        == "Created in Engagement UI"
     )
     assert env_vars["DATABASE_URL"]["fromDatabase"] == {
         "name": "inbox-to-revenue-attribution-db",

@@ -1822,7 +1822,7 @@ def test_growth_loop_page_renders_recorded_bloomreach_saved_segment_proof():
     assert "Real sandbox object proof" in response.text
     assert "CCP Cart Recovery Demo" in response.text
     assert "seg_ui_growth_loop_demo" in response.text
-    assert "Created via Cursor MCP" in response.text
+    assert "Created in Engagement UI" in response.text
     assert 'href="#growth-loop-bloomreach-object"' in response.text
     assert '<details id="growth-loop-bloomreach-object" class="growth-loop-detail">' in response.text
     assert "Recorded saved segment proof remains review-only." in response.text
@@ -1831,7 +1831,7 @@ def test_growth_loop_page_renders_recorded_bloomreach_saved_segment_proof():
     assert "The created segment does not count revenue or prove lift/causality." in response.text
     assert "Direct in-app Bloomreach mutation" in response.text
     assert "No campaign or additional saved object is created by this page." in response.text
-    assert "operator-run Cursor MCP" in response.text
+    assert "Bloomreach Engagement UI" in response.text
     assert "app-owned invoice and payment records remain paid truth" in response.text.lower()
     assert "caused revenue" not in response.text.lower()
     assert "causal lift" not in response.text.lower()

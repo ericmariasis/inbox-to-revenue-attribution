@@ -50,9 +50,9 @@ services:
       - key: GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_WORKSPACE_NAME
         value: Hackathon Workspace
       - key: GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_CREATED_VIA
-        value: Cursor MCP
+        value: Bloomreach Engagement UI
       - key: GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_STATUS_LABEL
-        value: Created via Cursor MCP
+        value: Created in Engagement UI
       - key: PAYPAL_SANDBOX_CLIENT_ID
         sync: false
       - key: PAYPAL_SANDBOX_CLIENT_SECRET

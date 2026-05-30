@@ -178,8 +178,8 @@ class GrowthLoopRecordedBloomreachSegmentProof:
     segment_id: str
     project_name: str = "sleepy-goose"
     workspace_name: str = "Hackathon Workspace"
-    created_via: str = "Cursor MCP"
-    status_label: str = "Created via Cursor MCP"
+    created_via: str = "Bloomreach Engagement UI"
+    status_label: str = "Created in Engagement UI"
 
 
 @dataclass(frozen=True)
@@ -351,15 +351,15 @@ def _build_bloomreach_object_proof(
 
     project_name = recorded_proof.project_name.strip() or "sleepy-goose"
     workspace_name = recorded_proof.workspace_name.strip() or "Hackathon Workspace"
-    created_via = recorded_proof.created_via.strip() or "Cursor MCP"
-    status_label = recorded_proof.status_label.strip() or "Created via Cursor MCP"
+    created_via = recorded_proof.created_via.strip() or "Bloomreach Engagement UI"
+    status_label = recorded_proof.status_label.strip() or "Created in Engagement UI"
 
     return GrowthLoopBloomreachObjectProof(
         title="Bloomreach saved segment proof",
         summary=(
-            "Story 139 records one real saved segment created in Bloomreach through "
-            "operator-run Cursor MCP. This app displays sanitized object metadata as proof; "
-            "it does not create or mutate Bloomreach on page load."
+            f"This records one real saved segment created in Bloomreach through {created_via}. "
+            "This app displays sanitized object metadata as proof; it does not create or "
+            "mutate Bloomreach on page load."
         ),
         status_label=status_label,
         object_type="Saved segment",
@@ -428,7 +428,7 @@ def _build_segment_recipe(
             "recovery analogue while keeping activation behind human review."
         )
         limitations = (
-            "The recorded saved segment was created through operator-run Cursor MCP; this page does not create or update it on load.",
+            f"The recorded saved segment was created through {bloomreach_object_proof.created_via}; this page does not create or update it on load.",
             "No campaign is sent and no external system is mutated from this page.",
             "Loomi, Conversation, and saved-segment proof do not count revenue, prove causality, or replace app-owned booking, invoice, and payment records.",
         )
@@ -530,7 +530,7 @@ def _build_decision_trace(
                 "Review safety: held out of runtime because this page should not mutate Bloomreach on load.",
             ),
             outcome=(
-                "Held out of runtime; Story 139 proves operator-run Cursor MCP saved-segment "
+                f"Held out of runtime; {bloomreach_object_proof.created_via} proves saved-segment "
                 "creation instead of adding an in-app mutation button."
             ),
             boundary="No campaign or additional saved object is created by this page.",
@@ -1050,7 +1050,7 @@ def _build_reviewable_action_brief(
         )
         limitations = (
             "Prepared for human review only; this app does not send the recovery message.",
-            "The saved segment proof was created through operator-run Cursor MCP; this page does not mutate Bloomreach on load.",
+            f"The saved segment proof was created through {bloomreach_object_proof.created_via}; this page does not mutate Bloomreach on load.",
             "It does not count revenue, prove causality, or replace app-owned booking, invoice, and payment records.",
         )
 

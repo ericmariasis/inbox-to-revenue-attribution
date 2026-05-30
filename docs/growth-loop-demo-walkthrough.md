@@ -12,9 +12,9 @@ Seed one local paid PayPal-shaped demo workspace and use it to show the Growth L
 - Story 124 Growth Loop Agent code is present.
 - The browser walkthrough remains deterministic; no live MCP token is required.
 - Optional live proof can be captured in Cursor MCP before the walkthrough. The app section should describe that proof as verified schema evidence, not as a live page-load MCP call.
-- Optional saved-segment proof can be captured through a sanctioned Bloomreach UI/API path. Configure only sanitized segment name/ID metadata; the app page must not create or mutate Bloomreach on load.
+- Saved-segment proof can be captured through a sanctioned Bloomreach UI/API path. Configure only sanitized segment name/ID metadata; the app page must not create or mutate Bloomreach on load.
 
-## Optional Saved Segment Proof
+## Saved Segment Proof
 
 If Bloomreach Engagement UI or another sanctioned Bloomreach path creates a real saved segment, set these additional variables before seeding and running the app:
 
@@ -77,11 +77,12 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 - The `90-second judge path` shows:
   - `Bloomreach/Loomi signal`
   - `Sandbox proof`
-  - optional `Bloomreach saved segment proof` when saved-segment proof metadata is configured
+  - `Real Bloomreach object proof` when saved-segment proof metadata is configured
   - the app-owned paid proof
   - a `Review-ready action`
   - the `Measurement boundary`
 - The `Sandbox proof` card connects `Pacific Apparel` Storefront context, `sleepy-goose` Engagement surfaces, and app-owned paid truth without claiming a live page-load call.
+- When configured, the `Real Bloomreach object proof` card shows the saved segment name, object ID, `sleepy-goose` / `Hackathon Workspace`, `Bloomreach Engagement UI`, and a direct `Inspect saved segment proof` link.
 - The console includes `Run agent` as the primary guided workflow.
 - The guided workflow steps are:
   - `Inspect paid proof`
@@ -92,7 +93,7 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
   - `Attach measurement plan`
 - Clicking `Run next step` advances the workflow and then changes to `View review packet`.
 - The run completion says `Review packet assembled` and keeps the no-send/no-export/no-mutation boundary.
-- The console includes `View review packet` plus anchor shortcuts for `Proof`, `Sandbox`, `Action`, `Segment`, `Measure`, `Boundaries`, and `Evidence appendix`.
+- The console includes `View review packet` plus anchor shortcuts for `Proof`, `Sandbox`, `Bloomreach object` when configured, `Action`, `Segment`, `Measure`, `Boundaries`, and `Evidence appendix`.
 - The `Review packet` is visible near the top of the page and summarizes the selected action, segment recipe, measurement plan, proof chain, and boundaries.
 - The review packet states that no campaign is sent, no lift is claimed yet, and app-owned invoice/payment records remain paid truth.
 - If saved-segment proof metadata is configured, the review packet states that no Bloomreach object is created or changed by the page load and that the recorded saved segment remains review-only.
@@ -177,7 +178,7 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 10. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
 11. The decision trace shows why the recovery brief beats a broad nurture follow-up and why direct Bloomreach mutation is blocked in this slice.
 12. The segment recipe shows exactly what a marketer could manually recreate in Bloomreach: include logic, exclude logic, a 24-hour recovery window, message variables, and measurement guardrails.
-13. If saved-segment proof metadata is configured, open `Bloomreach saved segment proof`: the saved segment proves the mutation path, while this page still performs no page-load mutation.
+13. If saved-segment proof metadata is configured, point to `Real Bloomreach object proof` in the first judge path, then open `Bloomreach saved segment proof`: the saved segment proves the mutation path, while this page still performs no page-load mutation.
 14. The measurement plan shows how a marketer would evaluate the reviewed recovery loop: paid revenue first, holdout comparison, 24-hour send window, 7-day paid-outcome observation, and diagnostic-only engagement signals.
 15. The agent does not claim causal lift or invent paid truth.
 16. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.

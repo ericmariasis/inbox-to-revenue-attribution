@@ -357,7 +357,7 @@ def _build_bloomreach_object_proof(
     return GrowthLoopBloomreachObjectProof(
         title="Bloomreach saved segment proof",
         summary=(
-            f"This records one real saved segment created in Bloomreach through {created_via}. "
+            f"This records one real Bloomreach saved segment created through {created_via}. "
             "This app displays sanitized object metadata as proof; it does not create or "
             "mutate Bloomreach on page load."
         ),
@@ -372,7 +372,7 @@ def _build_bloomreach_object_proof(
             GrowthLoopBloomreachObjectProofCard(
                 label="Saved segment",
                 title=segment_name,
-                detail=f"Recorded {segment_id} as the Bloomreach segment proof object.",
+                detail=f"Recorded {segment_id} as the real Bloomreach segment proof object.",
             ),
             GrowthLoopBloomreachObjectProofCard(
                 label="Sandbox location",
@@ -754,7 +754,7 @@ def _build_agent_console(
         object_steps = (
             GrowthLoopAgentConsoleStep(
                 label="Object",
-                title="Saved segment proof",
+                title="Real Bloomreach saved segment proof",
                 detail=(
                     f"{bloomreach_object_proof.object_name} was created via "
                     f"{bloomreach_object_proof.created_via}; this page displays metadata only."
@@ -764,7 +764,7 @@ def _build_agent_console(
         )
         object_signals = (
             GrowthLoopCapabilitySignal(
-                label="Bloomreach saved segment",
+                label="Real Bloomreach object",
                 value=bloomreach_object_proof.object_name,
                 detail=(
                     f"{bloomreach_object_proof.object_type} {bloomreach_object_proof.object_id} "
@@ -829,8 +829,8 @@ def _build_agent_console(
         title="Agent console",
         summary=(
             "Paid result exists; the agent packaged the proof, schema opportunity, "
-            "reviewable action, segment recipe, measurement plan, and available saved-segment "
-            "proof into one review packet."
+            "reviewable action, segment recipe, measurement plan, and real saved-segment "
+            "proof when configured into one review packet."
         ),
         primary_action_label="View review packet",
         steps=(

@@ -18,8 +18,8 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 4. Point to `Sandbox proof`.
    - "The sandbox proof shows where the real Bloomreach sandbox fits. Pacific Apparel supplies the Storefront shopping context, sleepy-goose Engagement supplies event and activation surfaces, and the app-owned invoice and payment records remain the paid-result boundary."
 
-5. Optional: point to `Bloomreach saved segment proof` when saved-segment metadata is configured.
-   - "We also proved the mutation path once through Bloomreach Engagement: a saved segment exists in Bloomreach, but this page only displays the recorded object metadata. It does not create or update Bloomreach on page load."
+5. Point to `Real Bloomreach object proof` when saved-segment metadata is configured.
+   - "We also proved the mutation path once through Bloomreach Engagement: a saved segment exists in Bloomreach, with its name and object ID visible in the first judge path. This page only displays the recorded object metadata. It does not create or update Bloomreach on page load."
 
 6. Click through `Run agent`.
    - "This is the controlled agent run. It inspects paid proof, reads the Loomi schema evidence, scores candidate actions, prepares the recovery brief, generates the Bloomreach-ready segment recipe, and attaches the measurement plan."
@@ -67,6 +67,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 
 - Loomi Connect MCP-shaped diagnostics: read-side engagement and analytics context.
 - Cursor-authenticated Loomi MCP proof: live `sleepy-goose` project discovery and event-schema inspection.
+- Bloomreach Engagement object proof: one real saved segment created in the sandbox and displayed as sanitized metadata.
 - App-owned attribution layer: tracked content, booking links, bookings, invoices, and payment events.
 - Payment-backed outcome layer: PayPal-shaped paid result evidence for the demo seed.
 - Agentic action layer: a bounded, copy-ready recovery brief for human review.
@@ -74,7 +75,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - Guided-run layer: visible understand -> decide -> prepare behavior inside the product demo.
 - Review-packet layer: one review-ready artifact that packages the selected action, segment recipe, proof chain, and boundaries.
 - Sandbox-proof layer: a bounded artifact connecting Pacific Apparel Storefront context, sleepy-goose Engagement surfaces, and app-owned paid-result truth.
-- Saved-segment proof layer: optional recorded metadata from one Bloomreach-created saved segment, displayed without page-load mutation.
+- Saved-segment proof layer: recorded metadata from one Bloomreach-created saved segment, displayed without page-load mutation.
 - Evidence-appendix layer: deeper proof, recipes, and limits available on demand without overwhelming the first screen.
 - Decision-trace layer: deterministic candidate ranking that explains why recovery was selected and direct mutation was blocked.
 - Segment-recipe layer: a review-only Bloomreach recreation recipe with include/exclude/window/measure logic.
@@ -87,6 +88,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - "The agent turns that blueprint into a concrete recovery brief with target segment, message outline, draft Bloomreach segment spec, and evidence plan."
 - "The console makes the hackathon capability obvious in one screen: Signal -> Proof -> Action, followed by a bounded measurement plan."
 - "The sandbox proof ties the real Bloomreach sandbox to the product story without turning sandbox observations into revenue truth."
+- "When configured, the first judge path also exposes a real Bloomreach saved segment with name, object ID, project, workspace, and creation surface."
 - "The guided run makes the agent behavior visible: it steps from paid proof to Loomi schema evidence to action scoring to a review packet."
 - "The review packet gives judges one compact artifact that preserves the no-send, no-page-load-mutation, no-lift-yet boundaries."
 - "The evidence appendix lets reviewers inspect the full proof stack without forcing every judge through a long dossier."
@@ -133,6 +135,6 @@ Optional live proof sequence before the app walkthrough:
 1. Open Cursor MCP settings and confirm `loomi-mcp` is authenticated.
 2. Ask Cursor to list Bloomreach orgs/workspaces/projects.
 3. Ask Cursor to inspect `sleepy-goose` and summarize the event schema.
-4. Optional saved-segment proof: create one safe saved segment in Bloomreach Engagement UI, record only the saved segment name/ID, and configure only those sanitized metadata fields.
+4. Saved-segment proof: create one safe saved segment in Bloomreach Engagement UI, record only the saved segment name/ID, and configure only those sanitized metadata fields.
 5. If the Engagement UI cannot create a saved segmentation, say that plainly and fall back to a harmless dashboard/report proof attempt rather than fabricating an object ID.
-6. Return to `/app/growth-loop` and show how the verified schema proof becomes a reviewable opportunity blueprint and, when configured, a recorded saved-segment proof.
+6. Return to `/app/growth-loop` and show how the verified schema proof becomes a reviewable opportunity blueprint and, when configured, a first-screen recorded saved-segment proof.

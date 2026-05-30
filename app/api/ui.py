@@ -3111,12 +3111,30 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
 
     bloomreach_object_cockpit_card = ""
     bloomreach_object_shortcut = ""
+    object_context_copy = "recorded sandbox proof"
     if bloomreach_object is not None:
+        object_context_copy = (
+            "recorded sandbox proof plus the saved Bloomreach segment created in "
+            f"{bloomreach_object.created_via}"
+        )
         bloomreach_object_cockpit_card = f"""
           <article class="judge-flow-card object-proof">
-            <p class="eyebrow">{html.escape(bloomreach_object.status_label)}</p>
-            <h3>{html.escape(bloomreach_object.object_name)}</h3>
-            <p>{html.escape(bloomreach_object.summary)}</p>
+            <div>
+              <p class="eyebrow">Real Bloomreach object proof</p>
+              <h3>{html.escape(bloomreach_object.object_name)}</h3>
+              <p>{html.escape(bloomreach_object.object_type)} created in {html.escape(bloomreach_object.project_name)} / {html.escape(bloomreach_object.workspace_name)} through {html.escape(bloomreach_object.created_via)}.</p>
+            </div>
+            <dl class="object-proof-meta" aria-label="Saved Bloomreach segment metadata">
+              <div>
+                <dt>Object ID</dt>
+                <dd><code>{html.escape(bloomreach_object.object_id)}</code></dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>{html.escape(bloomreach_object.status_label)}</dd>
+              </div>
+            </dl>
+            <a class="inline-proof-link" href="#growth-loop-bloomreach-object">Inspect saved segment proof</a>
           </article>
         """
         bloomreach_object_shortcut = '<a href="#growth-loop-bloomreach-object">Bloomreach object</a>'
@@ -3127,7 +3145,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
         <div>
           <p class="eyebrow">Judge demo cockpit</p>
           <h2>{html.escape(console.title)}</h2>
-          <p>Signal -> Proof -> Action: the agent turns Bloomreach/Loomi diagnostic context and recorded sandbox proof into one review-ready recovery packet while app-owned invoices and payments remain paid truth.</p>
+          <p>Signal -> Proof -> Action: the agent turns Bloomreach/Loomi diagnostic context and {html.escape(object_context_copy)} into one review-ready recovery packet while app-owned invoices and payments remain paid truth.</p>
         </div>
         <a href="#growth-loop-review-packet" class="button-link">{html.escape(console.primary_action_label)}</a>
       </div>
@@ -12184,7 +12202,7 @@ def _page_layout(*, title: str, body: str) -> str:
 
       .judge-flow-grid {{
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 12px;
       }}
 
@@ -12192,11 +12210,17 @@ def _page_layout(*, title: str, body: str) -> str:
         display: grid;
         align-content: start;
         gap: 10px;
+        min-width: 0;
         min-height: 166px;
         padding: 16px;
         border-radius: 16px;
         border: 1px solid rgba(47, 95, 91, 0.2);
         background: rgba(255, 253, 248, 0.9);
+      }}
+
+      .judge-flow-card h3,
+      .judge-flow-card p {{
+        overflow-wrap: anywhere;
       }}
 
       .judge-flow-card.signal {{
@@ -12212,6 +12236,54 @@ def _page_layout(*, title: str, body: str) -> str:
       .judge-flow-card.sandbox {{
         border-color: rgba(47, 95, 91, 0.28);
         background: rgba(232, 239, 230, 0.72);
+      }}
+
+      .judge-flow-card.object-proof {{
+        border-color: rgba(31, 86, 80, 0.42);
+        background:
+          linear-gradient(135deg, rgba(232, 239, 230, 0.88), rgba(255, 249, 239, 0.94));
+        box-shadow: 0 12px 26px rgba(31, 86, 80, 0.1);
+      }}
+
+      .object-proof-meta {{
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 0;
+      }}
+
+      .object-proof-meta div {{
+        display: grid;
+        gap: 3px;
+        padding: 8px;
+        border-radius: 12px;
+        border: 1px solid rgba(47, 95, 91, 0.18);
+        background: rgba(255, 253, 248, 0.66);
+      }}
+
+      .object-proof-meta dt {{
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }}
+
+      .object-proof-meta dd {{
+        margin: 0;
+        font-weight: 800;
+        overflow-wrap: anywhere;
+      }}
+
+      .object-proof-meta code {{
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }}
+
+      .inline-proof-link {{
+        color: var(--accent);
+        font-weight: 800;
+        text-decoration: underline;
       }}
 
       .judge-flow-card.action {{
@@ -12554,6 +12626,10 @@ def _page_layout(*, title: str, body: str) -> str:
         }}
 
         .judge-flow-grid {{
+          grid-template-columns: 1fr;
+        }}
+
+        .object-proof-meta {{
           grid-template-columns: 1fr;
         }}
 

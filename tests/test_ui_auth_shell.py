@@ -1819,10 +1819,14 @@ def test_growth_loop_page_renders_recorded_bloomreach_saved_segment_proof():
 
     assert response.status_code == 200
     assert "Bloomreach saved segment proof" in response.text
+    assert "Real Bloomreach object proof" in response.text
     assert "Real sandbox object proof" in response.text
     assert "CCP Cart Recovery Demo" in response.text
     assert "seg_ui_growth_loop_demo" in response.text
     assert "Created in Engagement UI" in response.text
+    assert "Object ID" in response.text
+    assert "Saved segment created in sleepy-goose / Hackathon Workspace through Bloomreach Engagement UI." in response.text
+    assert "Inspect saved segment proof" in response.text
     assert 'href="#growth-loop-bloomreach-object"' in response.text
     assert '<details id="growth-loop-bloomreach-object" class="growth-loop-detail">' in response.text
     assert "Recorded saved segment proof remains review-only." in response.text

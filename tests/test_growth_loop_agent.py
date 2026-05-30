@@ -174,6 +174,7 @@ def test_growth_loop_records_bloomreach_saved_segment_proof_without_page_load_mu
     assert proof.project_name == "sleepy-goose"
     assert proof.workspace_name == "Hackathon Workspace"
     assert proof.status_label == "Created in Engagement UI"
+    assert "one real Bloomreach saved segment" in proof.summary
     assert "Bloomreach Engagement UI" in proof.summary
     assert "does not create or mutate Bloomreach on page load" in proof.summary
     assert "This page does not create, update, or delete Bloomreach objects on load." in proof.boundaries
@@ -209,6 +210,7 @@ def test_growth_loop_records_bloomreach_saved_segment_proof_without_page_load_mu
         "Measure",
     ]
     assert "bloomreach saved segment" in combined_text
+    assert "real bloomreach object" in combined_text
     assert "ccp cart recovery demo" in combined_text
     assert "seg_story139_demo" in combined_text
     assert "bloomreach engagement ui" in combined_text

@@ -146,6 +146,17 @@ def test_growth_loop_stage_paid_result_exists_keeps_paid_truth_app_owned():
     assert "No campaign is sent." in brief.agent_console.guided_run.boundaries
     assert "App-owned invoice and payment records remain paid truth." in brief.agent_console.guided_run.boundaries
     assert "#growth-loop-review-packet" in brief.agent_console.primary_action_label or brief.agent_console.primary_action_label == "View review packet"
+    assert brief.agent_console.judge_runway.title == "90-second demo runway"
+    assert [step.title for step in brief.agent_console.judge_runway.steps] == [
+        "Bloomreach/Loomi signal",
+        "Sandbox context",
+        "App-owned paid truth",
+        "Review packet",
+        "Measurement boundary",
+        "Reports evidence",
+    ]
+    assert brief.agent_console.judge_runway.steps[-1].target_href == "/app/reports"
+    assert "No campaign, flow, send, export, checkout, payment, or Storefront mutation is triggered." in brief.agent_console.judge_runway.boundaries
 
 
 def test_growth_loop_records_bloomreach_saved_segment_proof_without_page_load_mutation():
@@ -191,6 +202,12 @@ def test_growth_loop_records_bloomreach_saved_segment_proof_without_page_load_mu
             " ".join(signal.label for signal in console.capability_signals),
             " ".join(signal.value for signal in console.capability_signals),
             " ".join(signal.detail for signal in console.capability_signals),
+            console.judge_runway.title,
+            console.judge_runway.summary,
+            " ".join(step.title for step in console.judge_runway.steps),
+            " ".join(step.detail for step in console.judge_runway.steps),
+            " ".join(step.target_href for step in console.judge_runway.steps),
+            " ".join(console.judge_runway.boundaries),
             " ".join(console.guided_run.boundaries),
             " ".join(console.review_packet.proof_chain),
             " ".join(console.review_packet.boundaries),
@@ -220,6 +237,10 @@ def test_growth_loop_records_bloomreach_saved_segment_proof_without_page_load_mu
     assert "direct in-app bloomreach mutation" in combined_text
     assert "no campaign or additional saved object is created by this page" in combined_text
     assert "recorded saved segment proof remains review-only" in combined_text
+    assert "90-second demo runway" in combined_text
+    assert "inspect saved segment" in " ".join(step.target_label.lower() for step in console.judge_runway.steps)
+    assert "#growth-loop-bloomreach-object" in combined_text
+    assert "/app/reports" in combined_text
     assert "does not count revenue" in combined_text
     assert "prove causality" in combined_text
     assert "app-owned invoice and payment records remain paid truth" in combined_text
@@ -274,6 +295,12 @@ def test_growth_loop_records_bloomreach_customer_property_activation_proof_witho
             " ".join(signal.label for signal in console.capability_signals),
             " ".join(signal.value for signal in console.capability_signals),
             " ".join(signal.detail for signal in console.capability_signals),
+            console.judge_runway.title,
+            console.judge_runway.summary,
+            " ".join(step.title for step in console.judge_runway.steps),
+            " ".join(step.detail for step in console.judge_runway.steps),
+            " ".join(step.target_href for step in console.judge_runway.steps),
+            " ".join(console.judge_runway.boundaries),
             " ".join(console.guided_run.boundaries),
             console.guided_run.completion_summary,
             " ".join(console.review_packet.proof_chain),
@@ -289,6 +316,9 @@ def test_growth_loop_records_bloomreach_customer_property_activation_proof_witho
     assert "bloomreach engagement ui" in combined_text
     assert "customer-property activation proof remains review-only" in combined_text
     assert "bloomreach activation proof supplies customer property" in combined_text
+    assert "activation proof" in " ".join(step.title.lower() for step in console.judge_runway.steps)
+    assert "#growth-loop-bloomreach-activation" in combined_text
+    assert "/app/reports" in combined_text
     assert "does not count revenue" in proof_boundary_text
     assert "prove lift/causality" in proof_boundary_text
     assert "app-owned invoice and payment records remain paid truth" in combined_text
@@ -662,6 +692,13 @@ def test_growth_loop_agent_console_packages_review_packet_and_boundaries():
             " ".join(step.label for step in console.steps),
             " ".join(step.title for step in console.steps),
             " ".join(step.detail for step in console.steps),
+            console.judge_runway.title,
+            console.judge_runway.summary,
+            " ".join(step.title for step in console.judge_runway.steps),
+            " ".join(step.detail for step in console.judge_runway.steps),
+            " ".join(step.target_label for step in console.judge_runway.steps),
+            " ".join(step.target_href for step in console.judge_runway.steps),
+            " ".join(console.judge_runway.boundaries),
             " ".join(signal.label for signal in console.capability_signals),
             " ".join(signal.value for signal in console.capability_signals),
             " ".join(signal.detail for signal in console.capability_signals),
@@ -677,6 +714,11 @@ def test_growth_loop_agent_console_packages_review_packet_and_boundaries():
 
     assert [step.label for step in console.steps] == ["Proof", "Schema", "Action", "Segment", "Measure"]
     assert console.primary_action_label == "View review packet"
+    assert console.judge_runway.title == "90-second demo runway"
+    assert "reports evidence" in combined_text
+    assert "open reports" in combined_text
+    assert "/app/reports" in combined_text
+    assert "runway links to evidence only" in combined_text
     assert packet.title == "Review packet"
     assert "app-owned paid truth" in combined_text
     assert "cursor mcp schema proof" in combined_text

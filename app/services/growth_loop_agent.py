@@ -156,6 +156,24 @@ class GrowthLoopReviewPacket:
 
 
 @dataclass(frozen=True)
+class GrowthLoopJudgeRunwayStep:
+    label: str
+    title: str
+    detail: str
+    status_label: str
+    target_label: str
+    target_href: str
+
+
+@dataclass(frozen=True)
+class GrowthLoopJudgeRunway:
+    title: str
+    summary: str
+    steps: tuple[GrowthLoopJudgeRunwayStep, ...]
+    boundaries: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class GrowthLoopSandboxProofCard:
     label: str
     title: str
@@ -245,6 +263,7 @@ class GrowthLoopAgentConsole:
     summary: str
     primary_action_label: str
     steps: tuple[GrowthLoopAgentConsoleStep, ...]
+    judge_runway: GrowthLoopJudgeRunway
     guided_run: GrowthLoopGuidedRun
     capability_signals: tuple[GrowthLoopCapabilitySignal, ...]
     review_packet: GrowthLoopReviewPacket
@@ -988,6 +1007,113 @@ def _build_agent_console(
             *packet_boundaries[3:],
         )
 
+    runway_steps: list[GrowthLoopJudgeRunwayStep] = []
+
+    def add_runway_step(
+        *,
+        title: str,
+        detail: str,
+        status_label: str,
+        target_label: str,
+        target_href: str,
+    ) -> None:
+        runway_steps.append(
+            GrowthLoopJudgeRunwayStep(
+                label=str(len(runway_steps) + 1),
+                title=title,
+                detail=detail,
+                status_label=status_label,
+                target_label=target_label,
+                target_href=target_href,
+            )
+        )
+
+    add_runway_step(
+        title="Bloomreach/Loomi signal",
+        detail=(
+            "Start with the sleepy-goose schema: cart_update, checkout, view_item, "
+            "purchase, campaign, and retargeting fields frame the recovery opportunity."
+        ),
+        status_label="Diagnostic",
+        target_label="Inspect schema proof",
+        target_href="#growth-loop-proof",
+    )
+    add_runway_step(
+        title="Sandbox context",
+        detail=(
+            "Pacific Apparel Storefront and sleepy-goose Engagement surfaces show the "
+            "catalog, event, campaign, segmentation, report, and funnel context judges can inspect."
+        ),
+        status_label="Verified",
+        target_label="Inspect sandbox proof",
+        target_href="#growth-loop-sandbox",
+    )
+    if bloomreach_object_proof is not None:
+        add_runway_step(
+            title="Saved segment proof",
+            detail=(
+                f"{bloomreach_object_proof.object_name} ({bloomreach_object_proof.object_id}) "
+                f"was created through {bloomreach_object_proof.created_via}; the app displays "
+                "recorded metadata only."
+            ),
+            status_label=bloomreach_object_proof.status_label,
+            target_label="Inspect saved segment",
+            target_href="#growth-loop-bloomreach-object",
+        )
+    if bloomreach_activation_proof is not None:
+        add_runway_step(
+            title="Activation proof",
+            detail=(
+                f"{bloomreach_activation_proof.property_name}="
+                f"{bloomreach_activation_proof.property_value} was recorded for "
+                f"{bloomreach_activation_proof.customer_label}; the app displays "
+                "recorded metadata only."
+            ),
+            status_label=bloomreach_activation_proof.status_label,
+            target_label="Inspect activation proof",
+            target_href="#growth-loop-bloomreach-activation",
+        )
+    add_runway_step(
+        title="App-owned paid truth",
+        detail=(
+            f"{paid_invoice_copy} and {revenue_copy} come from app-owned invoice and "
+            "payment records, not Loomi diagnostics or Bloomreach objects."
+        ),
+        status_label="Revenue boundary",
+        target_label="Inspect paid boundary",
+        target_href="#growth-loop-boundaries",
+    )
+    add_runway_step(
+        title="Review packet",
+        detail=(
+            "The selected recovery brief, segment recipe, proof chain, and review-only "
+            "run boundaries are packaged for a human reviewer."
+        ),
+        status_label="Ready",
+        target_label="Open review packet",
+        target_href="#growth-loop-review-packet",
+    )
+    add_runway_step(
+        title="Measurement boundary",
+        detail=(
+            "Hold out first, measure later paid revenue and paid conversion through the app, "
+            "and claim no lift until outcomes are compared."
+        ),
+        status_label="No lift yet",
+        target_label="Inspect measurement",
+        target_href="#growth-loop-measure",
+    )
+    add_runway_step(
+        title="Reports evidence",
+        detail=(
+            "Open Reports when a judge wants the separate app-owned reporting surface for "
+            "canonical paid-result evidence."
+        ),
+        status_label="App proof",
+        target_label="Open reports",
+        target_href="/app/reports",
+    )
+
     return GrowthLoopAgentConsole(
         title="Agent console",
         summary=(
@@ -1033,6 +1159,21 @@ def _build_agent_console(
                 title="Holdout-first plan",
                 detail="Measure paid revenue and paid conversion rate after execution; no lift is claimed yet.",
                 status_label="Defined",
+            ),
+        ),
+        judge_runway=GrowthLoopJudgeRunway(
+            title="90-second demo runway",
+            summary=(
+                "Use these cards as the judge path: live sandbox context, recorded "
+                "Bloomreach proof, app-owned paid truth, review packet, measurement boundary, "
+                "and Reports evidence."
+            ),
+            steps=tuple(runway_steps),
+            boundaries=(
+                "Runway links to evidence only; it does not create, update, or delete Bloomreach objects.",
+                "The Reports CTA opens existing app reporting; canonical invoice and payment records remain paid truth.",
+                "No campaign, flow, send, export, checkout, payment, or Storefront mutation is triggered.",
+                "No lift or causality is claimed.",
             ),
         ),
         guided_run=GrowthLoopGuidedRun(

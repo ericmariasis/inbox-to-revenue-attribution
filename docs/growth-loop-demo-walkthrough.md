@@ -92,6 +92,17 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 - The active nav item is `Growth Loop`.
 - The first judge-facing artifact is `Agent console`.
 - The console opens with `Judge demo cockpit` and the `Signal -> Proof -> Action` story.
+- The console includes `90-second demo runway` above the longer guided workflow.
+- The runway gives judges one click-through path:
+  - `Bloomreach/Loomi signal` / `Inspect schema proof`
+  - `Sandbox context` / `Inspect sandbox proof`
+  - `Saved segment proof` / `Inspect saved segment` when saved-segment proof metadata is configured
+  - `Activation proof` / `Inspect activation proof` when customer-property activation metadata is configured
+  - `App-owned paid truth` / `Inspect paid boundary`
+  - `Review packet` / `Open review packet`
+  - `Measurement boundary` / `Inspect measurement`
+  - `Reports evidence` / `Open reports`
+- The runway boundaries state that it links to evidence only, does not create/update/delete Bloomreach objects, triggers no campaign/flow/send/export/checkout/payment/Storefront mutation, and claims no lift or causality.
 - The `90-second judge path` shows:
   - `Bloomreach/Loomi signal`
   - `Sandbox proof`
@@ -190,21 +201,23 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 
 1. This is a real signed-in creator workspace in the existing app, not a standalone prototype.
 2. The Agent console is the judge-friendly cockpit: `Signal -> Proof -> Action` is visible before the deeper evidence stack.
-3. Click through `Run agent`: the workflow visibly inspects paid proof, reads Loomi schema evidence, scores actions, prepares the brief, generates the segment recipe, and attaches measurement.
-4. The app owns the commercial truth: tracked content, attributed booking, local invoice, and PayPal-shaped capture event.
-5. Cursor MCP provides the live Loomi proof: the authenticated `sleepy-goose` project has a rich commerce event schema.
-6. The review packet turns that proof into a selected recovery action, a Bloomreach-ready segment recipe, and a no-lift-yet measurement plan.
-7. The Sandbox proof shows where the live sandbox fits: Pacific Apparel supplied shopping/cart/offer context, Engagement supplied event and activation surfaces, and the app still owns paid-result truth.
-8. Open the `Evidence appendix` only when a judge wants the underlying proof, recipes, and boundaries.
-9. The in-app schema blueprint is deterministic and review-only; it does not claim the page made a live Loomi, Engagement, or Storefront call.
-10. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
-11. The decision trace shows why the recovery brief beats a broad nurture follow-up and why direct Bloomreach mutation is blocked in this slice.
-12. The segment recipe shows exactly what a marketer could manually recreate in Bloomreach: include logic, exclude logic, a 24-hour recovery window, message variables, and measurement guardrails.
-13. If saved-segment proof metadata is configured, point to `Real Bloomreach object proof` in the first judge path, then open `Bloomreach saved segment proof`: the saved segment proves the mutation path, while this page still performs no page-load mutation.
-14. If customer-property activation proof metadata is configured, point to `Live activation proof`, then open `Bloomreach customer property proof`: the customer-property marker proves one activation surface was exercised, while this page still performs no page-load profile update.
-15. The measurement plan shows how a marketer would evaluate the reviewed recovery loop: paid revenue first, holdout comparison, 24-hour send window, 7-day paid-outcome observation, and diagnostic-only engagement signals.
-16. The agent does not claim causal lift or invent paid truth.
-17. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
+3. Start with the `90-second demo runway`: it links judges directly to schema proof, sandbox proof, Bloomreach proof when configured, app-owned paid truth, the review packet, the measurement boundary, and Reports.
+4. Click through `Run agent`: the workflow visibly inspects paid proof, reads Loomi schema evidence, scores actions, prepares the brief, generates the segment recipe, and attaches measurement.
+5. The app owns the commercial truth: tracked content, attributed booking, local invoice, and PayPal-shaped capture event.
+6. Cursor MCP provides the live Loomi proof: the authenticated `sleepy-goose` project has a rich commerce event schema.
+7. The review packet turns that proof into a selected recovery action, a Bloomreach-ready segment recipe, and a no-lift-yet measurement plan.
+8. The Sandbox proof shows where the live sandbox fits: Pacific Apparel supplied shopping/cart/offer context, Engagement supplied event and activation surfaces, and the app still owns paid-result truth.
+9. Open the `Evidence appendix` only when a judge wants the underlying proof, recipes, and boundaries.
+10. The in-app schema blueprint is deterministic and review-only; it does not claim the page made a live Loomi, Engagement, or Storefront call.
+11. The agent converts the blueprint into a copy-ready recovery brief that a human can review before recreating the segment or campaign in Bloomreach.
+12. The decision trace shows why the recovery brief beats a broad nurture follow-up and why direct Bloomreach mutation is blocked in this slice.
+13. The segment recipe shows exactly what a marketer could manually recreate in Bloomreach: include logic, exclude logic, a 24-hour recovery window, message variables, and measurement guardrails.
+14. If saved-segment proof metadata is configured, point to `Real Bloomreach object proof` in the first judge path, then open `Bloomreach saved segment proof`: the saved segment proves the mutation path, while this page still performs no page-load mutation.
+15. If customer-property activation proof metadata is configured, point to `Live activation proof`, then open `Bloomreach customer property proof`: the customer-property marker proves one activation surface was exercised, while this page still performs no page-load profile update.
+16. Use the runway `Open reports` CTA when a judge wants the separate app-owned paid-result surface.
+17. The measurement plan shows how a marketer would evaluate the reviewed recovery loop: paid revenue first, holdout comparison, 24-hour send window, 7-day paid-outcome observation, and diagnostic-only engagement signals.
+18. The agent does not claim causal lift or invent paid truth.
+19. The agent prepares one reviewed next action from the proven path instead of sending or mutating anything autonomously.
 
 ## Optional Report Cross-Check
 

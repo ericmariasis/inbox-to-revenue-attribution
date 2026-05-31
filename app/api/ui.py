@@ -133,6 +133,7 @@ from app.services.evidence_ingress_health import (
 )
 from app.services.growth_loop_agent import (
     GrowthLoopActionBrief,
+    GrowthLoopAgentConsole,
     GrowthLoopRecordedBloomreachActivationProof,
     GrowthLoopRecordedBloomreachSegmentProof,
     GrowthLoopWorkspaceEvidence,
@@ -3096,8 +3097,101 @@ def _render_growth_loop_agent_interaction_script() -> str:
           });
         }
 
+        function initGrowthLoopDetails() {
+          var appendix = document.getElementById("growth-loop-evidence-appendix");
+          if (!appendix) {
+            return;
+          }
+          var detailSelector = "details.growth-loop-detail";
+          var details = Array.prototype.slice.call(document.querySelectorAll(detailSelector)).filter(function (detail) {
+            return detail !== appendix;
+          });
+
+          if (!details.length) {
+            return;
+          }
+
+          function stateLabelFor(detail) {
+            var summary = detail.querySelector(":scope > summary");
+            if (!summary) {
+              return null;
+            }
+            var label = summary.querySelector(".growth-loop-detail-state");
+            if (!label) {
+              label = document.createElement("span");
+              label.className = "growth-loop-detail-state";
+              label.setAttribute("aria-hidden", "true");
+              summary.appendChild(label);
+            }
+            return label;
+          }
+
+          function syncStateLabels() {
+            [appendix].concat(details).forEach(function (detail) {
+              var label = stateLabelFor(detail);
+              if (label) {
+                label.textContent = detail.open ? "Hide" : "Show";
+              }
+            });
+          }
+
+          function closeOtherDetails(activeDetail) {
+            details.forEach(function (detail) {
+              if (detail !== activeDetail && detail.open) {
+                detail.open = false;
+              }
+            });
+            syncStateLabels();
+          }
+
+          function openHashTarget() {
+            if (!window.location.hash || window.location.hash.indexOf("#growth-loop-") !== 0) {
+              return;
+            }
+            var target = null;
+            try {
+              target = document.querySelector(window.location.hash);
+            } catch (error) {
+              target = null;
+            }
+            if (!target || target.tagName !== "DETAILS") {
+              return;
+            }
+            var node = target;
+            while (node && node !== document.body) {
+              if (node.tagName === "DETAILS") {
+                node.open = true;
+              }
+              node = node.parentElement;
+            }
+            if (details.indexOf(target) !== -1) {
+              closeOtherDetails(target);
+            }
+            syncStateLabels();
+          }
+
+          details.forEach(function (detail) {
+            detail.addEventListener("toggle", function () {
+              if (detail.open) {
+                closeOtherDetails(detail);
+              }
+              syncStateLabels();
+            });
+          });
+          appendix.addEventListener("toggle", syncStateLabels);
+
+          window.addEventListener("hashchange", function () {
+            window.setTimeout(openHashTarget, 0);
+          });
+          syncStateLabels();
+          window.setTimeout(openHashTarget, 0);
+
+          return openHashTarget;
+        }
+
         Array.prototype.slice.call(document.querySelectorAll("[data-agent-run]")).forEach(initAgentRun);
         Array.prototype.slice.call(document.querySelectorAll("[data-copy-target]")).forEach(initCopyButton);
+        var syncGrowthLoopDetails = initGrowthLoopDetails();
 
         document.addEventListener("click", function (event) {
           var link = event.target instanceof Element ? event.target.closest("a[href^='#growth-loop-']") : null;
@@ -3112,9 +3206,53 @@ def _render_growth_loop_agent_interaction_script() -> str:
             }
             node = node.parentElement;
           }
+          if (syncGrowthLoopDetails) {
+            window.setTimeout(syncGrowthLoopDetails, 0);
+          }
         });
       })();
     </script>
+    """
+
+
+def _render_growth_loop_judge_runway(
+    console: GrowthLoopAgentConsole,
+) -> str:
+    runway = console.judge_runway
+    runway_steps = "".join(
+        f"""
+        <article class="judge-runway-step">
+          <div class="runway-step-top">
+            <span class="runway-step-number">{html.escape(step.label)}</span>
+            <span class="pill-note">{html.escape(step.status_label)}</span>
+          </div>
+          <h3>{html.escape(step.title)}</h3>
+          <p>{html.escape(step.detail)}</p>
+          <a class="runway-step-cta" href="{html.escape(step.target_href, quote=True)}">{html.escape(step.target_label)}</a>
+        </article>
+        """
+        for step in runway.steps
+    )
+    runway_boundaries = _render_bullet_list(runway.boundaries)
+
+    return f"""
+    <section class="judge-runway" data-judge-runway>
+      <div class="judge-runway-header">
+        <div>
+          <p class="eyebrow">90-second judge runway</p>
+          <h2>{html.escape(runway.title)}</h2>
+          <p>{html.escape(runway.summary)}</p>
+        </div>
+        <a class="button-link secondary" href="/app/reports">Open reports</a>
+      </div>
+      <div class="judge-runway-grid">
+        {runway_steps}
+      </div>
+      <section class="runway-boundaries">
+        <h3>Runway boundaries</h3>
+        {runway_boundaries}
+      </section>
+    </section>
     """
 
 
@@ -3129,6 +3267,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
     packet = console.review_packet
     packet_proof = _render_bullet_list(packet.proof_chain)
     packet_boundaries = _render_bullet_list(packet.boundaries)
+    judge_runway = _render_growth_loop_judge_runway(console)
     guided_run = _render_growth_loop_guided_run(console)
     paid_truth_signal = console.capability_signals[0]
     sandbox_cockpit_card = ""
@@ -3202,6 +3341,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
         </div>
         <a href="#growth-loop-review-packet" class="button-link">{html.escape(console.primary_action_label)}</a>
       </div>
+      {judge_runway}
       <section class="judge-flow">
         <div>
           <p class="eyebrow">90-second judge path</p>
@@ -12293,6 +12433,92 @@ def _page_layout(*, title: str, body: str) -> str:
         text-decoration: none;
       }}
 
+      .judge-runway {{
+        display: grid;
+        gap: 16px;
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px solid rgba(163, 74, 40, 0.22);
+        background:
+          linear-gradient(135deg, rgba(255, 249, 239, 0.94), rgba(243, 223, 212, 0.38));
+      }}
+
+      .judge-runway-header {{
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 18px;
+      }}
+
+      .judge-runway-header p {{
+        max-width: 58rem;
+      }}
+
+      .judge-runway-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+      }}
+
+      .judge-runway-step {{
+        display: grid;
+        align-content: start;
+        gap: 10px;
+        min-width: 0;
+        min-height: 210px;
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px solid rgba(47, 95, 91, 0.18);
+        background: rgba(255, 253, 248, 0.88);
+      }}
+
+      .judge-runway-step h3,
+      .judge-runway-step p {{
+        margin: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }}
+
+      .runway-step-top {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }}
+
+      .runway-step-number {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 999px;
+        background: rgba(47, 95, 91, 0.12);
+        color: var(--ink);
+        font-weight: 800;
+      }}
+
+      .runway-step-cta {{
+        align-self: end;
+        color: var(--accent);
+        font-weight: 800;
+        text-decoration: underline;
+      }}
+
+      .runway-boundaries {{
+        display: grid;
+        gap: 8px;
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px dashed rgba(47, 95, 91, 0.24);
+        background: rgba(232, 239, 230, 0.54);
+      }}
+
+      .runway-boundaries h3,
+      .runway-boundaries ul {{
+        margin: 0;
+      }}
+
       .judge-flow {{
         display: grid;
         gap: 16px;
@@ -12644,23 +12870,20 @@ def _page_layout(*, title: str, body: str) -> str:
         display: none;
       }}
 
-      .growth-loop-detail summary::after {{
-        content: "Open";
-        color: var(--accent);
-        font-size: 0.86rem;
-        font-weight: 800;
-      }}
-
-      .growth-loop-detail[open] summary::after {{
-        content: "Hide";
-      }}
-
       .growth-loop-detail summary span {{
         color: var(--accent);
         font-size: 0.82rem;
         font-weight: 800;
         text-transform: uppercase;
         letter-spacing: 0.08em;
+      }}
+
+      .growth-loop-detail summary .growth-loop-detail-state {{
+        color: var(--accent);
+        font-size: 0.86rem;
+        font-weight: 800;
+        text-transform: none;
+        letter-spacing: 0;
       }}
 
       .growth-loop-detail summary strong {{
@@ -12754,6 +12977,7 @@ def _page_layout(*, title: str, body: str) -> str:
         }}
 
         .agent-console-header,
+        .judge-runway-header,
         .agent-run-header {{
           flex-direction: column;
         }}
@@ -12852,6 +13076,7 @@ def _page_layout(*, title: str, body: str) -> str:
 
         .copy-button,
         .agent-console-actions a,
+        .runway-step-cta,
         .primary-action button,
         .primary-action .button-link {{
           width: 100%;

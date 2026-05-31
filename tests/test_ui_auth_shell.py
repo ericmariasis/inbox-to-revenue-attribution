@@ -1563,6 +1563,16 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "Growth Loop Agent" in growth_response.text
     assert "Judge demo cockpit" in growth_response.text
     assert "Agent console" in growth_response.text
+    assert "90-second judge runway" in growth_response.text
+    assert "90-second demo runway" in growth_response.text
+    assert "data-judge-runway" in growth_response.text
+    assert "Open reports" in growth_response.text
+    assert 'href="/app/reports"' in growth_response.text
+    assert "Reports evidence" in growth_response.text
+    assert "Runway boundaries" in growth_response.text
+    assert "Runway links to evidence only" in growth_response.text
+    assert "The Reports CTA opens existing app reporting" in growth_response.text
+    assert "No campaign, flow, send, export, checkout, payment, or Storefront mutation is triggered." in growth_response.text
     assert "90-second judge path" in growth_response.text
     assert "Signal -> Proof -> Action" in growth_response.text
     assert "Bloomreach/Loomi signal" in growth_response.text
@@ -1608,6 +1618,10 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "not for automatic send, export, or mutation" in growth_response.text
     assert "data-agent-run" in growth_response.text
     assert "data-agent-run-next" in growth_response.text
+    assert "growth-loop-detail-state" in growth_response.text
+    assert 'label.textContent = detail.open ? "Hide" : "Show";' in growth_response.text
+    assert "initGrowthLoopDetails" in growth_response.text
+    assert "hashchange" in growth_response.text
     assert 'href="#growth-loop-review-packet"' in growth_response.text
     assert 'href="#growth-loop-proof"' in growth_response.text
     assert 'href="#growth-loop-sandbox"' in growth_response.text
@@ -1839,6 +1853,9 @@ def test_growth_loop_page_renders_recorded_bloomreach_saved_segment_proof():
     assert "CCP Cart Recovery Demo" in response.text
     assert "seg_ui_growth_loop_demo" in response.text
     assert "Created in Engagement UI" in response.text
+    assert "Saved segment proof" in response.text
+    assert "Inspect saved segment" in response.text
+    assert "90-second demo runway" in response.text
     assert "Object ID" in response.text
     assert "Saved segment created in sleepy-goose / Hackathon Workspace through Bloomreach Engagement UI." in response.text
     assert "Inspect saved segment proof" in response.text
@@ -1926,7 +1943,9 @@ def test_growth_loop_page_renders_recorded_bloomreach_activation_proof():
     assert "ccp_growth_loop_recovery_candidate" in response.text
     assert "story142_review_ready" in response.text
     assert "Demo customer profile" in response.text
+    assert "Activation proof" in response.text
     assert "Inspect activation proof" in response.text
+    assert "90-second demo runway" in response.text
     assert ".growth-loop-detail .topic-summary" in response.text
     assert ".growth-loop-detail h2" in response.text
     assert ".growth-loop-detail code" in response.text

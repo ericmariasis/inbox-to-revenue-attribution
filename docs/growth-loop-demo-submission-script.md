@@ -13,7 +13,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
    - "The agent reads two kinds of context. Loomi Marketing and Analytics MCP-shaped diagnostics provide engagement intelligence, while this app owns the attribution and paid-result evidence."
 
 3. Point to `Agent console`.
-   - "The first screen is built for judges: Signal to Proof to Action. Bloomreach/Loomi supplies the recoverable audience signal, the app verifies paid truth, and the agent prepares one reviewed next action with a measurement boundary."
+   - "The first screen is built for judges: Signal to Proof to Action. The 90-second demo runway links directly to schema proof, sandbox proof, Bloomreach proof when configured, app-owned paid truth, the review packet, measurement, and Reports."
 
 4. Point to `Sandbox proof`.
    - "The sandbox proof shows where the real Bloomreach sandbox fits. Pacific Apparel supplies the Storefront shopping context, sleepy-goose Engagement supplies event and activation surfaces, and the app-owned invoice and payment records remain the paid-result boundary."
@@ -79,6 +79,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - Payment-backed outcome layer: PayPal-shaped paid result evidence for the demo seed.
 - Agentic action layer: a bounded, copy-ready recovery brief for human review.
 - Judge-presentation layer: a compact first-screen `Signal -> Proof -> Action` path that keeps the demo legible in 90 seconds.
+- Judge-runway layer: click-through proof cards that let judges inspect signal, sandbox context, Bloomreach object proof, activation proof, app-owned paid truth, review packet, measurement boundary, and Reports without hunting through the page.
 - Guided-run layer: visible understand -> decide -> prepare behavior inside the product demo.
 - Review-packet layer: one review-ready artifact that packages the selected action, segment recipe, proof chain, and boundaries.
 - Sandbox-proof layer: a bounded artifact connecting Pacific Apparel Storefront context, sleepy-goose Engagement surfaces, and app-owned paid-result truth.
@@ -95,6 +96,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - "The live Loomi proof showed a rich commerce event schema, and the app turns that into a reviewable cart-abandon recovery blueprint."
 - "The agent turns that blueprint into a concrete recovery brief with target segment, message outline, draft Bloomreach segment spec, and evidence plan."
 - "The console makes the hackathon capability obvious in one screen: Signal -> Proof -> Action, followed by a bounded measurement plan."
+- "The 90-second runway turns the proof stack into a guided judge path with links to every artifact and to Reports."
 - "The sandbox proof ties the real Bloomreach sandbox to the product story without turning sandbox observations into revenue truth."
 - "When configured, the first judge path also exposes a real Bloomreach saved segment with name, object ID, project, workspace, and creation surface."
 - "When configured, the first judge path exposes a real Bloomreach customer-property activation marker with sanitized property metadata."
@@ -130,6 +132,7 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - Do not say the Conversation MCP proof supplied support, checkout, booking, refund, or payment-failure telemetry; it only exposed catalog-proxy signals and was deferred.
 - Do not say PayPal-shaped local evidence is a live PayPal transaction.
 - Do not say the page changes Storefront, starts checkout, runs a payment, creates a dashboard, or saves any Bloomreach object.
+- Do not say the runway itself performs any integration action; it only links to already prepared evidence surfaces.
 
 ## Manual Proof Path
 

@@ -42,73 +42,6 @@ Use this as the opening pass:
 6. 4:30-5:15 - Responsible design: live vs recorded vs deterministic, no external mutation, no lift claim.
 7. 5:15-5:45 - Production path: replace recorded proof with runtime connectors, add approval workflow, audit logging, and measurement execution.
 
-## Final Recording Runbook
-
-Use this as the canonical local recording path for the final demo video. Record from a clean browser window after the server is running.
-
-### Preconditions
-
-- Use latest `main`.
-- Local Postgres test database is available at `localhost:5434`.
-- The saved-segment and activation proof environment variables below match the recorded Bloomreach sandbox proof from Stories 140 and 142.
-- Do not include raw Slack screenshots, private customer data, cookies, private URLs, raw payloads, or secrets in the recording.
-- Keep the recording on `/app`, `/app/growth-loop`, `/app/reports`, and the paid explanation route unless you intentionally show external Bloomreach proof in a separate sanitized clip.
-
-### PowerShell Setup
-
-```powershell
-cd C:\Users\ericm\Documents\GitHub\inbox-to-revenue-attribution
-
-$env:APP_ENV='manual_test'
-$env:MAGIC_LINK_EMAIL_PROVIDER='stub'
-$env:MAGIC_LINK_BASE_URL='http://127.0.0.1:8000'
-$env:JWT_SECRET='manual-test-secret'
-$env:GROWTH_LOOP_AGENT_FEATURE_ENABLED='true'
-$env:GROWTH_LOOP_LOOMI_MCP_ENABLED='false'
-
-$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_ENABLED='true'
-$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_NAME='CCP Cart Recovery Demo - 2026-05-29'
-$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_ID='6a19e7fdf98a9214fd6a5960'
-$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_PROJECT_NAME='sleepy-goose'
-$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_WORKSPACE_NAME='Hackathon Workspace'
-$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_CREATED_VIA='Bloomreach Engagement UI'
-$env:GROWTH_LOOP_BLOOMREACH_SEGMENT_PROOF_STATUS_LABEL='Created in Engagement UI'
-
-$env:GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_ENABLED='true'
-$env:GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_CUSTOMER_LABEL='Bloomreach demo customer - sanitized'
-$env:GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_PROPERTY_NAME='ccp_growth_loop_recovery_candidate'
-$env:GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_PROPERTY_VALUE='story142_review_ready'
-$env:GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_PROJECT_NAME='sleepy-goose'
-$env:GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_WORKSPACE_NAME='Hackathon Workspace'
-$env:GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_CREATED_VIA='Bloomreach Engagement UI'
-$env:GROWTH_LOOP_BLOOMREACH_ACTIVATION_PROOF_STATUS_LABEL='Recorded activation proof'
-
-$env:TEST_DATABASE_URL='postgresql+psycopg://postgres:math1991@localhost:5434/attribution_test'
-$env:DATABASE_URL=$env:TEST_DATABASE_URL
-
-.venv\Scripts\python.exe scripts\seed_growth_loop_demo.py --base-url http://127.0.0.1:8000
-.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-
-### Browser Recording Pass
-
-1. Open the printed `LOGIN_URL`.
-2. Confirm `/app` renders Setup Home with the paid-result proof.
-3. Open the printed `GROWTH_LOOP_URL`.
-4. Start recording at the top of the Growth Loop page.
-5. Narrate the Track 6 orchestration summary and the 90-second runway.
-6. Click runway links for schema, sandbox, saved segment, activation, paid boundary, review packet, measurement, and Reports.
-7. If using the guided run, click `Run next step` through Step 6.
-8. Open Reports and show `$195.00` / 1 paid invoice.
-9. Open `Why this revenue counted` if needed, then return to the Growth Loop review packet.
-10. Stop Uvicorn with Ctrl+C and confirm clean shutdown.
-
-### Recording Failure Fallback
-
-- Use the backup screenshots listed below.
-- State explicitly which layer failed and whether it was local app, database, browser, or external sandbox.
-- Do not replace unavailable proof with fabricated object IDs, screenshots, or customer data.
-
 ## Architecture
 
 ```mermaid
@@ -162,13 +95,6 @@ flowchart LR
 - Revenue truth remains in Career Code Pro's tracked content, booking, invoice, and payment-event chain.
 - Loomi, Bloomreach, Storefront, campaign, and retargeting signals explain context only. They do not count revenue.
 
-## Production Path
-
-- Replace recorded proof metadata with runtime connector reads behind explicit approval and logging.
-- Add approval workflow, audit logging, and governance before any customer-facing action.
-- Execute recovery through Bloomreach only after human approval.
-- Measure later paid outcomes through app-owned invoices, payments, and holdout comparison.
-
 ## Responsible Design Note
 
 - Uses sandbox/demo data only.
@@ -178,17 +104,6 @@ flowchart LR
 - Does not claim lift, causality, statistical confidence, or revenue improvement.
 - Requires human review before customer-facing action.
 - Counts revenue only through app-owned invoice and payment evidence.
-
-## Final Submission Checklist
-
-- 5-6 minute demo video recorded from the final recording runbook.
-- One-page project summary uses the title, value prop, target user, and problem framing from this document.
-- Architecture diagram is exported or included.
-- Live/recorded/deterministic/not-executed table is included.
-- MCP/Bloomreach usage explanation is included.
-- Responsible design note is included.
-- Backup screenshots are captured.
-- Claims-to-make and claims-to-avoid lists are reviewed immediately before submission.
 
 ## Backup Screenshot Checklist
 

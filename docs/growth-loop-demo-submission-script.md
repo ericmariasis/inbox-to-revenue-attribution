@@ -96,7 +96,6 @@ Use `docs/growth-loop-track6-final-submission-package.md` as the single source f
 
 - one-sentence value prop and target user
 - 90-second and five-minute demo scripts
-- final recording runbook with PowerShell setup, seeded magic-link flow, browser recording pass, and fallback guidance
 - architecture diagram
 - live / recorded / deterministic / not-executed table
 - MCP and Bloomreach usage explanation

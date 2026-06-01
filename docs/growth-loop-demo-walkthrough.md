@@ -4,10 +4,6 @@
 
 Seed one local paid PayPal-shaped demo workspace and use it to show the Growth Loop Agent moving from app-owned paid proof plus Loomi diagnostic context to one reviewed next action.
 
-## Final Recording Runbook
-
-Use `docs/growth-loop-track6-final-submission-package.md` for the final recording commands, browser pass, final artifact checklist, and live/recorded/deterministic boundaries. This walkthrough remains the detailed validation guide.
-
 ## Preconditions
 
 - Run from the repo root.

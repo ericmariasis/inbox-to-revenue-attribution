@@ -92,6 +92,9 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 - The active nav item is `Growth Loop`.
 - The first judge-facing artifact is `Agent console`.
 - The console opens with `Judge demo cockpit` and the `Signal -> Proof -> Action` story.
+- The console includes `Track 6 orchestration summary` before the longer proof runway.
+- The Track 6 summary states that Loomi/Bloomreach context informs the action, app-owned evidence decides paid truth, and the output is a review-ready action.
+- The Track 6 summary states that deterministic, sanitized proof context keeps the judge run stable, no page-load Bloomreach or Storefront mutation occurs, no campaign is sent, and no lift is claimed.
 - The console includes `90-second demo runway` above the longer guided workflow.
 - The runway gives judges one click-through path:
   - `Bloomreach/Loomi signal` / `Inspect schema proof`
@@ -200,7 +203,7 @@ Open `LOGIN_URL` in the browser, then open `GROWTH_LOOP_URL`.
 ## Demo Talk Track
 
 1. This is a real signed-in creator workspace in the existing app, not a standalone prototype.
-2. The Agent console is the judge-friendly cockpit: `Signal -> Proof -> Action` is visible before the deeper evidence stack.
+2. The Agent console is the judge-friendly cockpit: the Track 6 orchestration summary explains `engagement intelligence -> commercial truth -> reviewed action` before the deeper evidence stack.
 3. Start with the `90-second demo runway`: it links judges directly to schema proof, sandbox proof, Bloomreach proof when configured, app-owned paid truth, the review packet, the measurement boundary, and Reports.
 4. Click through `Run agent`: the workflow visibly inspects paid proof, reads Loomi schema evidence, scores actions, prepares the brief, generates the segment recipe, and attaches measurement.
 5. The app owns the commercial truth: tracked content, attributed booking, local invoice, and PayPal-shaped capture event.

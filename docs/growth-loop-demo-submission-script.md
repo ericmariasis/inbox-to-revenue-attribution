@@ -90,6 +90,18 @@ The Growth Loop Agent connects engagement intelligence to commercial truth. It d
 - Segment-recipe layer: a review-only Bloomreach recreation recipe with include/exclude/window/measure logic.
 - Measurement-plan layer: a no-lift-yet plan that would evaluate later paid revenue through app-owned invoice/payment records against a withheld holdout.
 
+## Final Submission Package
+
+Use `docs/growth-loop-track6-final-submission-package.md` as the single source for the final judge-facing package:
+
+- one-sentence value prop and target user
+- 90-second and five-minute demo scripts
+- architecture diagram
+- live / recorded / deterministic / not-executed table
+- MCP and Bloomreach usage explanation
+- responsible design note
+- backup screenshot checklist.
+
 ## Claims To Make
 
 - "The demo shows cross-system orchestration from engagement context to paid-result evidence to reviewed action planning."

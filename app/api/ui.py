@@ -3215,6 +3215,36 @@ def _render_growth_loop_agent_interaction_script() -> str:
     """
 
 
+def _render_growth_loop_track6_summary() -> str:
+    return """
+    <section class="track6-summary" data-track6-summary>
+      <div>
+        <p class="eyebrow">Track 6 orchestration summary</p>
+        <h2>Engagement intelligence -> commercial truth -> reviewed action</h2>
+        <p>Career Code Pro connects Loomi/Bloomreach engagement context, recorded Bloomreach sandbox proof, and app-owned paid evidence into one guided recovery workflow.</p>
+      </div>
+      <div class="track6-summary-grid">
+        <article>
+          <span>Input</span>
+          <strong>Loomi/Bloomreach context</strong>
+          <p>Verified schema, sandbox, saved segment, and activation proof frame the recovery opportunity.</p>
+        </article>
+        <article>
+          <span>Truth</span>
+          <strong>App-owned paid evidence</strong>
+          <p>Tracked content, bookings, invoices, and payment events decide whether revenue counted.</p>
+        </article>
+        <article>
+          <span>Output</span>
+          <strong>Review-ready action</strong>
+          <p>The agent prepares a recovery packet and holdout-first measurement plan for human review.</p>
+        </article>
+      </div>
+      <p class="track6-summary-boundary">Deterministic, sanitized proof context keeps the judge run stable: no page-load Bloomreach or Storefront mutation occurs, no campaign is sent, and no lift is claimed.</p>
+    </section>
+    """
+
+
 def _render_growth_loop_judge_runway(
     console: GrowthLoopAgentConsole,
 ) -> str:
@@ -3269,6 +3299,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
     packet_boundaries = _render_bullet_list(packet.boundaries)
     judge_runway = _render_growth_loop_judge_runway(console)
     guided_run = _render_growth_loop_guided_run(console)
+    track6_summary = _render_growth_loop_track6_summary()
     paid_truth_signal = console.capability_signals[0]
     sandbox_cockpit_card = ""
     sandbox_shortcut = ""
@@ -3341,6 +3372,7 @@ def _render_growth_loop_agent_console(brief: GrowthLoopActionBrief) -> str:
         </div>
         <a href="#growth-loop-review-packet" class="button-link">{html.escape(console.primary_action_label)}</a>
       </div>
+      {track6_summary}
       {judge_runway}
       <section class="judge-flow">
         <div>
@@ -12433,6 +12465,61 @@ def _page_layout(*, title: str, body: str) -> str:
         text-decoration: none;
       }}
 
+      .track6-summary {{
+        display: grid;
+        gap: 14px;
+        padding: 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(47, 95, 91, 0.22);
+        background: rgba(255, 253, 248, 0.86);
+      }}
+
+      .track6-summary h2,
+      .track6-summary p {{
+        margin: 0;
+      }}
+
+      .track6-summary-grid {{
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }}
+
+      .track6-summary-grid article {{
+        min-width: 0;
+        padding: 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(47, 95, 91, 0.18);
+        background: rgba(47, 95, 91, 0.07);
+      }}
+
+      .track6-summary-grid span {{
+        display: block;
+        margin-bottom: 7px;
+        color: var(--accent);
+        font-size: 0.75rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }}
+
+      .track6-summary-grid strong {{
+        display: block;
+        margin-bottom: 8px;
+        color: var(--ink);
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+        font-size: 1.1rem;
+        line-height: 1.25;
+      }}
+
+      .track6-summary-boundary {{
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px dashed rgba(163, 74, 40, 0.28);
+        background: rgba(243, 223, 212, 0.28);
+        font-weight: 700;
+      }}
+
       .judge-runway {{
         display: grid;
         gap: 16px;
@@ -12987,6 +13074,10 @@ def _page_layout(*, title: str, body: str) -> str:
         }}
 
         .judge-flow-grid {{
+          grid-template-columns: 1fr;
+        }}
+
+        .track6-summary-grid {{
           grid-template-columns: 1fr;
         }}
 

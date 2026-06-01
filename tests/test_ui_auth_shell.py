@@ -1563,6 +1563,14 @@ def test_growth_loop_page_renders_enabled_paid_result_evidence_boundary():
     assert "Growth Loop Agent" in growth_response.text
     assert "Judge demo cockpit" in growth_response.text
     assert "Agent console" in growth_response.text
+    assert "Track 6 orchestration summary" in growth_response.text
+    assert "Engagement intelligence -> commercial truth -> reviewed action" in growth_response.text
+    assert "data-track6-summary" in growth_response.text
+    assert "Career Code Pro connects Loomi/Bloomreach engagement context" in growth_response.text
+    assert "App-owned paid evidence" in growth_response.text
+    assert "Deterministic, sanitized proof context keeps the judge run stable" in growth_response.text
+    assert "no page-load Bloomreach or Storefront mutation occurs" in growth_response.text
+    assert "no campaign is sent, and no lift is claimed" in growth_response.text
     assert "90-second judge runway" in growth_response.text
     assert "90-second demo runway" in growth_response.text
     assert "data-judge-runway" in growth_response.text
